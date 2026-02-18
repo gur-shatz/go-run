@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -268,7 +267,9 @@ func (this *Watcher) buildFileList() error {
 			if this.trackedDirs == nil || !this.trackedDirs[dir] {
 				absDir := filepath.Join(this.rootDir, dir)
 				if err := this.fsw.Add(absDir); err != nil {
-					this.log.Verbose("watch %s: %v", dir, err)
+					this.log.Warn("watch %s: %v", dir, err)
+				} else {
+					this.log.Status("Watching directory: %s (%s)", dir, absDir)
 				}
 			}
 		}
@@ -369,20 +370,36 @@ func (this *Watcher) matchesPatterns(rel string) bool {
 }
 
 // maybeWatchDir adds an fsnotify watch to a newly created directory if it's
-// under a path we care about (i.e., not excluded or outside the root).
+// under a tracked directory (one that matched a watch pattern).
 func (this *Watcher) maybeWatchDir(absPath string) {
 	rel, err := filepath.Rel(this.rootDir, absPath)
 	if err != nil {
 		return
 	}
 	rel = filepath.ToSlash(rel)
-	if strings.HasPrefix(rel, "..") {
+
+	// Only watch if this directory or a parent is already tracked.
+	tracked := false
+	if this.trackedDirs[rel] {
+		tracked = true
+	} else {
+		parent := rel
+		for parent != "." && parent != "/" {
+			parent = filepath.ToSlash(filepath.Dir(parent))
+			if this.trackedDirs[parent] {
+				tracked = true
+				break
+			}
+		}
+	}
+	if !tracked {
 		return
 	}
+
 	if this.fsw != nil {
 		if err := this.fsw.Add(absPath); err == nil {
 			this.trackedDirs[rel] = true
-			this.log.Verbose("Watching new directory: %s", rel)
+			this.log.Status("Watching new directory: %s (%s)", rel, absPath)
 		}
 	}
 }

@@ -81,7 +81,15 @@ func run() error {
 
 	log.Verbose("Config: %s", *configPath)
 
-	sumFile := strings.TrimSuffix(*configPath, filepath.Ext(*configPath)) + ".sum"
+	// Use the config file's directory as the root directory so that watch
+	// patterns are always resolved relative to the config, regardless of
+	// where the binary is invoked from.
+	configAbs, err := filepath.Abs(*configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	rootDir := filepath.Dir(configAbs)
+	sumFile := strings.TrimSuffix(filepath.Base(*configPath), filepath.Ext(*configPath)) + ".sum"
 
 	// Set up stdout/stderr writers
 	opts := execrun.Options{
@@ -91,8 +99,8 @@ func run() error {
 		Stdout:       os.Stdout,
 		Stderr:       os.Stderr,
 		SumFile:      sumFile,
+		RootDir:      rootDir,
 	}
-
 
 	if *combinedFile != "" {
 		f, err := os.OpenFile(*combinedFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
@@ -154,14 +162,20 @@ func runSum(configPath string) error {
 		return err
 	}
 
+	configAbs, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	rootDir := filepath.Dir(configAbs)
+
 	fmt.Printf("Using config: %s\n", configPath)
 
-	sums, err := execrun.ScanFiles(cfg)
+	sums, err := execrun.ScanFiles(cfg, rootDir)
 	if err != nil {
 		return fmt.Errorf("scan files: %w", err)
 	}
 
-	sumFile := strings.TrimSuffix(configPath, filepath.Ext(configPath)) + ".sum"
+	sumFile := filepath.Join(rootDir, strings.TrimSuffix(filepath.Base(configPath), filepath.Ext(configPath))+".sum")
 	if err := sumfile.Write(sumFile, sums); err != nil {
 		return fmt.Errorf("write %s: %w", sumFile, err)
 	}

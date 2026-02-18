@@ -574,7 +574,7 @@
       return;
     }
     tbody.innerHTML = filtered.map(t => {
-      const statusText = t.last_exec_result || (t.state === 'starting' ? 'building' : 'pending');
+      const statusText = t.last_exec_result || (t.state === 'starting' ? 'building' : (t.state === 'running' ? 'success' : 'pending'));
       const statusCls = statusText === 'building' ? 'starting' : statusText;
       const buildBtn = '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>';
 

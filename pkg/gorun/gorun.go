@@ -267,7 +267,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			if opts.OnProcessExit != nil {
 				opts.OnProcessExit(info.ExitCode, info.Err)
 			}
-			l.Warn("Process exited (code %d): %s. Starting Go run...", info.ExitCode, r.CmdLine())
+			l.Warn("Process exited (code %d): %s.", info.ExitCode, r.CmdLine())
 		case <-opts.BuildTrigger:
 			if opts.OnBuildStart != nil {
 				opts.OnBuildStart()

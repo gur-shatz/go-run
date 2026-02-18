@@ -66,15 +66,15 @@ func runInit(configFile string) error {
 }
 
 func runSum(configFile string) error {
-	rootDir, err := os.Getwd()
+	configAbs, err := filepath.Abs(configFile)
 	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
+		return fmt.Errorf("resolve config path: %w", err)
 	}
+	rootDir := filepath.Dir(configAbs)
 
 	// Try to load watch patterns from config
 	var watchPatterns []string
-	configPath := filepath.Join(rootDir, configFile)
-	if gcfg, err := gorun.LoadConfig(configPath); err == nil {
+	if gcfg, err := gorun.LoadConfig(configAbs); err == nil {
 		watchPatterns = gcfg.Watch
 		fmt.Printf("Using config: %s\n", configFile)
 	}
@@ -91,7 +91,7 @@ func runSum(configFile string) error {
 	}
 
 	// Derive sum filename from config filename (gorun.yaml → gorun.sum)
-	sumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
+	sumFile := filepath.Join(rootDir, strings.TrimSuffix(filepath.Base(configFile), filepath.Ext(configFile))+".sum")
 	if err := sumfile.Write(sumFile, sums); err != nil {
 		return fmt.Errorf("write %s: %w", sumFile, err)
 	}
@@ -131,7 +131,15 @@ func runWatch(cfg cli.Config, configFile string) error {
 		gcfg = *loaded
 	}
 
-	sumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
+	// Use the config file's directory as the root directory so that watch
+	// patterns are always resolved relative to the config, regardless of
+	// where the binary is invoked from.
+	configAbs, err := filepath.Abs(configFile)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	rootDir := filepath.Dir(configAbs)
+	sumFile := strings.TrimSuffix(filepath.Base(configFile), filepath.Ext(configFile)) + ".sum"
 
 	opts := gorun.Options{
 		PollInterval: cfg.PollInterval,
@@ -139,6 +147,7 @@ func runWatch(cfg cli.Config, configFile string) error {
 		Verbose:      cfg.Verbose,
 		LogPrefix:    "[gorun]",
 		SumFile:      sumFile,
+		RootDir:      rootDir,
 	}
 
 	if cfg.Combined != "" {
@@ -172,7 +181,7 @@ func runWatch(cfg cli.Config, configFile string) error {
 		}
 	}
 
-	err := gorun.Run(ctx, gcfg, opts)
+	err = gorun.Run(ctx, gcfg, opts)
 	if err != nil && ctx.Err() != nil {
 		// Context cancelled (signal) — not an error
 		return nil

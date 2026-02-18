@@ -1,3 +1,4 @@
 args: ./main.go
 watch:
   - "**/*.go"
+  - "../ticker/*.md"

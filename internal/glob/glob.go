@@ -3,6 +3,8 @@ package glob
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -18,13 +20,11 @@ type Pattern struct {
 func ExpandPatterns(root string, patterns []Pattern) ([]string, error) {
 	includes := make(map[string]bool)
 
-	fsys := os.DirFS(root)
-
 	for _, p := range patterns {
 		if p.Negated {
 			continue
 		}
-		matches, err := doublestar.Glob(fsys, p.Raw)
+		matches, err := expandSinglePattern(root, p.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("glob %q: %w", p.Raw, err)
 		}
@@ -38,7 +38,7 @@ func ExpandPatterns(root string, patterns []Pattern) ([]string, error) {
 		if !p.Negated {
 			continue
 		}
-		matches, err := doublestar.Glob(fsys, p.Raw)
+		matches, err := expandSinglePattern(root, p.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("glob %q: %w", p.Raw, err)
 		}
@@ -53,6 +53,38 @@ func ExpandPatterns(root string, patterns []Pattern) ([]string, error) {
 	}
 	sortStrings(result)
 	return result, nil
+}
+
+// expandSinglePattern handles a single glob pattern. For patterns starting with
+// "..", it resolves the directory prefix to an absolute path so os.DirFS can
+// access files outside the root, then re-prefixes results so they stay relative
+// to root.
+func expandSinglePattern(root, pattern string) ([]string, error) {
+	if !strings.HasPrefix(pattern, "..") {
+		fsys := os.DirFS(root)
+		return doublestar.Glob(fsys, pattern)
+	}
+
+	// Split into directory prefix and glob part.
+	// e.g. "../lib/**/*.go" → dir="../lib", globPart="**/*.go"
+	dir, globPart := doublestar.SplitPattern(pattern)
+
+	// Resolve the directory prefix against root to get an absolute path.
+	absDir := filepath.Clean(filepath.Join(root, dir))
+
+	fsys := os.DirFS(absDir)
+	matches, err := doublestar.Glob(fsys, globPart)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-prefix results with the original directory part so they remain
+	// relative to root (e.g. "../lib/foo.go").
+	prefix := filepath.ToSlash(dir)
+	for i, m := range matches {
+		matches[i] = prefix + "/" + m
+	}
+	return matches, nil
 }
 
 func sortStrings(s []string) {
