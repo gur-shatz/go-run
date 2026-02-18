@@ -6,8 +6,8 @@ File watching run utilities for go and general use.
 | --------- | ------------- | ----------------------------------------------------------------------------------------- |
 | `gorun`   | `pkg/gorun`   | Drop-in `go run` replacement with auto-rebuild on file changes, can also have config file |
 | `execrun` | `pkg/execrun` | Generic, language-agnostic file-watching command runner (YAML config)                     |
-| `runctl`  | `pkg/runctl`  | Multi-target orchestrator — manage multiple gorun/execrun targets from a single config    |
-| `runui`   | `pkg/runui`   | Web-UI based Multi-target orchestrator                                                    |
+| `runctl`  | `pkg/runctl`  | Multi-target orchestrator — manage multiple gorun/execrun targets with HTTP API           |
+| `runui`   | `pkg/runui`   | runctl + embedded web dashboard for monitoring and control                                |
 
 All tools use content-based change detection (SHA-256 hashing) with polling and fsnotify.
 All rebuilding and watching is based on glob patterns.
@@ -21,8 +21,11 @@ go install github.com/gur-shatz/go-run@latest
 # execrun — generic file watcher
 go install github.com/gur-shatz/go-run/cmd/execrun@latest
 
-# runctl — multi-target orchestrator
+# runctl — multi-target orchestrator (API only)
 go install github.com/gur-shatz/go-run/cmd/runctl@latest
+
+# runui — multi-target orchestrator with web dashboard
+go install github.com/gur-shatz/go-run/cmd/runui@latest
 ```
 
 Or from source:
@@ -35,67 +38,31 @@ make install
 
 ## gorun
 
-Drop-in `go run` replacement with auto-rebuild on file changes.
-
-### Quick Start
+Use directly from the CLI or with a config file:
 
 ```bash
+# CLI — no config needed
 gorun ./cmd/server -port 8080
+
+# Config — run with configuration from gorun.yaml
+gorun
 ```
 
-This will:
-
-1. Build `./cmd/server` to a temp binary
-2. Run it with `-port 8080`
-3. Watch for file changes (default: `**/*.go`, `go.mod`, `go.sum`)
-4. On change: rebuild, restart, report what changed
-
-### Usage
-
-```
-gorun                             Load gorun.yaml and run
-gorun -c <file>                   Load file and run
-gorun [flags] [--] [go-build-flags] <target> [app-args...]
-gorun [flags] # simple run with auto-reload
-gorun [-c <file>] init
-gorun [-c <file>] sum
-```
-
-### Flags
-
-| Flag                    | Default      | Description                                         |
-| ----------------------- | ------------ | --------------------------------------------------- |
-| `-c, --config <file>`   | `gorun.yaml` | Config file path                                    |
-| `--poll <duration>`     | `500ms`      | Poll interval for file changes                      |
-| `--debounce <duration>` | `300ms`      | Nagle debounce window                               |
-| `--stdout <file>`       |              | Redirect child process stdout to file (append mode) |
-| `--stderr <file>`       |              | Redirect child process stderr to file (append mode) |
-| `-v, --verbose`         | `false`      | Show config, patterns, and file counts              |
-
-### Commands
-
-| Command                    | Description                         |
-| -------------------------- | ----------------------------------- |
-| `gorun init`               | Generate a default `gorun.yaml`     |
-| `gorun init -c myapp.yaml` | Generate `myapp.yaml`               |
-| `gorun sum`                | Snapshot file hashes to `gorun.sum` |
+Both modes build to a temp binary, watch for changes (default: `**/*.go`, `go.mod`, `go.sum`), and auto-rebuild on change.
 
 ### Config File
 
-`gorun.yaml`:
+`gorun.yaml` (`gorun init` generates a starter):
 
 ```yaml
-# File patterns to watch (optional, defaults to **/*.go, go.mod, go.sum)
 watch:
   - "**/*.go"
   - "go.mod"
   - "go.sum"
   - "!vendor/**"
 
-# Build target and arguments (required) — parsed like "go run" args
 args: "./cmd/server -port 8080"
 
-# Pre-build commands (optional) — run before "go build"
 exec:
   - "go generate ./..."
 ```
@@ -103,66 +70,60 @@ exec:
 | Field   | Required | Description                                                                  |
 | ------- | -------- | ---------------------------------------------------------------------------- |
 | `watch` | no       | Glob patterns for files to watch (defaults to `**/*.go`, `go.mod`, `go.sum`) |
-| `args`  | yes      | Build flags + build target + app args, parsed like `go run` arguments        |
+| `args`  | yes      | Build flags + target + app args, parsed like `go run` arguments              |
 | `exec`  | no       | Commands to run before `go build`                                            |
 
-The `args` string is parsed the same way as CLI arguments: flags before the target go to `go build`, the target is the package/file to build, and everything after goes to the built binary.
+### Usage
+
+```
+gorun [flags] [--] [go-build-flags] <target> [app-args...]
+gorun [-c <file>]                   Load config and run
+gorun [-c <file>] init              Generate a default config
+gorun [-c <file>] sum               Snapshot file hashes
+```
+
+### Flags
+
+| Flag                    | Default      | Description                                 |
+| ----------------------- | ------------ | ------------------------------------------- |
+| `-c, --config <file>`   | `gorun.yaml` | Config file path                            |
+| `--poll <duration>`     | `500ms`      | Poll interval for file changes              |
+| `--debounce <duration>` | `300ms`      | Nagle debounce window                       |
+| `--stdout <file>`       |              | Redirect child stdout to file (append mode) |
+| `--stderr <file>`       |              | Redirect child stderr to file (append mode) |
+| `-v, --verbose`         | `false`      | Show config, patterns, and file counts      |
+
+`--stdout`/`--stderr` only redirect the child process output; gorun's own messages still print to the terminal.
 
 ### Examples
 
 ```bash
-# Run with CLI args (no config file needed)
-gorun ./cmd/server -port 8080
-
-# Pass build flags with --
-gorun -- -race ./cmd/server -port 8080
-
-# Use a config file
-gorun -c myapp.yaml
-
-# No args — loads gorun.yaml from current directory
-gorun
+gorun ./cmd/server -port 8080          # CLI args, no config needed
+gorun -- -race ./cmd/server -port 8080 # Pass build flags with --
+gorun -c myapp.yaml                    # Use a specific config file
+gorun                                  # Load gorun.yaml from current dir
 ```
-
-### Output Redirection
-
-```bash
-# Redirect child stdout to a log file
-gorun --stdout /tmp/app.log ./cmd/server
-
-# Redirect both stdout and stderr
-gorun --stdout /tmp/out.log --stderr /tmp/err.log ./cmd/server
-```
-
-gorun's own messages (build status, change detection, heartbeat) still print to the terminal. Only the child process's output is redirected.
 
 ### Behavior
 
-- If a build fails, the previous process keeps running
-- If the child process exits on its own, gorun keeps watching for file changes and rebuilds on the next change
-- Sum files (`gorun.sum`) are persisted in the working directory and updated on each rebuild
+- Build failure: previous process keeps running
+- Child exits on its own: gorun keeps watching, rebuilds on next change
+- Sum files (`gorun.sum`) are persisted and updated on each rebuild
 
 ### Library Usage
 
 ```go
 import "github.com/gur-shatz/go-run/pkg/gorun"
 
-cfg, err := gorun.LoadConfig("gorun.yaml")
-if err != nil {
-    log.Fatal(err)
-}
-
+cfg, _ := gorun.LoadConfig("gorun.yaml")
 ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 defer cancel()
-
-err = gorun.Run(ctx, *cfg, gorun.Options{
-    Verbose: true,
-})
+gorun.Run(ctx, *cfg, gorun.Options{Verbose: true})
 ```
 
 #### Subprocess Control
 
-The `gorun` package also provides a subprocess API for running gorun as a child process and receiving structured events:
+Run gorun as a child process and receive structured events:
 
 ```go
 cmd := gorun.Command("./cmd/server", "-port", "8080")
@@ -350,28 +311,83 @@ err = execrun.Run(ctx, *cfg, execrun.Options{
 
 ---
 
-## runctl
+## runctl / runui
 
-Multi-target orchestrator. Manage multiple gorun and execrun targets from a single `runctl.yaml`, with an HTTP API for status and control.
+Multi-target orchestrator. Manage multiple gorun and execrun targets from a single `runctl.yaml`, with an HTTP API for status and control. **runui** adds an embedded web dashboard on top.
 
-### Quick Start
+```bash
+runctl                # API only
+runui                 # API + web dashboard at http://localhost:9100
+```
+
+### Flags
+
+| Flag              | Default        | Description      |
+| ----------------- | -------------- | ---------------- |
+| `-c, --config`    | `runctl.yaml`  | Config file path |
+| `-v`              | `false`        | Verbose output   |
+
+### Config File
 
 ```yaml
-# runctl.yaml
+env:
+  PORT: "8080"
+  DB_HOST: "localhost"
+
+api:
+  port: 9100              # HTTP API port (default: 9100)
+
+logs_dir: /tmp/runctl-logs # Optional: directory for build/run log files
+
 targets:
   api:
-    type: gorun
+    type: gorun            # "gorun" or "execrun" (default: execrun)
     config: services/api/gorun.yaml
+    enabled: true          # Start on launch (default: true)
+    links:
+      - name: HTTP
+        url: "http://localhost:$PORT"
 
   frontend:
     config: services/frontend/execrun.yaml
 ```
 
-```bash
-runctl
-```
+| Field              | Required | Description                                              |
+| ------------------ | -------- | -------------------------------------------------------- |
+| `env`              | no       | Environment variables available to all targets           |
+| `api.port`         | no       | HTTP API port (default: 9100)                            |
+| `logs_dir`         | no       | Directory for log files (`<target>.build.log`/`.run.log`)|
+| `targets`          | yes      | Map of target name to target config                      |
+| `targets.*.type`   | no       | `gorun` or `execrun` (default: `execrun`)                |
+| `targets.*.config` | yes      | Path to the target's gorun/execrun YAML config           |
+| `targets.*.enabled`| no       | Whether to start on launch (default: `true`)             |
+| `targets.*.links`  | no       | Named URLs shown in the dashboard                        |
 
 The `config` path is relative to the `runctl.yaml` directory. The target's working directory is derived from the config path's directory.
+
+### Web Dashboard (runui)
+
+The web UI provides two tabs:
+
+- **Build** — target type, last build duration/timestamp, build count, errors, and a rebuild button
+- **Run** — target state, PID, uptime, restart count, custom links, and start/stop/restart buttons
+
+Each target has a log viewer with virtual scrolling and a real-time tail mode.
+
+### HTTP API
+
+```
+GET  /api/health                    Health check
+GET  /api/targets                   List all targets
+GET  /api/targets/{name}            Get target status
+POST /api/targets/{name}/build      Trigger rebuild + restart
+POST /api/targets/{name}/start      Start target
+POST /api/targets/{name}/stop       Stop target
+POST /api/targets/{name}/restart    Stop + rebuild + restart
+POST /api/targets/{name}/enable     Enable + start
+POST /api/targets/{name}/disable    Disable + stop
+GET  /api/targets/{name}/logs       Get logs (?stage=build|run&offset=N&limit=M)
+```
 
 ### Library Usage
 

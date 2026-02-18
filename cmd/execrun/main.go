@@ -93,6 +93,7 @@ func run() error {
 		SumFile:      sumFile,
 	}
 
+
 	if *combinedFile != "" {
 		f, err := os.OpenFile(*combinedFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 		if err != nil {
