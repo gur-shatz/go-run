@@ -1,0 +1,3 @@
+args: ./main.go
+watch:
+  - "**/*.go"

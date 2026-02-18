@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>runui</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script>
+    // Apply theme before paint to avoid flash
+    (function() {
+      var saved = localStorage.getItem('runui-theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <style>
+    :root {
+      --pico-font-size: 14px;
+    }
+    body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; }
+    .topbar {
+      display: flex; align-items: center; gap: 0; padding: 0 1rem;
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      background: var(--pico-background-color); flex-shrink: 0;
+    }
+    .topbar-title {
+      font-size: 0.95rem; font-weight: 700; margin: 0; padding: 0.6rem 1.25rem 0.6rem 0;
+      border-right: 1px solid var(--pico-muted-border-color); margin-right: 0.75rem;
+    }
+    .topbar-tabs { display: flex; gap: 0; margin: 0; padding: 0; list-style: none; align-self: stretch; max-width: 400px; }
+    .topbar-tabs li { margin: 0; padding: 0; list-style: none; }
+    .topbar-tabs a {
+      display: flex; align-items: center; padding: 0.6rem 1rem; text-decoration: none;
+      color: var(--pico-muted-color); border: none; border-bottom: 2px solid transparent;
+      margin-bottom: -1px; cursor: pointer; font-size: 0.85rem;
+      background: none; box-shadow: none; outline: none;
+    }
+    .topbar-tabs a:hover { color: var(--pico-color); background: none; }
+    .topbar-tabs a.active { color: var(--pico-primary); border-bottom-color: var(--pico-primary); font-weight: 600; background: none; }
+    .topbar-spacer { flex: 1; }
+    .topbar .theme-toggle {
+      position: static; background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 4px;
+      padding: 0.2rem 0.5rem; font-size: 1rem; cursor: pointer; line-height: 1;
+      color: var(--pico-color);
+    }
+    .topbar .theme-toggle:hover { background: var(--pico-muted-border-color); }
+    .app-layout { display: flex; flex: 1; min-height: 0; }
+    .app-layout > main { flex: 1; min-width: 0; transition: flex 0.2s ease; overflow: auto; padding: 1rem; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+      font-size: 0.8rem; font-weight: 600; color: #fff;
+    }
+    .badge-running, .badge-success { background: #2e7d32; }
+    .badge-starting { background: #1565c0; }
+    .badge-idle, .badge-stopped { background: #757575; }
+    .badge-error, .badge-failed { background: #c62828; }
+    .badge-exited { background: #e65100; }
+    .badge-build { background: #6a1b9a; }
+    .badge-run { background: #2e7d32; }
+    .error-text { color: #e53935; font-size: 0.85rem; max-width: 300px; word-break: break-word; }
+    table { font-size: 0.9rem; }
+    td, th { white-space: nowrap; }
+    td.wrap { white-space: normal; }
+    .actions { white-space: nowrap; }
+    .actions button {
+      padding: 0.2rem 0.35rem; font-size: 1rem; margin-right: 0.1rem; line-height: 1; min-width: 0;
+      background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 4px;
+      color: var(--pico-color); cursor: pointer; box-shadow: none;
+    }
+    .actions button:hover { background: var(--pico-muted-border-color); }
+    .actions button:disabled { opacity: 0.3; cursor: not-allowed; background: none; }
+    a.link-disabled { pointer-events: none; opacity: 0.4; }
+    .log-link { cursor: pointer; color: var(--pico-primary); text-decoration: underline; font-size: 0.85rem; }
+    .empty-state { text-align: center; padding: 2rem; color: var(--pico-muted-color); }
+    /* Log side panel */
+    .drawer {
+      width: 0; overflow: hidden; background: var(--pico-background-color);
+      border-left: 1px solid var(--pico-muted-border-color);
+      display: flex; flex-direction: column; transition: width 0.2s ease;
+    }
+    .drawer.active { width: 50%; min-width: 400px; }
+    .drawer-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.75rem 1rem; border-bottom: 1px solid var(--pico-muted-border-color);
+    }
+    .drawer-header h4 { margin: 0; font-size: 0.95rem; }
+    .drawer-header .drawer-actions { display: flex; gap: 0.5rem; align-items: center; }
+    .drawer-header button { padding: 0.25rem 0.6rem; font-size: 0.8rem; }
+    .drawer-header select { padding: 0.2rem 0.4rem; font-size: 0.8rem; margin: 0; }
+    .btn-tail { font-size: 0.75rem !important; padding: 0.2rem 0.5rem !important; border-radius: 4px; }
+    .btn-tail.active { background: #2e7d32; color: #fff; border-color: #2e7d32; }
+    .drawer-body {
+      flex: 1; overflow: hidden; background: #1e1e1e; color: #d4d4d4;
+      font-family: monospace; font-size: 0.8rem;
+      position: relative;
+    }
+    .vscroll-viewport {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      overflow-y: auto; overflow-x: hidden;
+    }
+    .vscroll-line {
+      height: 20px; line-height: 20px; padding: 0 0.75rem;
+      white-space: pre; overflow: hidden; text-overflow: ellipsis;
+    }
+    .vscroll-line:hover { background: rgba(255,255,255,0.05); white-space: pre-wrap; word-break: break-all; height: auto; min-height: 20px; }
+    .vscroll-status {
+      position: absolute; bottom: 8px; right: 20px; background: rgba(0,0,0,0.7);
+      color: #aaa; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-title">runui</div>
+    <ul class="topbar-tabs">
+      <li><a href="#build" data-tab="build" class="active">Build</a></li>
+      <li><a href="#run" data-tab="run">Run</a></li>
+    </ul>
+    <div class="topbar-spacer"></div>
+    <button class="theme-toggle" id="theme-toggle" onclick="_runuiToggleTheme()" title="Toggle dark mode"></button>
+  </div>
+  <div class="app-layout">
+    <main>
+      <div id="tab-build" class="tab-content active">
+        <table id="build-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Type</th><th>Status</th><th>Duration</th>
+              <th>Last Build</th><th>Builds</th><th>Error</th><th>Logs</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="tab-run" class="tab-content">
+        <table id="run-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>State</th><th>PID</th><th>Uptime</th>
+              <th>Restarts</th><th>Links</th><th>Logs</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- Log side panel -->
+    <div id="log-drawer" class="drawer">
+      <div class="drawer-header">
+        <h4 id="drawer-title">Logs</h4>
+        <div class="drawer-actions">
+          <button id="btn-tail" class="btn-tail active" onclick="_runuiToggleTail()">Tail: ON</button>
+          <button onclick="_runuiCloseDrawer()">Close</button>
+        </div>
+      </div>
+      <div id="drawer-body" class="drawer-body">
+        <div id="vscroll-viewport" class="vscroll-viewport">
+          <div id="vscroll-top-pad"></div>
+          <div id="vscroll-content"></div>
+          <div id="vscroll-bottom-pad"></div>
+        </div>
+        <div id="vscroll-status" class="vscroll-status"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function() {
+  // Theme toggle
+  function getTheme() {
+    return document.documentElement.getAttribute('data-theme') || 'light';
+  }
+  function updateThemeButton() {
+    document.getElementById('theme-toggle').textContent = getTheme() === 'dark' ? '\u2600\uFE0F' : '\uD83C\uDF19';
+  }
+  function toggleTheme() {
+    var next = getTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('runui-theme', next);
+    updateThemeButton();
+  }
+  updateThemeButton();
+  window._runuiToggleTheme = toggleTheme;
+
+  // Tab switching
+  const tabLinks = document.querySelectorAll('.topbar-tabs a');
+  const tabContents = document.querySelectorAll('.tab-content');
+
+  function switchTab(tabName) {
+    tabLinks.forEach(a => a.classList.toggle('active', a.dataset.tab === tabName));
+    tabContents.forEach(el => el.classList.toggle('active', el.id === 'tab-' + tabName));
+  }
+
+  tabLinks.forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      const tab = a.dataset.tab;
+      window.location.hash = tab;
+      switchTab(tab);
+    });
+  });
+
+  // Restore tab from hash
+  const hash = window.location.hash.replace('#', '');
+  if (hash === 'build' || hash === 'run') switchTab(hash);
+
+  // Relative time formatting
+  function relTime(isoStr) {
+    if (!isoStr) return '\u2014';
+    const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+    if (diff < 0) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ' + (diff % 60) + 's ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ' + Math.floor((diff % 3600) / 60) + 'm ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+
+  function fmtDuration(secs) {
+    if (secs == null) return '\u2014';
+    if (secs < 1) return (secs * 1000).toFixed(0) + 'ms';
+    if (secs < 60) return secs.toFixed(1) + 's';
+    return Math.floor(secs / 60) + 'm ' + (secs % 60).toFixed(0) + 's';
+  }
+
+  function badge(text, cls) {
+    return '<span class="badge badge-' + (cls || text) + '">' + text + '</span>';
+  }
+
+  function escHtml(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // Action helpers
+  function postAction(name, action) {
+    fetch('/api/targets/' + encodeURIComponent(name) + '/' + action, { method: 'POST' })
+      .then(() => poll())
+      .catch(err => console.error(err));
+  }
+
+  window._runuiAction = postAction;
+
+  // Virtual-scroll log viewer
+  const LINE_HEIGHT = 20;
+  const FETCH_BUFFER = 100;    // extra lines to fetch above/below visible
+  const CACHE_BUFFER = 500;    // lines to keep in cache beyond visible
+  const FETCH_CHUNK = 500;     // lines per fetch request
+  const POLL_INTERVAL = 2000;  // ms between tail polls
+  const BOTTOM_PAD_EXTRA = 80; // px of breathing room below last line
+
+  let drawerTarget = '';
+  let drawerStage = '';
+  let vscrollState = null;
+
+  let autoTail = true;
+
+  function openDrawer(name, stage) {
+    drawerTarget = name;
+    drawerStage = stage;
+    document.getElementById('drawer-title').textContent = name + ' \u2014 ' + stage + ' logs';
+    document.getElementById('log-drawer').classList.add('active');
+    autoTail = true;
+    updateTailButton();
+    vscrollInit();
+  }
+
+  function closeDrawer() {
+    document.getElementById('log-drawer').classList.remove('active');
+    if (vscrollState) {
+      clearInterval(vscrollState.pollTimer);
+      vscrollState = null;
+    }
+    drawerTarget = '';
+    drawerStage = '';
+  }
+
+  function toggleTail() {
+    autoTail = !autoTail;
+    updateTailButton();
+    if (vscrollState) {
+      if (autoTail) {
+        // Re-enable: start polling, scroll to bottom
+        clearInterval(vscrollState.pollTimer);
+        vscrollState.pollTimer = setInterval(vscrollPoll, POLL_INTERVAL);
+        vscrollState.followTail = true;
+        const viewport = document.getElementById('vscroll-viewport');
+        viewport.scrollTop = viewport.scrollHeight;
+        vscrollPoll();
+      } else {
+        // Disable: stop polling, stop following
+        clearInterval(vscrollState.pollTimer);
+        vscrollState.followTail = false;
+        vscrollOnScroll(); // update status text
+      }
+    }
+  }
+
+  function updateTailButton() {
+    const btn = document.getElementById('btn-tail');
+    btn.textContent = 'Tail: ' + (autoTail ? 'ON' : 'OFF');
+    btn.classList.toggle('active', autoTail);
+  }
+
+  function vscrollInit() {
+    const viewport = document.getElementById('vscroll-viewport');
+    const topPad = document.getElementById('vscroll-top-pad');
+    const content = document.getElementById('vscroll-content');
+    const bottomPad = document.getElementById('vscroll-bottom-pad');
+    const status = document.getElementById('vscroll-status');
+
+    content.innerHTML = '';
+    topPad.style.height = '0px';
+    bottomPad.style.height = '0px';
+    status.textContent = 'Loading...';
+
+    if (vscrollState) clearInterval(vscrollState.pollTimer);
+
+    vscrollState = {
+      totalLines: 0,
+      cache: new Map(),
+      renderedFirst: 0,
+      renderedLast: 0,
+      fetching: false,
+      followTail: true,
+      pollTimer: null,
+      lastFetchRange: null,
+    };
+
+    // Remove old scroll listener, add new one
+    viewport.onscroll = null;
+    let scrollRaf = null;
+    viewport.addEventListener('scroll', function() {
+      if (!scrollRaf) {
+        scrollRaf = requestAnimationFrame(function() {
+          scrollRaf = null;
+          vscrollOnScroll();
+        });
+      }
+    });
+
+    // Initial fetch — get totalLines first
+    const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage + '&offset=0&limit=0';
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          status.textContent = 'Error: ' + data.error;
+          return;
+        }
+        vscrollState.totalLines = data.totalLines || 0;
+        vscrollUpdateHeight();
+        if (vscrollState.totalLines === 0) {
+          status.textContent = '(empty)';
+          return;
+        }
+        // Scroll to bottom (tail)
+        vscrollState.followTail = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        vscrollOnScroll();
+      })
+      .catch(err => {
+        status.textContent = 'Fetch error: ' + err;
+      });
+
+    // Start polling for new lines (if auto-tail is on)
+    if (autoTail) {
+      vscrollState.pollTimer = setInterval(vscrollPoll, POLL_INTERVAL);
+    }
+  }
+
+  function vscrollUpdateHeight() {
+    if (!vscrollState) return;
+    const viewport = document.getElementById('vscroll-viewport');
+    const topPad = document.getElementById('vscroll-top-pad');
+    const content = document.getElementById('vscroll-content');
+    const bottomPad = document.getElementById('vscroll-bottom-pad');
+    // Total virtual height = all lines + top/content/bottom
+    const totalH = vscrollState.totalLines * LINE_HEIGHT;
+    // We set the pads so the overall scrollable height is totalH
+    const contentH = content.offsetHeight || 0;
+    const topH = parseInt(topPad.style.height) || 0;
+    bottomPad.style.height = Math.max(0, totalH - topH - contentH) + BOTTOM_PAD_EXTRA + 'px';
+  }
+
+  function vscrollOnScroll() {
+    if (!vscrollState || vscrollState.totalLines === 0) return;
+    const viewport = document.getElementById('vscroll-viewport');
+    const viewH = viewport.clientHeight;
+    const scrollTop = viewport.scrollTop;
+    const totalH = vscrollState.totalLines * LINE_HEIGHT;
+
+    // Detect if at bottom (only follow if autoTail is on)
+    if (autoTail) {
+      vscrollState.followTail = (scrollTop + viewH >= totalH + BOTTOM_PAD_EXTRA - LINE_HEIGHT);
+    } else {
+      vscrollState.followTail = false;
+    }
+
+    const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
+    const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+
+    const fetchFirst = Math.max(0, firstVisible - FETCH_BUFFER);
+    const fetchLast = Math.min(vscrollState.totalLines - 1, lastVisible + FETCH_BUFFER);
+
+    // Check if we need to fetch
+    let needFetch = false;
+    for (let i = firstVisible; i <= lastVisible; i++) {
+      if (!vscrollState.cache.has(i)) { needFetch = true; break; }
+    }
+
+    if (needFetch && !vscrollState.fetching) {
+      vscrollFetchRange(fetchFirst, fetchLast);
+    } else {
+      vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
+    }
+
+    // Update status
+    const status = document.getElementById('vscroll-status');
+    status.textContent = (firstVisible + 1) + '-' + (lastVisible + 1) + ' / ' + vscrollState.totalLines +
+      (vscrollState.followTail ? ' (following)' : '') +
+      (!autoTail ? ' (paused)' : '');
+  }
+
+  function vscrollFetchRange(fetchFirst, fetchLast) {
+    if (!vscrollState || vscrollState.fetching) return;
+
+    // Find the actual missing range
+    let missStart = fetchFirst, missEnd = fetchLast;
+    // Shrink from start
+    while (missStart <= fetchLast && vscrollState.cache.has(missStart)) missStart++;
+    // Shrink from end
+    while (missEnd >= missStart && vscrollState.cache.has(missEnd)) missEnd--;
+
+    if (missStart > missEnd) {
+      // All cached — just render
+      const viewport = document.getElementById('vscroll-viewport');
+      const viewH = viewport.clientHeight;
+      const scrollTop = viewport.scrollTop;
+      const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
+      const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+      vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
+      return;
+    }
+
+    // Always fetch at least FETCH_CHUNK lines to avoid tiny requests
+    const missCount = missEnd - missStart + 1;
+    let offset, limit;
+    if (missCount >= FETCH_CHUNK) {
+      offset = missStart;
+      limit = FETCH_CHUNK;
+    } else {
+      // Center the chunk around the missing range
+      const center = Math.floor((missStart + missEnd) / 2);
+      offset = Math.max(0, center - Math.floor(FETCH_CHUNK / 2));
+      limit = Math.min(FETCH_CHUNK, vscrollState.totalLines - offset);
+    }
+
+    vscrollState.fetching = true;
+    const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage +
+      '&offset=' + offset + '&limit=' + limit;
+
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (!vscrollState) return;
+        vscrollState.fetching = false;
+
+        if (data.error) return;
+
+        // Update totalLines if server reports newer count
+        if (data.totalLines && data.totalLines > vscrollState.totalLines) {
+          vscrollState.totalLines = data.totalLines;
+          vscrollUpdateHeight();
+        }
+
+        const lines = data.lines || [];
+        const base = data.offset != null ? data.offset : offset;
+        for (let i = 0; i < lines.length; i++) {
+          vscrollState.cache.set(base + i, lines[i]);
+        }
+
+        // Evict far-away cache entries
+        vscrollEvictCache(fetchFirst, fetchLast);
+
+        // Re-render
+        const viewport = document.getElementById('vscroll-viewport');
+        const viewH = viewport.clientHeight;
+        const scrollTop = viewport.scrollTop;
+        const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
+        const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+        vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
+      })
+      .catch(() => {
+        if (vscrollState) vscrollState.fetching = false;
+      });
+  }
+
+  function vscrollEvictCache(keepFirst, keepLast) {
+    if (!vscrollState) return;
+    const lo = keepFirst - CACHE_BUFFER;
+    const hi = keepLast + CACHE_BUFFER;
+    for (const key of vscrollState.cache.keys()) {
+      if (key < lo || key > hi) vscrollState.cache.delete(key);
+    }
+  }
+
+  function vscrollRender(firstVisible, lastVisible, renderFirst, renderLast) {
+    if (!vscrollState) return;
+    const topPad = document.getElementById('vscroll-top-pad');
+    const content = document.getElementById('vscroll-content');
+    const bottomPad = document.getElementById('vscroll-bottom-pad');
+
+    // Clamp render range to what's cached
+    const rf = Math.max(0, renderFirst);
+    const rl = Math.min(vscrollState.totalLines - 1, renderLast);
+
+    topPad.style.height = (rf * LINE_HEIGHT) + 'px';
+
+    // Build HTML for rendered lines
+    let html = '';
+    for (let i = rf; i <= rl; i++) {
+      const text = vscrollState.cache.has(i) ? escHtml(vscrollState.cache.get(i)) : '';
+      html += '<div class="vscroll-line">' + text + '</div>';
+    }
+    content.innerHTML = html;
+
+    const renderedCount = rl - rf + 1;
+    bottomPad.style.height = Math.max(0, (vscrollState.totalLines - rf - renderedCount) * LINE_HEIGHT) + BOTTOM_PAD_EXTRA + 'px';
+
+    vscrollState.renderedFirst = rf;
+    vscrollState.renderedLast = rl;
+  }
+
+  function vscrollPoll() {
+    if (!vscrollState || !drawerTarget) return;
+    // Just fetch totalLines
+    const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage + '&offset=0&limit=0';
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (!vscrollState || data.error) return;
+        const newTotal = data.totalLines || 0;
+        if (newTotal > vscrollState.totalLines) {
+          const wasFollowing = vscrollState.followTail;
+          vscrollState.totalLines = newTotal;
+          vscrollUpdateHeight();
+          if (wasFollowing) {
+            const viewport = document.getElementById('vscroll-viewport');
+            viewport.scrollTop = viewport.scrollHeight;
+          }
+          vscrollOnScroll();
+        }
+      })
+      .catch(() => {});
+  }
+
+  window._runuiOpenDrawer = openDrawer;
+  window._runuiCloseDrawer = closeDrawer;
+  window._runuiToggleTail = toggleTail;
+
+  // Rendering
+  function renderBuildTable(targets) {
+    const tbody = document.querySelector('#build-table tbody');
+    const filtered = targets.filter(t => t.has_build);
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No build targets</td></tr>';
+      return;
+    }
+    tbody.innerHTML = filtered.map(t => {
+      const statusText = t.last_exec_result || (t.state === 'starting' ? 'building' : 'pending');
+      const statusCls = statusText === 'building' ? 'starting' : statusText;
+      const buildBtn = '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>';
+
+      const hasLogs = t.logs && t.logs.build;
+      const logsCell = hasLogs
+        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'build\')">build</span>'
+        : '\u2014';
+
+      return '<tr>' +
+        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
+        '<td>' + escHtml(t.type) + '</td>' +
+        '<td>' + badge(statusText, statusCls) + '</td>' +
+        '<td>' + fmtDuration(t.last_exec_duration_secs) + '</td>' +
+        '<td>' + relTime(t.last_exec_time) + '</td>' +
+        '<td>' + t.build_count + '</td>' +
+        '<td class="wrap">' + (t.last_exec_error ? '<span class="error-text">' + escHtml(t.last_exec_error) + '</span>' : '\u2014') + '</td>' +
+        '<td>' + logsCell + '</td>' +
+        '<td class="actions">' + buildBtn + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderRunTable(targets) {
+    const tbody = document.querySelector('#run-table tbody');
+    const filtered = targets.filter(t => t.has_run);
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No run targets</td></tr>';
+      return;
+    }
+    tbody.innerHTML = filtered.map(t => {
+      const isRunning = t.state === 'running';
+      const canStart = t.state !== 'running' && t.state !== 'starting';
+      const canStop = t.state === 'running' || t.state === 'starting';
+
+      const links = (t.links || []).map(l => {
+        const cls = isRunning ? '' : ' class="link-disabled"';
+        return '<a href="' + escHtml(l.url) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
+      }).join(' ');
+
+      const hasLogs = t.logs && t.logs.run;
+      const logsCell = hasLogs
+        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'run\')">output</span>'
+        : '\u2014';
+
+      const actions =
+        '<button title="Start" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'start\')"' + (canStart ? '' : ' disabled') + '>\u25B6</button>' +
+        '<button title="Stop" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'stop\')"' + (canStop ? '' : ' disabled') + '>\u25A0</button>' +
+        '<button title="Restart" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'restart\')"' + (isRunning ? '' : ' disabled') + '>\u21BB</button>';
+
+      return '<tr>' +
+        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
+        '<td>' + badge(t.state) + '</td>' +
+        '<td>' + (t.pid || '\u2014') + '</td>' +
+        '<td>' + relTime(t.last_start_time) + '</td>' +
+        '<td>' + t.restart_count + '</td>' +
+        '<td>' + (links || '\u2014') + '</td>' +
+        '<td>' + logsCell + '</td>' +
+        '<td class="actions">' + actions + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // Polling
+  let pollTimer;
+  function poll() {
+    fetch('/api/targets')
+      .then(r => r.json())
+      .then(targets => {
+        if (!Array.isArray(targets)) return;
+        targets.sort((a, b) => a.name.localeCompare(b.name));
+        renderBuildTable(targets);
+        renderRunTable(targets);
+      })
+      .catch(err => console.error('poll error:', err));
+  }
+
+  poll();
+  pollTimer = setInterval(poll, 2000);
+})();
+</script>
+</body>
+</html>

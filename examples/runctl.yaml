@@ -1,0 +1,22 @@
+env:
+  PORT: "8080"
+logs_dir: /tmp/runctl
+api:
+  port: 9100
+
+targets:
+  hello-go:
+    type: gorun
+    config: hello-go/gorun.yaml
+    links:
+      - name: HTTP
+        url: "http://localhost:$PORT"
+
+  build-css:
+    config: build-css/execrun.yaml
+
+  echo-server:
+    config: echo-server/execrun.yaml
+
+  ticker:
+    config: ticker/execrun.yaml

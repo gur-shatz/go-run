@@ -1,0 +1,42 @@
+# execrun.yaml - file watcher configuration
+# See: https://github.com/gur-shatz/go-run
+
+# File patterns to watch (gitignore-style globs)
+watch:
+  - "**/*.go"
+  - "go.mod"
+  - "go.sum"
+
+# Build commands — preparation steps that run to completion.
+# If any step fails, the previous process keeps running.
+build:
+  - "go build -o ./bin/app ."
+
+# Exec commands — the last command is the long-running managed process.
+# If exec is empty, the target is build-only (no managed process).
+exec:
+  - "./bin/app"
+
+# Examples:
+#
+# Build-only (no managed process):
+#   build:
+#     - "npm run build"
+#     - "echo done"
+#
+# Run-only (no build steps):
+#   exec:
+#     - "python app.py"
+#
+# Go with code generation:
+#   build:
+#     - "go generate ./..."
+#     - "go build -o ./bin/app ."
+#   exec:
+#     - "./bin/app"
+#
+# Node.js with TypeScript:
+#   build:
+#     - "npm run build"
+#   exec:
+#     - "node dist/index.js"

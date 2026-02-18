@@ -1,0 +1,9 @@
+watch:
+  - "*.sh"
+build:
+  - /bin/sleep 10
+  - echo done 10
+  - /bin/sleep 10
+  - echo done 20
+exec:
+  - sh server.sh

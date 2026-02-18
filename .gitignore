@@ -1,0 +1,16 @@
+
+# Test binaries
+*.test
+examples/**/*.sum
+
+# OS files
+.DS_Store
+
+# IDE / tools
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+bin/
+

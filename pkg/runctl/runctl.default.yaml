@@ -1,0 +1,31 @@
+# runctl.yaml — multi-target orchestrator
+# See: https://github.com/gur-shatz/go-run
+#
+# Each target only requires "config" — everything else is optional:
+#   config:  path to config file, relative to runctl.yaml's directory (required)
+#            - execrun: path/to/execrun.yaml (watch patterns + build/exec commands)
+#            - gorun:   path/to/gorun.yaml   (build target, flags, watch patterns)
+#   type:    "execrun" (default) or "gorun"
+#   enabled: start on launch (default: true)
+#   links:   named URLs for the target (default: [])
+#
+# logs_dir: redirect all target output to log files under this directory.
+#           Creates two files per target: <target>.build.log and <target>.run.log.
+
+api:
+  port: 9100  # HTTP API port
+
+# logs_dir: /tmp/runctl-logs
+
+targets:
+  my-app:
+    config: "my-app/execrun.yaml"
+    # type: execrun             # default
+    # enabled: true             # default
+    # links:
+    #   - name: "App"
+    #     url: "http://localhost:8080"
+
+  # go-service:
+  #   type: gorun
+  #   config: "services/api/gorun.yaml"
