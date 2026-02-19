@@ -7,7 +7,10 @@
 #            - gorun:   path/to/gorun.yaml   (build target, flags, watch patterns)
 #   type:    "execrun" (default) or "gorun"
 #   enabled: start on launch (default: true)
-#   links:   named URLs for the target (default: [])
+#   links:   named URLs or file paths for the target (default: [])
+#            - url link:  { name: "App", url: "http://localhost:8080" }
+#            - file link: { name: "Config", file: "./config.yaml" }
+#            Each link must have exactly one of "url" or "file" (not both).
 #
 # logs_dir: redirect all target output to log files under this directory.
 #           Creates two files per target: <target>.build.log and <target>.run.log.
@@ -25,6 +28,8 @@ targets:
     # links:
     #   - name: "App"
     #     url: "http://localhost:8080"
+    #   - name: "Config"
+    #     file: "./my-app/config.yaml"
 
   # go-service:
   #   type: gorun

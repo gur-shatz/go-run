@@ -24,6 +24,7 @@ func (this *Controller) Routes() chi.Router {
 	r.Post("/targets/{name}/enable", this.handleEnableTarget)
 	r.Post("/targets/{name}/disable", this.handleDisableTarget)
 	r.Get("/targets/{name}/logs", this.handleGetLogs)
+	r.Get("/file", this.handleServeFile)
 
 	return r
 }
@@ -208,6 +209,22 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		"lines": result,
 		"file":  path,
 	})
+}
+
+func (this *Controller) handleServeFile(w http.ResponseWriter, r *http.Request) {
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		writeError(w, http.StatusBadRequest, "path parameter is required")
+		return
+	}
+
+	allowed := this.AllowedFilePaths()
+	if !allowed[filePath] {
+		writeError(w, http.StatusForbidden, "file not in allowed link paths")
+		return
+	}
+
+	http.ServeFile(w, r, filePath)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -403,6 +404,17 @@ func (this *target) Status() TargetStatus {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 
+	// Populate ResolvedURL for each link
+	links := make([]Link, len(this.tcfg.Links))
+	copy(links, this.tcfg.Links)
+	for i := range links {
+		if links[i].File != "" {
+			links[i].ResolvedURL = "/api/file?path=" + url.QueryEscape(links[i].File)
+		} else {
+			links[i].ResolvedURL = links[i].URL
+		}
+	}
+
 	return TargetStatus{
 		Name:             this.name,
 		Type:             this.tcfg.EffectiveType(),
@@ -418,7 +430,7 @@ func (this *target) Status() TargetStatus {
 		LastStartTime:    this.lastStartTime,
 		RestartCount:     this.restartCount,
 		BuildCount:       this.buildCount,
-		Links:            this.tcfg.Links,
+		Links:            links,
 		Logs:             this.tcfg.Logs,
 	}
 }

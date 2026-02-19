@@ -35,10 +35,12 @@ type TargetConfig struct {
 	Logs *LogsConfig `yaml:"-"`
 }
 
-// Link is a named URL associated with a target.
+// Link is a named URL or file path associated with a target.
 type Link struct {
-	Name string `yaml:"name" json:"name"`
-	URL  string `yaml:"url"  json:"url"`
+	Name        string `yaml:"name"              json:"name"`
+	URL         string `yaml:"url,omitempty"      json:"url,omitempty"`
+	File        string `yaml:"file,omitempty"     json:"file,omitempty"`
+	ResolvedURL string `yaml:"-"                  json:"resolved_url,omitempty"`
 }
 
 // LogsConfig holds resolved log file paths for a target.
@@ -100,6 +102,18 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.LogsDir = filepath.Join(filepath.Dir(path), cfg.LogsDir)
 	}
 
+	configDir := filepath.Dir(path)
+
+	// Resolve relative file paths in links
+	for name, t := range cfg.Targets {
+		for i, link := range t.Links {
+			if link.File != "" && !filepath.IsAbs(link.File) {
+				t.Links[i].File = filepath.Join(configDir, link.File)
+			}
+		}
+		cfg.Targets[name] = t
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -134,6 +148,18 @@ func (this *Config) Validate() error {
 			// valid
 		default:
 			return fmt.Errorf("target %q: unknown type %q (must be \"execrun\" or \"gorun\")", name, t.Type)
+		}
+
+		// Validate links: each must have exactly one of url or file
+		for i, link := range t.Links {
+			hasURL := link.URL != ""
+			hasFile := link.File != ""
+			if hasURL && hasFile {
+				return fmt.Errorf("target %q: link %d (%q): cannot specify both url and file", name, i, link.Name)
+			}
+			if !hasURL && !hasFile {
+				return fmt.Errorf("target %q: link %d (%q): must specify either url or file", name, i, link.Name)
+			}
 		}
 
 		// Populate log paths from logs_dir

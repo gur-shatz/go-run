@@ -199,6 +199,109 @@ targets:
 		})
 	})
 
+	Describe("Link validation", func() {
+		It("accepts a link with url only", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  app:
+    config: "app/execrun.yaml"
+    links:
+      - name: "App"
+        url: "http://localhost:8080"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Targets["app"].Links[0].URL).To(Equal("http://localhost:8080"))
+			Expect(cfg.Targets["app"].Links[0].File).To(BeEmpty())
+		})
+
+		It("accepts a link with file only and resolves relative path", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  app:
+    config: "app/execrun.yaml"
+    links:
+      - name: "Config"
+        file: "./config.yaml"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Targets["app"].Links[0].File).To(Equal(filepath.Join(dir, "config.yaml")))
+		})
+
+		It("rejects a link with both url and file", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  app:
+    config: "app/execrun.yaml"
+    links:
+      - name: "Bad"
+        url: "http://localhost:8080"
+        file: "./config.yaml"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = runctl.LoadConfig(cfgPath)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cannot specify both url and file"))
+		})
+
+		It("rejects a link with neither url nor file", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  app:
+    config: "app/execrun.yaml"
+    links:
+      - name: "Empty"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = runctl.LoadConfig(cfgPath)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must specify either url or file"))
+		})
+
+		It("keeps absolute file paths unchanged", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  app:
+    config: "app/execrun.yaml"
+    links:
+      - name: "Config"
+        file: "/absolute/path/config.yaml"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Targets["app"].Links[0].File).To(Equal("/absolute/path/config.yaml"))
+		})
+	})
+
 	Describe("TargetConfig.IsEnabled", func() {
 		It("defaults to true when Enabled is nil", func() {
 			tc := runctl.TargetConfig{Config: "execrun.yaml"}

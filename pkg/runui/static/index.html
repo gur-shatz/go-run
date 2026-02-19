@@ -610,8 +610,9 @@
       const canStop = t.state === 'running' || t.state === 'starting';
 
       const links = (t.links || []).map(l => {
+        const href = l.resolved_url || l.url || '#';
         const cls = isRunning ? '' : ' class="link-disabled"';
-        return '<a href="' + escHtml(l.url) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
+        return '<a href="' + escHtml(href) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
       }).join(' ');
 
       const hasLogs = t.logs && t.logs.run;

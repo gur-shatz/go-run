@@ -181,6 +181,23 @@ func (this *Controller) DisableTarget(name string) error {
 	return nil
 }
 
+// AllowedFilePaths returns the set of absolute file paths from link configs.
+// Used to restrict which files the /api/file endpoint can serve.
+func (this *Controller) AllowedFilePaths() map[string]bool {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	allowed := make(map[string]bool)
+	for _, t := range this.targets {
+		for _, link := range t.tcfg.Links {
+			if link.File != "" {
+				allowed[link.File] = true
+			}
+		}
+	}
+	return allowed
+}
+
 // Status returns the status of all targets.
 func (this *Controller) Status() []TargetStatus {
 	this.mu.RLock()
