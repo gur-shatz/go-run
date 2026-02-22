@@ -260,6 +260,7 @@
   let vscrollState = null;
 
   let autoTail = true;
+  let scrollAbortCtrl = null;
 
   function openDrawer(name, stage) {
     drawerTarget = name;
@@ -326,15 +327,18 @@
       totalLines: 0,
       cache: new Map(),
       renderedFirst: 0,
-      renderedLast: 0,
+      renderedLast: -1,
       fetching: false,
       followTail: true,
       pollTimer: null,
       lastFetchRange: null,
+      rendering: false,
     };
 
-    // Remove old scroll listener, add new one
-    viewport.onscroll = null;
+    // Remove old scroll listener via AbortController, add new one
+    if (scrollAbortCtrl) scrollAbortCtrl.abort();
+    scrollAbortCtrl = new AbortController();
+    var ac = scrollAbortCtrl;
     let scrollRaf = null;
     viewport.addEventListener('scroll', function() {
       if (!scrollRaf) {
@@ -343,7 +347,7 @@
           vscrollOnScroll();
         });
       }
-    });
+    }, { signal: ac.signal });
 
     // Initial fetch — get totalLines first
     const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage + '&offset=0&limit=0';
@@ -377,20 +381,18 @@
 
   function vscrollUpdateHeight() {
     if (!vscrollState) return;
-    const viewport = document.getElementById('vscroll-viewport');
     const topPad = document.getElementById('vscroll-top-pad');
-    const content = document.getElementById('vscroll-content');
     const bottomPad = document.getElementById('vscroll-bottom-pad');
-    // Total virtual height = all lines + top/content/bottom
+    // All height math based purely on line counts, never DOM measurement
     const totalH = vscrollState.totalLines * LINE_HEIGHT;
-    // We set the pads so the overall scrollable height is totalH
-    const contentH = content.offsetHeight || 0;
     const topH = parseInt(topPad.style.height) || 0;
+    const renderedCount = vscrollState.renderedLast - vscrollState.renderedFirst + 1;
+    const contentH = Math.max(0, renderedCount) * LINE_HEIGHT;
     bottomPad.style.height = Math.max(0, totalH - topH - contentH) + BOTTOM_PAD_EXTRA + 'px';
   }
 
   function vscrollOnScroll() {
-    if (!vscrollState || vscrollState.totalLines === 0) return;
+    if (!vscrollState || vscrollState.totalLines === 0 || vscrollState.rendering) return;
     const viewport = document.getElementById('vscroll-viewport');
     const viewH = viewport.clientHeight;
     const scrollTop = viewport.scrollTop;
@@ -513,6 +515,7 @@
 
   function vscrollRender(firstVisible, lastVisible, renderFirst, renderLast) {
     if (!vscrollState) return;
+    const viewport = document.getElementById('vscroll-viewport');
     const topPad = document.getElementById('vscroll-top-pad');
     const content = document.getElementById('vscroll-content');
     const bottomPad = document.getElementById('vscroll-bottom-pad');
@@ -520,6 +523,10 @@
     // Clamp render range to what's cached
     const rf = Math.max(0, renderFirst);
     const rl = Math.min(vscrollState.totalLines - 1, renderLast);
+
+    // Guard: prevent scroll events triggered by DOM changes from re-entering
+    vscrollState.rendering = true;
+    const savedScrollTop = viewport.scrollTop;
 
     topPad.style.height = (rf * LINE_HEIGHT) + 'px';
 
@@ -536,6 +543,13 @@
 
     vscrollState.renderedFirst = rf;
     vscrollState.renderedLast = rl;
+
+    // Restore scroll position if DOM changes shifted it
+    if (!vscrollState.followTail && viewport.scrollTop !== savedScrollTop) {
+      viewport.scrollTop = savedScrollTop;
+    }
+
+    vscrollState.rendering = false;
   }
 
   function vscrollPoll() {
@@ -548,12 +562,18 @@
         if (!vscrollState || data.error) return;
         const newTotal = data.totalLines || 0;
         if (newTotal > vscrollState.totalLines) {
+          const viewport = document.getElementById('vscroll-viewport');
           const wasFollowing = vscrollState.followTail;
+          const savedScrollTop = viewport.scrollTop;
+
           vscrollState.totalLines = newTotal;
           vscrollUpdateHeight();
+
           if (wasFollowing) {
-            const viewport = document.getElementById('vscroll-viewport');
             viewport.scrollTop = viewport.scrollHeight;
+          } else {
+            // Preserve scroll position — new lines only extend the bottom
+            viewport.scrollTop = savedScrollTop;
           }
           vscrollOnScroll();
         }
