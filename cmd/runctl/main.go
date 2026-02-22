@@ -211,7 +211,8 @@ type targetEntry struct {
 }
 
 // loadExecrunConfig loads an execrun config for a target, merging parent vars.
-func loadExecrunConfig(entry targetEntry, cfg *runctl.Config, baseDir string) (*execrun.Config, string, error) {
+// Returns the config, root directory, and resolved vars from the execrun config's vars: section.
+func loadExecrunConfig(entry targetEntry, cfg *runctl.Config, baseDir string) (*execrun.Config, string, map[string]string, error) {
 	dir := filepath.Dir(entry.Config.Config)
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(baseDir, dir)
@@ -231,11 +232,11 @@ func loadExecrunConfig(entry targetEntry, cfg *runctl.Config, baseDir string) (*
 		configOpts = append(configOpts, config.WithVars(parentVars))
 	}
 
-	ecfg, _, err := execrun.LoadConfig(configPath, configOpts...)
+	ecfg, execrunVars, err := execrun.LoadConfig(configPath, configOpts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("target %q: load config: %w", entry.Name, err)
+		return nil, "", nil, fmt.Errorf("target %q: load config: %w", entry.Name, err)
 	}
-	return ecfg, dir, nil
+	return ecfg, dir, execrunVars, nil
 }
 
 func runBuild(configPath string, verbose bool, filterNames []string) error {
@@ -262,7 +263,7 @@ func runBuild(configPath string, verbose bool, filterNames []string) error {
 	var failed bool
 
 	for _, entry := range entries {
-		ecfg, dir, err := loadExecrunConfig(entry, cfg, absBase)
+		ecfg, dir, _, err := loadExecrunConfig(entry, cfg, absBase)
 		if err != nil {
 			log.Error("%s: %v", entry.Name, err)
 			failed = true
@@ -311,7 +312,7 @@ func runSum(configPath string, verbose bool, filterNames []string) error {
 	}
 
 	for _, entry := range entries {
-		ecfg, dir, err := loadExecrunConfig(entry, cfg, absBase)
+		ecfg, dir, _, err := loadExecrunConfig(entry, cfg, absBase)
 		if err != nil {
 			log.Error("%s: %v", entry.Name, err)
 			continue
@@ -349,6 +350,11 @@ func runVars(configPath string, filterNames []string) error {
 		return err
 	}
 
+	absBase, err := filepath.Abs(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+
 	// Print global vars
 	fmt.Println("Global vars:")
 	if len(cfg.ResolvedVars) == 0 {
@@ -364,7 +370,7 @@ func runVars(configPath string, filterNames []string) error {
 		}
 	}
 
-	// Print per-target vars (merged: global + target overrides)
+	// Print per-target vars (merged: global + target overrides + execrun vars)
 	for _, entry := range entries {
 		fmt.Printf("\nTarget %q vars:\n", entry.Name)
 
@@ -374,27 +380,50 @@ func runVars(configPath string, filterNames []string) error {
 
 		if len(merged) == 0 {
 			fmt.Println("  (none)")
-			continue
-		}
-
-		keys := make([]string, 0, len(merged))
-		for k := range merged {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			v := merged[k]
-			// Mark overridden vars
-			if _, isOverride := entry.Config.Vars[k]; isOverride {
-				if _, isGlobal := cfg.ResolvedVars[k]; isGlobal {
-					fmt.Printf("  %s=%s  (overridden)\n", k, v)
+		} else {
+			keys := make([]string, 0, len(merged))
+			for k := range merged {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				v := merged[k]
+				// Mark overridden vars
+				if _, isOverride := entry.Config.Vars[k]; isOverride {
+					if _, isGlobal := cfg.ResolvedVars[k]; isGlobal {
+						fmt.Printf("  %s=%s  (overridden)\n", k, v)
+						continue
+					}
+					fmt.Printf("  %s=%s  (target-only)\n", k, v)
 					continue
 				}
-				fmt.Printf("  %s=%s  (target-only)\n", k, v)
-				continue
+				fmt.Printf("  %s=%s\n", k, v)
 			}
-			fmt.Printf("  %s=%s\n", k, v)
 		}
+
+		// Load execrun config to show its vars: section
+		_, _, execrunVars, loadErr := loadExecrunConfig(entry, cfg, absBase)
+		if loadErr != nil {
+			fmt.Printf("  execrun vars: (error: %v)\n", loadErr)
+		} else if len(execrunVars) > 0 {
+			fmt.Printf("  execrun vars:\n")
+			keys := make([]string, 0, len(execrunVars))
+			for k := range execrunVars {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Printf("    %s=%s\n", k, execrunVars[k])
+			}
+		}
+	}
+
+	// Print environment variables
+	fmt.Println("\nEnvironment:")
+	envVars := os.Environ()
+	sort.Strings(envVars)
+	for _, e := range envVars {
+		fmt.Printf("  %s\n", e)
 	}
 
 	return nil
