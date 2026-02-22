@@ -141,6 +141,18 @@ func (this *Config) Validate() error {
 	return nil
 }
 
+// BuildSteps returns the build commands.
+func (this *Config) BuildSteps() []string { return this.Build }
+
+// ExecPrepSteps returns all exec commands except the last (preparation steps
+// that are logically part of the run phase, not the build phase).
+func (this *Config) ExecPrepSteps() []string {
+	if len(this.Exec) <= 1 {
+		return nil
+	}
+	return this.Exec[:len(this.Exec)-1]
+}
+
 // Steps returns all preparation commands: build commands followed by
 // all exec commands except the last (the managed process).
 func (this *Config) Steps() []string {
@@ -191,8 +203,25 @@ func newRunner(ctx context.Context, cfg Config, opts Options, rootDir string, lo
 	}
 }
 
-// execSteps runs all exec commands except the last (preparation steps).
-// Commands are cancelled if the runner's context is done.
+// runStep runs a single shell command with the given stdout/stderr writers.
+// The command is cancelled if the runner's context is done.
+func (this *runner) runStep(cmd string, stdout, stderr io.Writer) error {
+	this.log.Verbose("Running: %s", cmd)
+	c := exec.CommandContext(this.ctx, "sh", "-c", cmd)
+	c.Dir = this.rootDir
+	c.Stdout = stdout
+	c.Stderr = stderr
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.Cancel = func() error {
+		return killProcessGroup(c.Process, syscall.SIGTERM)
+	}
+	c.WaitDelay = 5 * time.Second
+	return c.Run()
+}
+
+// execSteps runs build steps and exec prep steps.
+// Build steps write to ExecStdout/ExecStderr (build log).
+// Exec prep steps write to Stdout/Stderr (run log).
 // Returns the total duration and any error.
 func (this *runner) execSteps() (time.Duration, error) {
 	if this.opts.OnExecStart != nil {
@@ -201,18 +230,20 @@ func (this *runner) execSteps() (time.Duration, error) {
 
 	start := time.Now()
 
-	for _, cmd := range this.cfg.Steps() {
-		this.log.Verbose("Running: %s", cmd)
-		c := exec.CommandContext(this.ctx, "sh", "-c", cmd)
-		c.Dir = this.rootDir
-		c.Stdout = this.opts.ExecStdout
-		c.Stderr = this.opts.ExecStderr
-		c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		c.Cancel = func() error {
-			return killProcessGroup(c.Process, syscall.SIGTERM)
+	// Phase 1: build steps → build log
+	for _, cmd := range this.cfg.BuildSteps() {
+		if err := this.runStep(cmd, this.opts.ExecStdout, this.opts.ExecStderr); err != nil {
+			dur := time.Since(start)
+			if this.opts.OnExecDone != nil {
+				this.opts.OnExecDone(dur, err)
+			}
+			return dur, fmt.Errorf("command %q failed: %w", cmd, err)
 		}
-		c.WaitDelay = 5 * time.Second
-		if err := c.Run(); err != nil {
+	}
+
+	// Phase 2: exec prep steps → run log
+	for _, cmd := range this.cfg.ExecPrepSteps() {
+		if err := this.runStep(cmd, this.stdout, this.stderr); err != nil {
 			dur := time.Since(start)
 			if this.opts.OnExecDone != nil {
 				this.opts.OnExecDone(dur, err)

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gur-shatz/go-run/internal/buildinfo"
 	"github.com/gur-shatz/go-run/internal/color"
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
@@ -39,6 +40,7 @@ func run() error {
 	combinedFile := fs.String("combined", "", "redirect both stdout and stderr to one file")
 
 	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "execrun %s\n\n", buildinfo.String())
 		fmt.Fprintf(os.Stderr, "Usage: execrun [flags] [command]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  init    Generate a starter config file\n")
