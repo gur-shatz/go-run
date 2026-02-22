@@ -12,6 +12,7 @@ import (
 
 	"github.com/gur-shatz/go-run/internal/cli"
 	"github.com/gur-shatz/go-run/internal/color"
+	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/pkg/gorun"
@@ -41,6 +42,7 @@ func run() error {
 	if configFile == "" {
 		configFile = cli.ConfigFileName("")
 	}
+	configFile = configutil.ResolveYAMLPath(configFile)
 
 	switch cfg.Command {
 	case cli.CommandInit:

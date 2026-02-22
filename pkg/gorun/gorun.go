@@ -33,12 +33,45 @@ type Config struct {
 
 // ParseArgs splits the Args string into build flags, build target, and app args
 // using the same logic as the CLI argument parser.
+// Supports shell-style quoting: double-quoted and single-quoted strings are
+// kept as a single token with the quotes stripped.
 func (this *Config) ParseArgs() (buildFlags []string, buildTarget string, appArgs []string) {
-	fields := strings.Fields(this.Args)
+	fields := shellSplit(this.Args)
 	if len(fields) == 0 {
 		return nil, "", nil
 	}
 	return cli.SplitBuildArgs(fields)
+}
+
+// shellSplit splits a string into tokens like a shell would, respecting
+// double-quoted and single-quoted substrings. Quotes are stripped from
+// the result. Supports -flag="value with spaces" (keeps as one token).
+func shellSplit(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case (c == ' ' || c == '\t' || c == '\n') && !inSingle && !inDouble:
+			if cur.Len() > 0 {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
 }
 
 // LoadConfig reads and parses a gorun YAML config file.

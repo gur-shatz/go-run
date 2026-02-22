@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/gur-shatz/go-run/internal/color"
+	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/pkg/runctl"
 )
@@ -50,6 +51,9 @@ func run() error {
 		}
 		return err
 	}
+
+	// Resolve .yml/.yaml fallback
+	*configPath = configutil.ResolveYAMLPath(*configPath)
 
 	args := fs.Args()
 	if len(args) > 0 {

@@ -119,6 +119,30 @@ exec:
 			Expect(target).To(BeEmpty())
 			Expect(appArgs).To(BeNil())
 		})
+
+		It("parses -ldflags with double-quoted value containing spaces", func() {
+			cfg := &gorun.Config{Args: `-ldflags="-X pkg.Branch=main -X pkg.Commit=abc123" cmd/server/main.go -c ../config.yml`}
+			flags, target, appArgs := cfg.ParseArgs()
+			Expect(flags).To(Equal([]string{"-ldflags=-X pkg.Branch=main -X pkg.Commit=abc123"}))
+			Expect(target).To(Equal("cmd/server/main.go"))
+			Expect(appArgs).To(Equal([]string{"-c", "../config.yml"}))
+		})
+
+		It("parses -ldflags with separate quoted value", func() {
+			cfg := &gorun.Config{Args: `-ldflags "-X pkg.Branch=main -X pkg.Commit=abc" ./cmd/server`}
+			flags, target, appArgs := cfg.ParseArgs()
+			Expect(flags).To(Equal([]string{"-ldflags", "-X pkg.Branch=main -X pkg.Commit=abc"}))
+			Expect(target).To(Equal("./cmd/server"))
+			Expect(appArgs).To(BeEmpty())
+		})
+
+		It("parses single-quoted values", func() {
+			cfg := &gorun.Config{Args: `-ldflags='-X pkg.A=1 -X pkg.B=2' ./cmd/server`}
+			flags, target, appArgs := cfg.ParseArgs()
+			Expect(flags).To(Equal([]string{"-ldflags=-X pkg.A=1 -X pkg.B=2"}))
+			Expect(target).To(Equal("./cmd/server"))
+			Expect(appArgs).To(BeEmpty())
+		})
 	})
 
 	Describe("ParseWatchPatterns", func() {

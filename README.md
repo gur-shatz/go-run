@@ -465,11 +465,36 @@ Use `gorun.ScanOutput()` or `gorun.ParseProtocolLine()` to parse these events pr
 
 ## Environment Variables
 
-All YAML configs support `$VAR` and `${VAR}` syntax for environment variable expansion. Variables are expanded before YAML parsing.
+### Env var expansion in YAML configs
 
-### runctl `env:` block
+All YAML configs (`gorun.yaml`, `execrun.yaml`, `runctl.yaml`) support `$VAR` and `${VAR}` syntax. Variables are expanded from the OS environment before YAML parsing, so you can use them in any string field:
 
-`runctl.yaml` supports a top-level `env:` block that defines environment variables available to all targets:
+```yaml
+# execrun.yaml
+exec:
+  - "./bin/server --port $PORT"
+```
+
+### Passing env vars to child processes
+
+Child processes (build steps, exec commands, compiled binaries) **inherit the full environment** of the parent process. There is no filtering or isolation — whatever is in the parent's environment is available to every child.
+
+This means you can pass env vars to targets using any standard method:
+
+```bash
+# Inline
+PORT=8080 gorun ./cmd/server
+
+# Export
+export PORT=8080
+gorun ./cmd/server
+
+# .env via direnv, dotenv, etc.
+```
+
+### runctl/runui `env:` block
+
+`runctl.yaml` supports a top-level `env:` block for defining env vars shared across all targets. These are set into the process environment via `os.Setenv` before any target configs are loaded:
 
 ```yaml
 env:
@@ -485,14 +510,24 @@ targets:
         url: "http://localhost:$PORT"
 ```
 
-**How it works:**
+**Two-pass expansion:** The config is parsed twice. First, existing OS env vars are expanded and the `env:` block is extracted and applied via `os.Setenv`. Then the full config is re-expanded with the new vars in place. This means:
 
-1. First pass: existing OS env vars are expanded, the `env:` block is extracted
-2. Each key-value pair is set via `os.Setenv`
-3. Second pass: the full config is re-expanded with the new env vars applied
-4. Target configs (gorun.yaml, execrun.yaml) also expand env vars when loaded
+- Values in `env:` can reference pre-existing OS vars (e.g., `HOME: "$HOME/app"`)
+- Vars defined in `env:` are available everywhere else in `runctl.yaml` (link URLs, etc.)
+- Target configs (`gorun.yaml`, `execrun.yaml`) are loaded after `env:` is applied, so they see these vars too
+- Child processes inherit them automatically
 
-This means env vars from the `env:` block propagate into target configs, link URLs, and any other string field.
+**Propagation flow:**
+
+```
+OS environment (PATH, HOME, …)
+  + runctl.yaml env: block (PORT=8080, DB_HOST=localhost)
+    → set via os.Setenv into parent process
+      → target configs expand $PORT when loaded
+      → child processes inherit PORT=8080 automatically
+```
+
+Note: `gorun.yaml` and `execrun.yaml` do not have their own `env:` block. To define env vars centrally, use the runctl/runui `env:` block or set them in the shell before running.
 
 ---
 

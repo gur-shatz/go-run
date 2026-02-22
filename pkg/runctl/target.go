@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 	"github.com/gur-shatz/go-run/pkg/gorun"
 )
@@ -118,7 +119,7 @@ func (this *target) Start() error {
 
 func (this *target) startExecrun() error {
 	configFile := filepath.Base(this.tcfg.Config)
-	configPath := filepath.Join(this.rootDir, configFile)
+	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
 	ecfg, err := execrun.LoadConfig(configPath)
 	if err != nil {
 		this.mu.Lock()
@@ -192,7 +193,7 @@ func (this *target) startExecrun() error {
 
 func (this *target) startGorun() error {
 	configFile := filepath.Base(this.tcfg.Config)
-	configPath := filepath.Join(this.rootDir, configFile)
+	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
 	gcfg, err := gorun.LoadConfig(configPath)
 	if err != nil {
 		this.mu.Lock()

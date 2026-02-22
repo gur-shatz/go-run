@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/go-run/internal/color"
+	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/pkg/execrun"
@@ -59,6 +60,9 @@ func run() error {
 		}
 		return err
 	}
+
+	// Resolve .yml/.yaml fallback
+	*configPath = configutil.ResolveYAMLPath(*configPath)
 
 	// Check for subcommands
 	args := fs.Args()
