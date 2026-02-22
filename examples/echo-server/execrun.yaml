@@ -1,3 +1,6 @@
+# ECHO_PORT is passed from the parent runctl.yaml vars
+vars:
+  LISTEN_ADDR: '0.0.0.0:{{ .ECHO_PORT | default "8081" }}'
 watch:
   - "*.sh"
 build:

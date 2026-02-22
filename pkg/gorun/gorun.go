@@ -22,6 +22,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/scan"
 	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/internal/watcher"
+	"github.com/gur-shatz/go-run/pkg/config"
 )
 
 // Config describes what to build and run.
@@ -75,25 +76,24 @@ func shellSplit(s string) []string {
 }
 
 // LoadConfig reads and parses a gorun YAML config file.
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+// Accepts optional config.Option values to control template processing
+// (e.g. config.WithVars to inject parent variables from runctl).
+func LoadConfig(path string, opts ...config.Option) (*Config, map[string]string, error) {
+	data, vars, err := config.ProcessFile(path, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, nil, err
 	}
-
-	// Expand environment variables in YAML before parsing
-	data = []byte(os.ExpandEnv(string(data)))
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
 	if cfg.Args == "" {
-		return nil, fmt.Errorf("invalid config %s: args is required", path)
+		return nil, nil, fmt.Errorf("invalid config %s: args is required", path)
 	}
 
-	return &cfg, nil
+	return &cfg, vars, nil
 }
 
 // DefaultConfigYAML is the commented starter YAML for gorun config files.

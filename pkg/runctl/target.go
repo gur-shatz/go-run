@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/go-run/internal/configutil"
+	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 	"github.com/gur-shatz/go-run/pkg/gorun"
 )
@@ -54,11 +55,12 @@ type TargetStatus struct {
 
 // target wraps a target config and manages its lifecycle.
 type target struct {
-	name    string
-	tcfg    TargetConfig
-	rootDir string // absolute path to target working directory
-	hasBuild bool
-	hasRun   bool
+	name       string
+	tcfg       TargetConfig
+	rootDir    string            // absolute path to target working directory
+	parentVars map[string]string // resolved vars from parent (runctl) config
+	hasBuild   bool
+	hasRun     bool
 
 	mu      sync.Mutex
 	state   TargetState
@@ -79,7 +81,7 @@ type target struct {
 	execStart    chan struct{}
 }
 
-func newTarget(name string, tcfg TargetConfig, baseDir string) *target {
+func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[string]string) *target {
 	dir := filepath.Dir(tcfg.Config)
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(baseDir, dir)
@@ -89,6 +91,7 @@ func newTarget(name string, tcfg TargetConfig, baseDir string) *target {
 		name:         name,
 		tcfg:         tcfg,
 		rootDir:      dir,
+		parentVars:   parentVars,
 		hasBuild:     true, // default; refined for execrun targets after config load
 		hasRun:       true,
 		state:        StateIdle,
@@ -120,7 +123,11 @@ func (this *target) Start() error {
 func (this *target) startExecrun() error {
 	configFile := filepath.Base(this.tcfg.Config)
 	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
-	ecfg, err := execrun.LoadConfig(configPath)
+	var configOpts []config.Option
+	if len(this.parentVars) > 0 {
+		configOpts = append(configOpts, config.WithVars(this.parentVars))
+	}
+	ecfg, _, err := execrun.LoadConfig(configPath, configOpts...)
 	if err != nil {
 		this.mu.Lock()
 		this.state = StateError
@@ -194,7 +201,11 @@ func (this *target) startExecrun() error {
 func (this *target) startGorun() error {
 	configFile := filepath.Base(this.tcfg.Config)
 	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
-	gcfg, err := gorun.LoadConfig(configPath)
+	var configOpts []config.Option
+	if len(this.parentVars) > 0 {
+		configOpts = append(configOpts, config.WithVars(this.parentVars))
+	}
+	gcfg, _, err := gorun.LoadConfig(configPath, configOpts...)
 	if err != nil {
 		this.mu.Lock()
 		this.state = StateError

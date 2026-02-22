@@ -12,46 +12,26 @@ import (
 
 var _ = Describe("CLI", func() {
 	Describe("Parse", func() {
-		It("parses build target only", func() {
-			cfg, err := cli.Parse([]string{"./cmd/server"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Command).To(Equal(cli.CommandRun))
-			Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-			Expect(cfg.AppArgs).To(BeEmpty())
-			Expect(cfg.PollInterval).To(Equal(500 * time.Millisecond))
-			Expect(cfg.Debounce).To(Equal(300 * time.Millisecond))
-			Expect(cfg.Verbose).To(BeFalse())
-		})
-
-		It("parses build target with app args", func() {
-			cfg, err := cli.Parse([]string{"./cmd/server", "-port", "8080"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Command).To(Equal(cli.CommandRun))
-			Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-			Expect(cfg.AppArgs).To(Equal([]string{"-port", "8080"}))
-		})
-
 		It("parses all gorun flags", func() {
-			cfg, err := cli.Parse([]string{"--poll", "1s", "--debounce", "200ms", "-v", "./cmd/server"})
+			cfg, err := cli.Parse([]string{"--poll", "1s", "--debounce", "200ms", "-v"})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Command).To(Equal(cli.CommandRun))
 			Expect(cfg.PollInterval).To(Equal(time.Second))
 			Expect(cfg.Debounce).To(Equal(200 * time.Millisecond))
 			Expect(cfg.Verbose).To(BeTrue())
-			Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
 		})
 
 		It("parses --verbose flag", func() {
-			cfg, err := cli.Parse([]string{"--verbose", "./cmd/server"})
+			cfg, err := cli.Parse([]string{"--verbose"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Verbose).To(BeTrue())
 		})
 
-		It("returns CommandRun with verbose when no build target", func() {
+		It("returns CommandRun with verbose when no subcommand", func() {
 			cfg, err := cli.Parse([]string{"-v"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Command).To(Equal(cli.CommandRun))
 			Expect(cfg.Verbose).To(BeTrue())
-			Expect(cfg.BuildTarget).To(BeEmpty())
 		})
 
 		It("returns error when --poll missing value", func() {
@@ -68,7 +48,6 @@ var _ = Describe("CLI", func() {
 			cfg, err := cli.Parse([]string{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Command).To(Equal(cli.CommandRun))
-			Expect(cfg.BuildTarget).To(BeEmpty())
 		})
 
 		It("parses -c flag with run command", func() {
@@ -84,6 +63,24 @@ var _ = Describe("CLI", func() {
 			Expect(cfg.ConfigFile).To(Equal("myapp.yaml"))
 		})
 
+		It("parses --stdout flag", func() {
+			cfg, err := cli.Parse([]string{"--stdout", "out.log"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Stdout).To(Equal("out.log"))
+		})
+
+		It("parses --stderr flag", func() {
+			cfg, err := cli.Parse([]string{"--stderr", "err.log"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Stderr).To(Equal("err.log"))
+		})
+
+		It("parses --combined flag", func() {
+			cfg, err := cli.Parse([]string{"--combined", "all.log"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Combined).To(Equal("all.log"))
+		})
+
 		It("returns flag.ErrHelp for -h", func() {
 			_, err := cli.Parse([]string{"-h"})
 			Expect(err).To(Equal(flag.ErrHelp))
@@ -94,55 +91,17 @@ var _ = Describe("CLI", func() {
 			Expect(err).To(Equal(flag.ErrHelp))
 		})
 
-
-		Context("go build flags", func() {
-			It("passes -race via -- separator", func() {
-				cfg, err := cli.Parse([]string{"-v", "--", "-race", "./cmd/server"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.Verbose).To(BeTrue())
-				Expect(cfg.BuildFlags).To(Equal([]string{"-race"}))
-				Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-				Expect(cfg.AppArgs).To(BeEmpty())
-			})
-
-			It("passes -tags with value", func() {
-				cfg, err := cli.Parse([]string{"--", "-tags", "integration", "./cmd/server"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.BuildFlags).To(Equal([]string{"-tags", "integration"}))
-				Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-			})
-
-			It("passes -ldflags with quoted value", func() {
-				cfg, err := cli.Parse([]string{"--", "-ldflags", "-X main.version=1.0", "./cmd/server"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.BuildFlags).To(Equal([]string{"-ldflags", "-X main.version=1.0"}))
-				Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-			})
-
-			It("handles build flags + build target + app args", func() {
-				cfg, err := cli.Parse([]string{"-v", "--", "-race", "-tags=e2e", "./cmd/server", "-port", "8080"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.Verbose).To(BeTrue())
-				Expect(cfg.BuildFlags).To(Equal([]string{"-race", "-tags=e2e"}))
-				Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-				Expect(cfg.AppArgs).To(Equal([]string{"-port", "8080"}))
-			})
-
-			It("has no build flags without -- separator", func() {
-				cfg, err := cli.Parse([]string{"./cmd/server", "-port", "8080"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.BuildFlags).To(BeEmpty())
-				Expect(cfg.BuildTarget).To(Equal("./cmd/server"))
-				Expect(cfg.AppArgs).To(Equal([]string{"-port", "8080"}))
-			})
+		It("returns error for unknown subcommand", func() {
+			_, err := cli.Parse([]string{"./cmd/server"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unknown subcommand"))
 		})
 
 		Context("subcommands", func() {
-			It("parses init without target", func() {
+			It("parses init", func() {
 				cfg, err := cli.Parse([]string{"init"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg.Command).To(Equal(cli.CommandInit))
-				Expect(cfg.BuildTarget).To(BeEmpty())
 			})
 
 			It("parses init with -c flag", func() {
@@ -152,11 +111,10 @@ var _ = Describe("CLI", func() {
 				Expect(cfg.ConfigFile).To(Equal("myapp.yaml"))
 			})
 
-			It("parses sum without config", func() {
+			It("parses sum", func() {
 				cfg, err := cli.Parse([]string{"sum"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg.Command).To(Equal(cli.CommandSum))
-				Expect(cfg.ConfigFile).To(BeEmpty())
 			})
 
 			It("parses sum with -c flag", func() {
@@ -185,7 +143,7 @@ var _ = Describe("CLI", func() {
 	})
 
 	Describe("ConfigFileName", func() {
-		It("returns gorun.config for empty target", func() {
+		It("returns gorun.yaml for empty target", func() {
 			Expect(cli.ConfigFileName("")).To(Equal("gorun.yaml"))
 		})
 

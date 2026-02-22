@@ -28,26 +28,17 @@ type Config struct {
 	Stdout       string
 	Stderr       string
 	Combined     string
-	BuildTarget  string
-	BuildFlags   []string
-	AppArgs      []string
 }
 
 // Parse parses command-line arguments into a Config.
 //
 // Format:
 //
-//	gorun [gorun-flags] [--] [go-build-flags] <build-target> [app-args...]
-//	gorun init [build-target]
-//	gorun sum [build-target]
+//	gorun [gorun-flags]
+//	gorun init [-c <file>]
+//	gorun sum [-c <file>]
 //
-// The -- separates gorun flags from go build flags. Without --, the first
-// non-gorun-flag positional argument is the build target.
-//
-// Go build flags (like -race, -tags, -ldflags) are passed through to
-// "go build". The build target is the first argument that looks like a
-// package path (doesn't start with -). Everything after the build target
-// is passed as app arguments.
+// gorun always loads its configuration from a YAML file (default: gorun.yaml).
 func Parse(args []string) (Config, error) {
 	cfg := Config{}
 
@@ -78,13 +69,13 @@ func Parse(args []string) (Config, error) {
 
 	remaining := fs.Args()
 
-	// No args: run from gorun.yaml
+	// No positional args: run from config file
 	if len(remaining) == 0 {
 		cfg.Command = CommandRun
 		return cfg, nil
 	}
 
-	// Check for subcommands first
+	// Check for subcommands
 	switch remaining[0] {
 	case "init":
 		cfg.Command = CommandInit
@@ -92,17 +83,9 @@ func Parse(args []string) (Config, error) {
 	case "sum":
 		cfg.Command = CommandSum
 		return cfg, nil
+	default:
+		return cfg, fmt.Errorf("unknown subcommand %q\n\n%s", remaining[0], Usage())
 	}
-
-	// Run command: split remaining into [go-build-flags] <target> [app-args...]
-	cfg.Command = CommandRun
-	cfg.BuildFlags, cfg.BuildTarget, cfg.AppArgs = SplitBuildArgs(remaining)
-
-	if cfg.BuildTarget == "" {
-		return cfg, fmt.Errorf("build target is required\n\n%s", Usage())
-	}
-
-	return cfg, nil
 }
 
 // SplitBuildArgs splits args into (go build flags, build target, app args).
@@ -190,13 +173,13 @@ func BinFileName(target string) string {
 
 // Usage returns the help text for gorun.
 func Usage() string {
-	return `gorun - Drop-in go run replacement with auto-rebuild on file changes
+	return `gorun - Go auto-rebuild with file watching
 
 Usage:
-  gorun                                          Load gorun.yaml and run
-  gorun [gorun-flags] [--] [go-build-flags] <build-target> [app-args...]
-  gorun init [-c <file>]
-  gorun sum [-c <file>]
+  gorun                          Load gorun.yaml and run
+  gorun [flags]                  Load config and run with overrides
+  gorun init [-c <file>]         Generate a default config file
+  gorun sum [-c <file>]          Generate a sum file from watched files
 
 Commands:
   init        Generate a default gorun config file in the current directory
@@ -208,18 +191,6 @@ Commands:
     gorun sum                    →  reads gorun.yaml for watch patterns
     gorun -c my.yaml             →  loads my.yaml and runs
 
-Examples:
-  gorun ./cmd/server                     Build and run, watch for changes
-  gorun ./cmd/server -port 8080          Pass flags to the built binary
-  gorun -v --poll 1s ./cmd/server        Verbose mode, 1s poll interval
-  gorun --debounce 500ms ./main.go       Custom debounce window
-  gorun -- -race ./cmd/server            Pass -race to go build
-  gorun -- -tags integration ./cmd/server  Pass build tags
-  gorun -- -ldflags "-X main.v=1" ./cmd/server  Pass ldflags
-  gorun init                             Create gorun.yaml with defaults
-  gorun init -c myapp.yaml               Create myapp.yaml with defaults
-  gorun sum                              Snapshot file hashes to gorun.sum
-
 Flags:
   -c, --config <file>     Config file path (default: gorun.yaml)
   --poll <duration>       Poll interval for file changes (default: 500ms)
@@ -230,24 +201,21 @@ Flags:
   -v, --verbose           Verbose output (watched patterns, file counts)
   -h, --help              Show this help
 
-Go build flags:
-  Use -- to pass flags to "go build". Everything between -- and the build
-  target is forwarded:
-
-    gorun -v -- -race -tags=e2e ./cmd/server -port 8080
-            │    │                │            │
-            │    │                │            └─ app args
-            │    │                └─ build target
-            │    └─ go build flags
-            └─ gorun flags
-
 Config file (gorun.yaml):
+  vars:
+    app_port: "8080"
   watch:
     - "**/*.go"
     - "go.mod"
     - "go.sum"
-  args: "./cmd/server -port 8080"
+  args: "./cmd/server -port {{ .app_port }}"
   exec:
     - "go generate ./..."
+
+Template features:
+  - vars: section for defining template variables
+  - {{ .VAR }} and [[ .VAR ]] syntax (both supported)
+  - Functions: default, required, env, add
+  - Environment variables override vars section values
 `
 }

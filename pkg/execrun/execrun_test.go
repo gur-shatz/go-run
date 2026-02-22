@@ -37,7 +37,7 @@ exec:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			cfg, err := execrun.LoadConfig(configPath)
+			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Watch).To(Equal([]string{"**/*.go", "!vendor/**"}))
 			Expect(cfg.Build).To(Equal([]string{"go build -o ./bin/app ."}))
@@ -60,7 +60,7 @@ exec:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			cfg, err := execrun.LoadConfig(configPath)
+			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Steps()).To(Equal([]string{
 				"protoc --go_out=. api/*.proto",
@@ -80,7 +80,7 @@ exec:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			cfg, err := execrun.LoadConfig(configPath)
+			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Steps()).To(BeNil())
 			Expect(cfg.RunCmd()).To(Equal("python app.py"))
@@ -96,7 +96,7 @@ build:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			cfg, err := execrun.LoadConfig(configPath)
+			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.IsBuildOnly()).To(BeTrue())
 			Expect(cfg.Steps()).To(Equal([]string{"npm run build"}))
@@ -113,7 +113,7 @@ exec: []
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = execrun.LoadConfig(configPath)
+			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("at least one build or exec command"))
 		})
@@ -126,7 +126,7 @@ exec: []
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = execrun.LoadConfig(configPath)
+			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("at least one build or exec command"))
 		})
@@ -140,13 +140,13 @@ exec:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = execrun.LoadConfig(configPath)
+			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("watch must have at least one pattern"))
 		})
 
 		It("returns error for missing config file", func() {
-			_, err := execrun.LoadConfig(filepath.Join(tmpDir, "nonexistent.yaml"))
+			_, _, err := execrun.LoadConfig(filepath.Join(tmpDir, "nonexistent.yaml"))
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -155,7 +155,7 @@ exec:
 			err := os.WriteFile(configPath, []byte("{{invalid yaml"), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = execrun.LoadConfig(configPath)
+			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -165,7 +165,7 @@ exec:
 			err := os.WriteFile(configPath, []byte(content), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			cfg, err := execrun.LoadConfig(configPath)
+			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Build).To(Equal([]string{"go build ."}))
 			Expect(cfg.Exec).To(Equal([]string{"./app"}))
@@ -184,7 +184,7 @@ exec:
 			err := execrun.WriteConfig(configPath, cfg)
 			Expect(err).NotTo(HaveOccurred())
 
-			loaded, err := execrun.LoadConfig(configPath)
+			loaded, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Watch).To(Equal(cfg.Watch))
 			Expect(loaded.Build).To(Equal(cfg.Build))

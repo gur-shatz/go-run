@@ -14,6 +14,15 @@
 #
 # logs_dir: redirect all target output to log files under this directory.
 #           Creates two files per target: <target>.build.log and <target>.run.log.
+#
+# vars:  template variables available via {{ .VAR }} or [[ .VAR ]] syntax.
+#        Environment variables override vars values.
+#        Resolved vars are passed to child target configs.
+#        Functions: default, required, env, add
+#
+# vars:
+#   PORT: "8080"
+#   DB_HOST: '{{ env "DB_HOST" | default "localhost" }}'
 
 api:
   port: 9100  # HTTP API port

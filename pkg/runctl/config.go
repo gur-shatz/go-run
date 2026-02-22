@@ -9,14 +9,20 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/gur-shatz/go-run/pkg/config"
 )
 
 // Config is the top-level runctl.yaml configuration.
 type Config struct {
-	Env     map[string]string       `yaml:"env,omitempty"`
+	Vars    map[string]string       `yaml:"vars,omitempty"`
 	API     APIConfig               `yaml:"api"`
 	LogsDir string                  `yaml:"logs_dir,omitempty"` // directory for auto-generated log files
 	Targets map[string]TargetConfig `yaml:"targets"`
+
+	// ResolvedVars holds all resolved template variables (vars section + env).
+	// Populated by LoadConfig, not from YAML.
+	ResolvedVars map[string]string `yaml:"-"`
 }
 
 // APIConfig controls the HTTP API server.
@@ -68,33 +74,28 @@ func (this TargetConfig) IsEnabled() bool {
 }
 
 // LoadConfig reads and parses a runctl.yaml file.
-// It performs a two-pass parse: first to extract env vars and set them,
-// then re-expand and re-parse the full config with env vars applied.
+// Template variables from the vars: section are resolved using Go templates,
+// then set in the process environment (if not already present) so child
+// configs can access them.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, resolvedVars, err := config.ProcessFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, err
 	}
 
-	// First pass: expand existing env vars and extract the env block
-	expanded := os.ExpandEnv(string(data))
-	var envOnly struct {
-		Env map[string]string `yaml:"env"`
-	}
-	if err := yaml.Unmarshal([]byte(expanded), &envOnly); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-
-	// Set env vars so they're available for the second expansion
-	for k, v := range envOnly.Env {
-		os.Setenv(k, v)
-	}
-
-	// Second pass: re-expand with new env vars and parse full config
-	expanded = os.ExpandEnv(string(data))
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+
+	cfg.ResolvedVars = resolvedVars
+
+	// Set resolved vars in environment so child processes can access them.
+	// Only set if not already present, so caller-provided env vars take precedence.
+	for k, v := range resolvedVars {
+		if _, exists := os.LookupEnv(k); !exists {
+			os.Setenv(k, v)
+		}
 	}
 
 	// Resolve relative logs_dir against the config file's directory

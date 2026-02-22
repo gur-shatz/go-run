@@ -76,7 +76,7 @@ func runSum(configFile string) error {
 
 	// Try to load watch patterns from config
 	var watchPatterns []string
-	if gcfg, err := gorun.LoadConfig(configAbs); err == nil {
+	if gcfg, _, err := gorun.LoadConfig(configAbs); err == nil {
 		watchPatterns = gcfg.Watch
 		fmt.Printf("Using config: %s\n", configFile)
 	}
@@ -115,23 +115,11 @@ func runWatch(cfg cli.Config, configFile string) error {
 		cancel()
 	}()
 
-	var gcfg gorun.Config
-
-	if cfg.BuildTarget != "" {
-		// CLI provided a build target — reconstruct args string
-		var parts []string
-		parts = append(parts, cfg.BuildFlags...)
-		parts = append(parts, cfg.BuildTarget)
-		parts = append(parts, cfg.AppArgs...)
-		gcfg.Args = strings.Join(parts, " ")
-	} else {
-		// No build target on CLI — load config file
-		loaded, err := gorun.LoadConfig(configFile)
-		if err != nil {
-			return fmt.Errorf("no build target specified and %s not found: %w", configFile, err)
-		}
-		gcfg = *loaded
+	loaded, _, err := gorun.LoadConfig(configFile)
+	if err != nil {
+		return fmt.Errorf("load config %s: %w", configFile, err)
 	}
+	gcfg := *loaded
 
 	// Use the config file's directory as the root directory so that watch
 	// patterns are always resolved relative to the config, regardless of

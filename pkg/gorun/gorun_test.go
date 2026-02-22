@@ -20,7 +20,7 @@ var _ = Describe("Config", func() {
 `
 			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
 
-			cfg, err := gorun.LoadConfig(cfgPath)
+			cfg, _, err := gorun.LoadConfig(cfgPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Args).To(Equal("./cmd/server -port 8080"))
 			Expect(cfg.Watch).To(BeEmpty())
@@ -42,7 +42,7 @@ exec:
 `
 			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
 
-			cfg, err := gorun.LoadConfig(cfgPath)
+			cfg, _, err := gorun.LoadConfig(cfgPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Watch).To(Equal([]string{"**/*.go", "go.mod", "!vendor/**"}))
 			Expect(cfg.Args).To(Equal("-race ./cmd/server -port 8080"))
@@ -58,13 +58,13 @@ exec:
 `
 			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
 
-			_, err := gorun.LoadConfig(cfgPath)
+			_, _, err := gorun.LoadConfig(cfgPath)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("args is required"))
 		})
 
 		It("returns error for missing file", func() {
-			_, err := gorun.LoadConfig("/nonexistent/gorun.yaml")
+			_, _, err := gorun.LoadConfig("/nonexistent/gorun.yaml")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -74,7 +74,7 @@ exec:
 
 			Expect(os.WriteFile(cfgPath, []byte("{{invalid yaml"), 0644)).To(Succeed())
 
-			_, err := gorun.LoadConfig(cfgPath)
+			_, _, err := gorun.LoadConfig(cfgPath)
 			Expect(err).To(HaveOccurred())
 		})
 	})

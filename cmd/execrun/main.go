@@ -78,7 +78,7 @@ func run() error {
 	log.Init(*verbose)
 
 	// Load config
-	cfg, err := execrun.LoadConfig(*configPath)
+	cfg, _, err := execrun.LoadConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func run() error {
 func runSum(configPath string) error {
 	log.Init(false)
 
-	cfg, err := execrun.LoadConfig(configPath)
+	cfg, _, err := execrun.LoadConfig(configPath)
 	if err != nil {
 		return err
 	}

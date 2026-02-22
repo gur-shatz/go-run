@@ -41,7 +41,7 @@ func New(cfg Config, baseDir string) (*Controller, error) {
 	}
 
 	for name, tcfg := range cfg.Targets {
-		ctrl.targets[name] = newTarget(name, tcfg, absBase)
+		ctrl.targets[name] = newTarget(name, tcfg, absBase, cfg.ResolvedVars)
 	}
 
 	return ctrl, nil

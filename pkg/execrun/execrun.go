@@ -22,6 +22,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/scan"
 	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/internal/watcher"
+	"github.com/gur-shatz/go-run/pkg/config"
 )
 
 // Config represents the execrun.yaml configuration.
@@ -81,25 +82,24 @@ type exitInfo struct {
 }
 
 // LoadConfig reads and parses a YAML config file.
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+// Accepts optional config.Option values to control template processing
+// (e.g. config.WithVars to inject parent variables from runctl).
+func LoadConfig(path string, opts ...config.Option) (*Config, map[string]string, error) {
+	data, vars, err := config.ProcessFile(path, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, nil, err
 	}
-
-	// Expand environment variables in YAML before parsing
-	data = []byte(os.ExpandEnv(string(data)))
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+		return nil, nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	return &cfg, nil
+	return &cfg, vars, nil
 }
 
 // DefaultConfig returns a sensible starter config.

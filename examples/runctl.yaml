@@ -1,8 +1,29 @@
-env:
-  PORT: "8080"
-logs_dir: /tmp/runctl
+vars:
+  # Base port — all service ports are derived from this offset.
+  # Override via environment: BASE_PORT=9000 runctl
+  BASE_PORT: '{{ env "BASE_PORT" | default "28000"   }}'
+
+  # Port assignments (BASE_PORT + offset)
+  # ┌──────────────────────────────────────────────┐
+  # │  Service          Offset   Default Port      │
+  # ├──────────────────────────────────────────────┤
+  # │  Hello Go           +80     8080             │
+  # │  Echo Server        +81     8081             │
+  # │  Ticker             +82     8082             │
+  # │  RunUI Dashboard    +99     8099  (go-run)   │
+  # └──────────────────────────────────────────────┘
+  HELLO_PORT: "{{ add .BASE_PORT 80 }}"
+  ECHO_PORT: "{{ add .BASE_PORT 81 }}"
+  TICKER_PORT: "{{ add .BASE_PORT 82 }}"
+  RUNUI_PORT: "{{ add .BASE_PORT 99 }}"
+
+  # Data directory — logs and artifacts go here
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/runctl-data" }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
 api:
-  port: 9100
+  port: [[.RUNUI_PORT]]
 
 targets:
   hello-go:
@@ -10,13 +31,16 @@ targets:
     config: hello-go/gorun.yaml
     links:
       - name: HTTP
-        url: "http://localhost:$PORT"
+        url: "http://localhost:{{ .HELLO_PORT }}"
 
   build-css:
     config: build-css/execrun.yaml
 
   echo-server:
     config: echo-server/execrun.yaml
+    links:
+      - name: Echo
+        url: "http://localhost:{{ .ECHO_PORT }}"
 
   ticker:
     config: ticker/execrun.yaml
