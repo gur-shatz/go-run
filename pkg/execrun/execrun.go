@@ -203,10 +203,18 @@ func newRunner(ctx context.Context, cfg Config, opts Options, rootDir string, lo
 	}
 }
 
+// logTo writes a timestamped marker line to the given writer.
+func (this *runner) logTo(w io.Writer, format string, args ...any) {
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintf(w, "======== %s : %s\n", ts, msg)
+}
+
 // runStep runs a single shell command with the given stdout/stderr writers.
 // The command is cancelled if the runner's context is done.
 func (this *runner) runStep(cmd string, stdout, stderr io.Writer) error {
 	this.log.Verbose("Running: %s", cmd)
+	this.logTo(stdout, "Running: %s", cmd)
 	c := exec.CommandContext(this.ctx, "sh", "-c", cmd)
 	c.Dir = this.rootDir
 	c.Stdout = stdout
@@ -216,7 +224,11 @@ func (this *runner) runStep(cmd string, stdout, stderr io.Writer) error {
 		return killProcessGroup(c.Process, syscall.SIGTERM)
 	}
 	c.WaitDelay = 5 * time.Second
-	return c.Run()
+	err := c.Run()
+	if err != nil {
+		this.logTo(stdout, "Command failed: %s", err)
+	}
+	return err
 }
 
 // execSteps runs build steps and exec prep steps.
@@ -253,6 +265,9 @@ func (this *runner) execSteps() (time.Duration, error) {
 	}
 
 	dur := time.Since(start)
+	if len(this.cfg.BuildSteps()) > 0 {
+		this.logTo(this.opts.ExecStdout, "Build done (%s)", scan.FormatDuration(dur))
+	}
 	if this.opts.OnExecDone != nil {
 		this.opts.OnExecDone(dur, nil)
 	}
@@ -275,6 +290,8 @@ func (this *runner) start() error {
 	if err := this.cmd.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
+
+	this.logTo(this.stdout, "Process started (pid %d): %s", this.cmd.Process.Pid, this.cfg.RunCmd())
 
 	if this.opts.OnProcessStart != nil {
 		this.opts.OnProcessStart(this.cmd.Process.Pid)
@@ -301,6 +318,7 @@ func (this *runner) start() error {
 		}
 
 		if !wasStopping {
+			this.logTo(this.stdout, "Process exited (code %d)", exitCode)
 			if this.opts.OnProcessExit != nil {
 				this.opts.OnProcessExit(exitCode, err)
 			}
