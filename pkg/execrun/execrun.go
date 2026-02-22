@@ -344,6 +344,8 @@ func (this *runner) stop() error {
 		return nil
 	}
 
+	this.logTo(this.stdout, "Stopping process (pid %d, SIGTERM)", cmd.Process.Pid)
+
 	// Kill the entire process group (shell + children)
 	if err := killProcessGroup(cmd.Process, syscall.SIGTERM); err != nil {
 		return nil
@@ -357,11 +359,14 @@ func (this *runner) stop() error {
 
 	select {
 	case <-done:
+		this.logTo(this.stdout, "Process stopped")
 		return nil
 	case <-time.After(5 * time.Second):
 		this.log.Warn("Process group didn't exit after SIGTERM, sending SIGKILL...")
+		this.logTo(this.stdout, "Process didn't exit after SIGTERM, sending SIGKILL")
 		killProcessGroup(cmd.Process, syscall.SIGKILL)
 		<-done
+		this.logTo(this.stdout, "Process killed")
 		return nil
 	}
 }
