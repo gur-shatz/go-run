@@ -22,6 +22,6 @@ func main() {
 	i := 0
 	for range tick.C {
 		i++
-		fmt.Printf("example code tick #%d at %s\n", i, time.Now().Format(time.RFC3339))
+		fmt.Printf("example code tick #%d at %s\none\nmore\nline\nand\nanother", i, time.Now().Format(time.RFC3339))
 	}
 }
