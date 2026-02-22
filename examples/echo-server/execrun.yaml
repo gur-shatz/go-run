@@ -4,9 +4,9 @@ vars:
 watch:
   - "*.sh"
 build:
-  - /bin/sleep 10
-  - echo done 10
-  - /bin/sleep 10
-  - echo done 20
+  - /bin/sleep 2
+  - echo slept 2
+  - /bin/sleep 2
+  - echo 'slept 2+2'
 exec:
   - sh server.sh
