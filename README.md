@@ -5,8 +5,7 @@ File watching run utilities for general use.
 | Tool      | Package       | Description                                                          |
 | --------- | ------------- | -------------------------------------------------------------------- |
 | `execrun` | `pkg/execrun` | Generic, language-agnostic file-watching command runner (YAML config) |
-| `runctl`  | `pkg/runctl`  | Multi-target orchestrator — manage multiple execrun targets with HTTP API |
-| `runui`   | `pkg/runui`   | runctl + embedded web dashboard for monitoring and control           |
+| `runctl`  | `pkg/runctl`  | Multi-target orchestrator — manage multiple execrun targets with HTTP API and optional web dashboard (`-ui`) |
 
 All tools use content-based change detection (SHA-256 hashing) with polling and fsnotify.
 All rebuilding and watching is based on glob patterns.
@@ -17,11 +16,8 @@ All rebuilding and watching is based on glob patterns.
 # execrun — generic file watcher
 go install github.com/gur-shatz/go-run/cmd/execrun@latest
 
-# runctl — multi-target orchestrator (API only)
+# runctl — multi-target orchestrator (API + optional web dashboard)
 go install github.com/gur-shatz/go-run/cmd/runctl@latest
-
-# runui — multi-target orchestrator with web dashboard
-go install github.com/gur-shatz/go-run/cmd/runui@latest
 ```
 
 Or from source:
@@ -210,21 +206,22 @@ cfg, vars, err = execrun.LoadConfig("execrun.yaml", config.WithVars(parentVars))
 
 ---
 
-## runctl / runui
+## runctl
 
-Multi-target orchestrator. Manage multiple execrun targets from a single `runctl.yaml`, with an HTTP API for status and control. **runui** adds an embedded web dashboard on top.
+Multi-target orchestrator. Manage multiple execrun targets from a single `runctl.yaml`, with an HTTP API for status and control. Use `-ui` to enable the embedded web dashboard.
 
 ```bash
 runctl                # API only
-runui                 # API + web dashboard at http://localhost:9100
+runctl -ui            # API + web dashboard at http://localhost:9100
 ```
 
 ### Flags
 
-| Flag           | Default       | Description      |
-| -------------- | ------------- | ---------------- |
-| `-c, --config` | `runctl.yaml` | Config file path |
-| `-v`           | `false`       | Verbose output   |
+| Flag           | Default       | Description                      |
+| -------------- | ------------- | -------------------------------- |
+| `-c, --config` | `runctl.yaml` | Config file path                 |
+| `-ui`          | `false`       | Serve embedded web dashboard     |
+| `-v`           | `false`       | Verbose output                   |
 
 ### Config File
 
@@ -268,7 +265,7 @@ The `config` path is relative to the `runctl.yaml` directory. The target's worki
 
 Resolved vars from `runctl.yaml` (both global and per-target) are automatically passed down to child execrun configs via `config.WithVars()`. Per-target vars override global vars of the same key. Child configs can reference parent vars with template syntax (e.g., `{{ .API_PORT | default "8080" }}`) and add their own `vars:` section.
 
-### Web Dashboard (runui)
+### Web Dashboard (`-ui`)
 
 The web UI provides two tabs:
 

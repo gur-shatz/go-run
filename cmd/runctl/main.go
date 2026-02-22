@@ -16,6 +16,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/pkg/runctl"
+	"github.com/gur-shatz/go-run/pkg/runui"
 )
 
 func main() {
@@ -32,6 +33,7 @@ func run() error {
 	configPath := fs.String("config", "runctl.yaml", "path to config file")
 	fs.StringVar(configPath, "c", "runctl.yaml", "path to config file (shorthand)")
 	verbose := fs.Bool("v", false, "verbose output")
+	ui := fs.Bool("ui", false, "serve embedded web dashboard")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: runctl [flags] [command]\n\n")
@@ -39,6 +41,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "  init    Generate a starter runctl.yaml\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  runctl                          Run with default config (runctl.yaml)\n")
+		fmt.Fprintf(os.Stderr, "  runctl -ui                      Run with web dashboard\n")
 		fmt.Fprintf(os.Stderr, "  runctl -c myconfig.yaml         Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  runctl init                     Generate runctl.yaml\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -63,7 +66,11 @@ func run() error {
 		}
 	}
 
-	log.SetPrefix("[runctl]")
+	if *ui {
+		log.SetPrefix("[runui]")
+	} else {
+		log.SetPrefix("[runctl]")
+	}
 	log.Init(*verbose)
 
 	cfg, err := runctl.LoadConfig(*configPath)
@@ -98,6 +105,9 @@ func run() error {
 	// Create chi router and mount API routes
 	r := chi.NewRouter()
 	r.Mount("/api", ctrl.Routes())
+	if *ui {
+		r.Mount("/", runui.Routes())
+	}
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.API.Port),
@@ -106,7 +116,11 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(os.Stdout, "[runctl] API server listening on :%d\n", cfg.API.Port)
+		if *ui {
+			fmt.Fprintf(os.Stdout, "[runui] Dashboard: http://localhost:%d/\n", cfg.API.Port)
+		} else {
+			fmt.Fprintf(os.Stdout, "[runctl] API server listening on :%d\n", cfg.API.Port)
+		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
