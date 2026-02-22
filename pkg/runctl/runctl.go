@@ -41,7 +41,18 @@ func New(cfg Config, baseDir string) (*Controller, error) {
 	}
 
 	for name, tcfg := range cfg.Targets {
-		ctrl.targets[name] = newTarget(name, tcfg, absBase, cfg.ResolvedVars)
+		// Merge global vars with per-target vars (target wins on conflict)
+		parentVars := cfg.ResolvedVars
+		if len(tcfg.Vars) > 0 {
+			parentVars = make(map[string]string, len(cfg.ResolvedVars)+len(tcfg.Vars))
+			for k, v := range cfg.ResolvedVars {
+				parentVars[k] = v
+			}
+			for k, v := range tcfg.Vars {
+				parentVars[k] = v
+			}
+		}
+		ctrl.targets[name] = newTarget(name, tcfg, absBase, parentVars)
 	}
 
 	return ctrl, nil

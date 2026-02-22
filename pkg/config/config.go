@@ -195,7 +195,7 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 			}
 
 			// Try to resolve this var's expression
-			val, err := resolveExpr(expr, td, env)
+			val, err := ResolveExpr(expr, td, env)
 			if err != nil {
 				continue // dependency not yet resolved
 			}
@@ -226,7 +226,7 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 			td[k] = v
 		}
 		for k, expr := range unresolved {
-			_, err := resolveExpr(expr, td, env)
+			_, err := ResolveExpr(expr, td, env)
 			if err != nil {
 				return nil, fmt.Errorf("var %q: %w", k, err)
 			}
@@ -237,9 +237,9 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 	return resolved, nil
 }
 
-// resolveExpr evaluates a single template expression string, trying
+// ResolveExpr evaluates a single template expression string, trying
 // both [[ ]] and {{ }} delimiters.
-func resolveExpr(expr string, templateData map[string]any, env map[string]string) (string, error) {
+func ResolveExpr(expr string, templateData map[string]any, env map[string]string) (string, error) {
 	result := expr
 
 	if strings.Contains(result, "[[") {

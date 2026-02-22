@@ -1,0 +1,1 @@
+- Given the new usage pattern, gorun may be redundant and folded into execrun (maybe a specific command, maybe not even that)

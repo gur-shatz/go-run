@@ -1,5 +1,0 @@
-# HELLO_PORT is passed from the parent runctl.yaml vars
-args: './main.go -port {{ .HELLO_PORT | default "8080" }}'
-watch:
-  - "**/*.go"
-  - "../ticker/*.md"

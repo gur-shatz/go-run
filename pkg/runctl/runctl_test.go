@@ -44,52 +44,6 @@ targets:
 			Expect(cfg.Targets["worker"].IsEnabled()).To(BeFalse())
 		})
 
-		It("loads a valid gorun config", func() {
-			dir := GinkgoT().TempDir()
-			cfgPath := filepath.Join(dir, "runctl.yaml")
-
-			yaml := `
-api:
-  port: 9200
-targets:
-  api-server:
-    type: gorun
-    config: "services/api/gorun.yaml"
-    enabled: true
-`
-			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
-			Expect(err).NotTo(HaveOccurred())
-
-			cfg, err := runctl.LoadConfig(cfgPath)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Targets).To(HaveLen(1))
-			Expect(cfg.Targets["api-server"].Type).To(Equal("gorun"))
-			Expect(cfg.Targets["api-server"].Config).To(Equal("services/api/gorun.yaml"))
-		})
-
-		It("loads mixed execrun and gorun targets", func() {
-			dir := GinkgoT().TempDir()
-			cfgPath := filepath.Join(dir, "runctl.yaml")
-
-			yaml := `
-targets:
-  app:
-    type: gorun
-    config: "app/gorun.yaml"
-  worker:
-    type: execrun
-    config: "worker/execrun.yaml"
-`
-			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
-			Expect(err).NotTo(HaveOccurred())
-
-			cfg, err := runctl.LoadConfig(cfgPath)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Targets).To(HaveLen(2))
-			Expect(cfg.Targets["app"].EffectiveType()).To(Equal("gorun"))
-			Expect(cfg.Targets["worker"].EffectiveType()).To(Equal("execrun"))
-		})
-
 		It("sets default port when not specified", func() {
 			dir := GinkgoT().TempDir()
 			cfgPath := filepath.Join(dir, "runctl.yaml")
@@ -113,8 +67,7 @@ targets:
 
 			yaml := `
 targets:
-  my-app:
-    type: execrun
+  my-app: {}
 `
 			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
 			Expect(err).NotTo(HaveOccurred())
@@ -122,41 +75,6 @@ targets:
 			_, err = runctl.LoadConfig(cfgPath)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("config is required"))
-		})
-
-		It("returns error for gorun target missing config field", func() {
-			dir := GinkgoT().TempDir()
-			cfgPath := filepath.Join(dir, "runctl.yaml")
-
-			yaml := `
-targets:
-  my-app:
-    type: gorun
-`
-			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = runctl.LoadConfig(cfgPath)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("config is required"))
-		})
-
-		It("returns error for unknown type", func() {
-			dir := GinkgoT().TempDir()
-			cfgPath := filepath.Join(dir, "runctl.yaml")
-
-			yaml := `
-targets:
-  my-app:
-    type: unknown
-    config: "something.yaml"
-`
-			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = runctl.LoadConfig(cfgPath)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("unknown type"))
 		})
 
 		It("returns error when no targets defined", func() {
@@ -181,13 +99,14 @@ targets:
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("defaults type to execrun when omitted", func() {
+		It("ignores unknown type field from old configs", func() {
 			dir := GinkgoT().TempDir()
 			cfgPath := filepath.Join(dir, "runctl.yaml")
 
 			yaml := `
 targets:
   my-app:
+    type: gorun
     config: "execrun.yaml"
 `
 			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
@@ -195,7 +114,85 @@ targets:
 
 			cfg, err := runctl.LoadConfig(cfgPath)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Targets["my-app"].EffectiveType()).To(Equal("execrun"))
+			Expect(cfg.Targets["my-app"].Config).To(Equal("execrun.yaml"))
+		})
+	})
+
+	Describe("Per-target vars", func() {
+		It("parses target vars from YAML", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+targets:
+  my-app:
+    config: "my-app/execrun.yaml"
+    vars:
+      GREETING: "hello"
+      PORT: "9090"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Targets["my-app"].Vars).To(HaveKeyWithValue("GREETING", "hello"))
+			Expect(cfg.Targets["my-app"].Vars).To(HaveKeyWithValue("PORT", "9090"))
+		})
+
+		It("target vars override global vars of the same key", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			// Use unique var names to avoid env pollution from other tests
+			const envKey = "RUNCTL_TEST_SHARED_VAR"
+			os.Unsetenv(envKey)
+			DeferCleanup(func() { os.Unsetenv(envKey) })
+
+			yaml := `
+vars:
+  ` + envKey + `: "global-value"
+  GLOBAL_ONLY: "from-global"
+targets:
+  my-app:
+    config: "my-app/execrun.yaml"
+    vars:
+      ` + envKey + `: "target-value"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Target var overrides global in the Vars map
+			Expect(cfg.Targets["my-app"].Vars).To(HaveKeyWithValue(envKey, "target-value"))
+			// Global var is still in ResolvedVars
+			Expect(cfg.ResolvedVars).To(HaveKeyWithValue(envKey, "global-value"))
+			Expect(cfg.ResolvedVars).To(HaveKeyWithValue("GLOBAL_ONLY", "from-global"))
+			// Environment reflects the target override
+			Expect(os.Getenv(envKey)).To(Equal("target-value"))
+		})
+
+		It("target vars can reference global vars via templates", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+vars:
+  BASE: "hello"
+targets:
+  my-app:
+    config: "my-app/execrun.yaml"
+    vars:
+      DERIVED: "{{ .BASE }}-world"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Targets["my-app"].Vars).To(HaveKeyWithValue("DERIVED", "hello-world"))
 		})
 	})
 
@@ -321,23 +318,6 @@ targets:
 		})
 	})
 
-	Describe("TargetConfig.EffectiveType", func() {
-		It("defaults to execrun when Type is empty", func() {
-			tc := runctl.TargetConfig{}
-			Expect(tc.EffectiveType()).To(Equal("execrun"))
-		})
-
-		It("returns gorun when Type is gorun", func() {
-			tc := runctl.TargetConfig{Type: "gorun"}
-			Expect(tc.EffectiveType()).To(Equal("gorun"))
-		})
-
-		It("returns execrun when Type is execrun", func() {
-			tc := runctl.TargetConfig{Type: "execrun"}
-			Expect(tc.EffectiveType()).To(Equal("execrun"))
-		})
-	})
-
 	Describe("Controller", func() {
 		It("creates a controller from valid config", func() {
 			cfg := runctl.Config{
@@ -351,24 +331,12 @@ targets:
 			Expect(ctrl).NotTo(BeNil())
 		})
 
-		It("creates a controller with gorun targets", func() {
-			cfg := runctl.Config{
-				API: runctl.APIConfig{Port: 9100},
-				Targets: map[string]runctl.TargetConfig{
-					"test": {Type: "gorun", Config: "test/gorun.yaml"},
-				},
-			}
-			ctrl, err := runctl.New(cfg, ".")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(ctrl).NotTo(BeNil())
-		})
-
 		It("returns status for all targets", func() {
 			cfg := runctl.Config{
 				API: runctl.APIConfig{Port: 9100},
 				Targets: map[string]runctl.TargetConfig{
 					"app1": {Config: "app1/execrun.yaml"},
-					"app2": {Type: "gorun", Config: "app2/gorun.yaml"},
+					"app2": {Config: "app2/execrun.yaml"},
 				},
 			}
 			ctrl, err := runctl.New(cfg, ".")
@@ -376,21 +344,6 @@ targets:
 
 			statuses := ctrl.Status()
 			Expect(statuses).To(HaveLen(2))
-		})
-
-		It("returns correct type in status", func() {
-			cfg := runctl.Config{
-				API: runctl.APIConfig{Port: 9100},
-				Targets: map[string]runctl.TargetConfig{
-					"app": {Type: "gorun", Config: "app/gorun.yaml"},
-				},
-			}
-			ctrl, err := runctl.New(cfg, ".")
-			Expect(err).NotTo(HaveOccurred())
-
-			status, err := ctrl.TargetStatus("app")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(status.Type).To(Equal("gorun"))
 		})
 
 		It("returns error for unknown target", func() {
@@ -413,7 +366,7 @@ targets:
 				API: runctl.APIConfig{Port: 9100},
 				Targets: map[string]runctl.TargetConfig{
 					"app1": {Config: "app1/execrun.yaml"},
-					"app2": {Type: "gorun", Config: "app2/gorun.yaml"},
+					"app2": {Config: "app2/execrun.yaml"},
 				},
 			}
 			ctrl, err := runctl.New(cfg, ".")

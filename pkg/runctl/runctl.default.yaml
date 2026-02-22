@@ -2,10 +2,7 @@
 # See: https://github.com/gur-shatz/go-run
 #
 # Each target only requires "config" — everything else is optional:
-#   config:  path to config file, relative to runctl.yaml's directory (required)
-#            - execrun: path/to/execrun.yaml (watch patterns + build/exec commands)
-#            - gorun:   path/to/gorun.yaml   (build target, flags, watch patterns)
-#   type:    "execrun" (default) or "gorun"
+#   config:  path to execrun config file, relative to runctl.yaml's directory (required)
 #   enabled: start on launch (default: true)
 #   links:   named URLs or file paths for the target (default: [])
 #            - url link:  { name: "App", url: "http://localhost:8080" }
@@ -32,14 +29,11 @@ api:
 targets:
   my-app:
     config: "my-app/execrun.yaml"
-    # type: execrun             # default
     # enabled: true             # default
+    # vars:                     # per-target vars (override global vars)
+    #   GREETING: '{{ env "GREETING" | default "Hello!" }}'
     # links:
     #   - name: "App"
     #     url: "http://localhost:8080"
     #   - name: "Config"
     #     file: "./my-app/config.yaml"
-
-  # go-service:
-  #   type: gorun
-  #   config: "services/api/gorun.yaml"

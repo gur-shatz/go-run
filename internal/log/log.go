@@ -78,7 +78,7 @@ func (this *Logger) Change(changes sumfile.ChangeSet) {
 
 // --- Global convenience functions for standalone (single-target) use ---
 
-var defaultLogger = &Logger{prefix: "[gorun]"}
+var defaultLogger = &Logger{prefix: "[execrun]"}
 
 // Init initializes the global logger. Must be called before any other global log function.
 func Init(v bool) {
@@ -86,7 +86,7 @@ func Init(v bool) {
 	color.Init()
 }
 
-// SetPrefix changes the global log prefix (default "[gorun]").
+// SetPrefix changes the global log prefix (default "[execrun]").
 func SetPrefix(p string) {
 	defaultLogger.prefix = p
 }

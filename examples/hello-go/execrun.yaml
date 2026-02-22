@@ -1,0 +1,8 @@
+# HELLO_PORT is passed from the parent runctl.yaml vars as an env var
+watch:
+  - "**/*.go"
+  - "../ticker/*.md"
+build:
+  - 'go build -o ./bin/hello-go ./main.go'
+exec:
+  - './bin/hello-go'

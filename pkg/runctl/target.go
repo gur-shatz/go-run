@@ -15,7 +15,6 @@ import (
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
-	"github.com/gur-shatz/go-run/pkg/gorun"
 )
 
 // TargetState represents the current state of a target.
@@ -32,10 +31,9 @@ const (
 
 // TargetStatus is the JSON-serializable status of a target.
 type TargetStatus struct {
-	Name    string      `json:"name"`
-	Type    string      `json:"type"`
-	HasBuild bool       `json:"has_build"`
-	HasRun   bool       `json:"has_run"`
+	Name     string      `json:"name"`
+	HasBuild bool        `json:"has_build"`
+	HasRun   bool        `json:"has_run"`
 	State   TargetState `json:"state"`
 	Enabled bool        `json:"enabled"`
 	PID     int         `json:"pid,omitempty"`
@@ -112,15 +110,10 @@ func (this *target) Start() error {
 	this.state = StateStarting
 	this.mu.Unlock()
 
-	switch this.tcfg.EffectiveType() {
-	case "gorun":
-		return this.startGorun()
-	default:
-		return this.startExecrun()
-	}
+	return this.start()
 }
 
-func (this *target) startExecrun() error {
+func (this *target) start() error {
 	configFile := filepath.Base(this.tcfg.Config)
 	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
 	var configOpts []config.Option
@@ -167,7 +160,7 @@ func (this *target) startExecrun() error {
 
 	opts := execrun.Options{
 		RootDir:    this.rootDir,
-		LogPrefix:  fmt.Sprintf("[%s:%s]", this.name, this.tcfg.EffectiveType()),
+		LogPrefix:  fmt.Sprintf("[%s]", this.name),
 		Stdout:     runLog,
 		Stderr:     runLog,
 		ExecStdout: buildLog,
@@ -192,81 +185,6 @@ func (this *target) startExecrun() error {
 		}()
 
 		err := execrun.Run(ctx, *ecfg, opts)
-		this.handleRunComplete(ctx, err)
-	}()
-
-	return nil
-}
-
-func (this *target) startGorun() error {
-	configFile := filepath.Base(this.tcfg.Config)
-	configPath := configutil.ResolveYAMLPath(filepath.Join(this.rootDir, configFile))
-	var configOpts []config.Option
-	if len(this.parentVars) > 0 {
-		configOpts = append(configOpts, config.WithVars(this.parentVars))
-	}
-	gcfg, _, err := gorun.LoadConfig(configPath, configOpts...)
-	if err != nil {
-		this.mu.Lock()
-		this.state = StateError
-		this.lastExecError = err.Error()
-		this.mu.Unlock()
-		return fmt.Errorf("target %q: load config: %w", this.name, err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	this.mu.Lock()
-	this.cancel = cancel
-	this.mu.Unlock()
-
-	var closers []io.Closer
-	var buildLog, runLog io.Writer = os.Stdout, os.Stdout
-	if this.tcfg.Logs != nil {
-		var err error
-		buildLog, err = openLogFile(this.tcfg.Logs.Build, os.Stdout, &closers)
-		if err != nil {
-			cancel()
-			return fmt.Errorf("target %q: %w", this.name, err)
-		}
-		runLog, err = openLogFile(this.tcfg.Logs.Run, os.Stdout, &closers)
-		if err != nil {
-			for _, c := range closers {
-				c.Close()
-			}
-			cancel()
-			return fmt.Errorf("target %q: %w", this.name, err)
-		}
-	}
-
-	gorunSumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
-
-	opts := gorun.Options{
-		RootDir:      this.rootDir,
-		LogPrefix:    fmt.Sprintf("[%s]", this.name),
-		Stdout:       runLog,
-		Stderr:       runLog,
-		BuildStdout:  buildLog,
-		BuildStderr:  buildLog,
-		SumFile:      gorunSumFile,
-
-		OnBuildStart:   this.onExecStart,
-		OnBuildDone:    this.onExecDone,
-		OnProcessStart: this.onProcessStart,
-		OnProcessExit:  this.onProcessExit,
-
-		BuildTrigger: this.buildTrigger,
-		ExecStop:     this.execStop,
-		ExecStart:    this.execStart,
-	}
-
-	go func() {
-		defer func() {
-			for _, c := range closers {
-				c.Close()
-			}
-		}()
-
-		err := gorun.Run(ctx, *gcfg, opts)
 		this.handleRunComplete(ctx, err)
 	}()
 
@@ -429,7 +347,6 @@ func (this *target) Status() TargetStatus {
 
 	return TargetStatus{
 		Name:             this.name,
-		Type:             this.tcfg.EffectiveType(),
 		HasBuild:         this.hasBuild,
 		HasRun:           this.hasRun,
 		State:            this.state,

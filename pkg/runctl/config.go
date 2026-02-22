@@ -32,10 +32,10 @@ type APIConfig struct {
 
 // TargetConfig describes a single managed target.
 type TargetConfig struct {
-	Type    string `yaml:"type,omitempty"` // "execrun" (default) or "gorun"
-	Config  string `yaml:"config"`        // path to config file (relative to runctl.yaml dir)
-	Enabled *bool  `yaml:"enabled,omitempty"`
-	Links   []Link `yaml:"links,omitempty"`
+	Config  string            `yaml:"config"`          // path to config file (relative to runctl.yaml dir)
+	Enabled *bool             `yaml:"enabled,omitempty"`
+	Links   []Link            `yaml:"links,omitempty"`
+	Vars    map[string]string `yaml:"vars,omitempty"` // per-target template vars (override global vars)
 
 	// Logs is populated internally from Config.LogsDir — not user-configurable.
 	Logs *LogsConfig `yaml:"-"`
@@ -55,14 +55,6 @@ type Link struct {
 type LogsConfig struct {
 	Build string `json:"build,omitempty"` // build stage log file
 	Run   string `json:"run,omitempty"`   // run stage log file
-}
-
-// EffectiveType returns the target type, defaulting to "execrun".
-func (this TargetConfig) EffectiveType() string {
-	if this.Type == "" {
-		return "execrun"
-	}
-	return this.Type
 }
 
 // IsEnabled returns whether the target should start on launch (default: true).
@@ -91,9 +83,34 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.ResolvedVars = resolvedVars
 
 	// Set resolved vars in environment so child processes can access them.
-	// Only set if not already present, so caller-provided env vars take precedence.
 	for k, v := range resolvedVars {
-		if _, exists := os.LookupEnv(k); !exists {
+		os.Setenv(k, v)
+	}
+
+	// Resolve per-target vars using global vars as template data.
+	envMap := environMap()
+	for name, t := range cfg.Targets {
+		if len(t.Vars) == 0 {
+			continue
+		}
+		td := make(map[string]any, len(resolvedVars))
+		for k, v := range resolvedVars {
+			td[k] = v
+		}
+
+		resolved := make(map[string]string, len(t.Vars))
+		for k, expr := range t.Vars {
+			val, err := config.ResolveExpr(expr, td, envMap)
+			if err != nil {
+				return nil, fmt.Errorf("target %q: resolve var %q: %w", name, k, err)
+			}
+			resolved[k] = val
+		}
+		t.Vars = resolved
+		cfg.Targets[name] = t
+
+		// Set target vars in environment (overrides global vars).
+		for k, v := range resolved {
 			os.Setenv(k, v)
 		}
 	}
@@ -144,13 +161,6 @@ func (this *Config) Validate() error {
 			return fmt.Errorf("target %q: config is required", name)
 		}
 
-		switch t.EffectiveType() {
-		case "execrun", "gorun":
-			// valid
-		default:
-			return fmt.Errorf("target %q: unknown type %q (must be \"execrun\" or \"gorun\")", name, t.Type)
-		}
-
 		// Validate links: each must have exactly one of url or file
 		for i, link := range t.Links {
 			hasURL := link.URL != ""
@@ -174,6 +184,18 @@ func (this *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// environMap returns the current environment as a key→value map.
+func environMap() map[string]string {
+	env := os.Environ()
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			m[k] = v
+		}
+	}
+	return m
 }
 
 // DefaultConfigYAML is the commented starter YAML for `runctl init`.

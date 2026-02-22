@@ -128,7 +128,7 @@
         <table id="build-table">
           <thead>
             <tr>
-              <th>Name</th><th>Type</th><th>Status</th><th>Duration</th>
+              <th>Name</th><th>Status</th><th>Duration</th>
               <th>Last Build</th><th>Builds</th><th>Error</th><th>Logs</th><th>Actions</th>
             </tr>
           </thead>
@@ -590,7 +590,7 @@
     const tbody = document.querySelector('#build-table tbody');
     const filtered = targets.filter(t => t.has_build);
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No build targets</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No build targets</td></tr>';
       return;
     }
     tbody.innerHTML = filtered.map(t => {
@@ -605,7 +605,6 @@
 
       return '<tr>' +
         '<td><strong>' + escHtml(t.name) + '</strong></td>' +
-        '<td>' + escHtml(t.type) + '</td>' +
         '<td>' + badge(statusText, statusCls) + '</td>' +
         '<td>' + fmtDuration(t.last_exec_duration_secs) + '</td>' +
         '<td>' + relTime(t.last_exec_time) + '</td>' +

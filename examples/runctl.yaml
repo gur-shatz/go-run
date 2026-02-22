@@ -17,18 +17,22 @@ vars:
   TICKER_PORT: "{{ add .BASE_PORT 82 }}"
   RUNUI_PORT: "{{ add .BASE_PORT 99 }}"
 
+  # add a default greeting if not given by the environemnt.
+  HELLO_GREETING: '{{ env "HELLO_GREETING" | default "Hello from runctl.yaml" }}'
+
   # Data directory — logs and artifacts go here
   DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/runctl-data" }}'
 
 logs_dir: "{{ .DATA_DIR }}/logs"
 
 api:
-  port: [[.RUNUI_PORT]]
+  port: [[.RUNUI_PORT| int]]
 
 targets:
   hello-go:
-    type: gorun
-    config: hello-go/gorun.yaml
+    config: hello-go/execrun.yaml
+    vars:
+      HELLO_GREETING: '{{ .HELLO_GREETING | default "None" }} extended'
     links:
       - name: HTTP
         url: "http://localhost:{{ .HELLO_PORT }}"

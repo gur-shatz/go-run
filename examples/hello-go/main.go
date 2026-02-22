@@ -7,13 +7,19 @@ import (
 )
 
 func main() {
-	port := os.Getenv("HELLO_GO_PORT")
+	port := os.Getenv("HELLO_PORT")
 	if port == "" {
-		port = "15080"
+		fmt.Fprintln(os.Stderr, "error: HELLO_PORT environment variable is required")
+		os.Exit(1)
+	}
+
+	greeting := os.Getenv("HELLO_GREETING")
+	if greeting == "" {
+		greeting = "Hello"
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello from gorun! (port %s)\n", port)
+		fmt.Fprintf(w, "%s (port %s)\n", greeting, port)
 	})
 
 	fmt.Printf("hello-go listening on :%s\n", port)
