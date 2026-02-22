@@ -4,11 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
-	"maps"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -57,7 +58,8 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  init    Generate a starter runctl.yaml\n")
 		fmt.Fprintf(os.Stderr, "  build   Run build steps for all (or selected) targets and exit\n")
-		fmt.Fprintf(os.Stderr, "  sum     Write .sum files for all (or selected) targets and exit\n\n")
+		fmt.Fprintf(os.Stderr, "  sum     Write .sum files for all (or selected) targets and exit\n")
+		fmt.Fprintf(os.Stderr, "  vars    Dump resolved variables for all (or selected) targets\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  runctl                          Run with default config (runctl.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  runctl -ui                      Run with web dashboard\n")
@@ -66,6 +68,8 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "  runctl build                    Build all targets and exit\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api build             Build only 'api' target\n")
 		fmt.Fprintf(os.Stderr, "  runctl sum                      Write sum files for all targets\n")
+		fmt.Fprintf(os.Stderr, "  runctl vars                     Show resolved variables\n")
+		fmt.Fprintf(os.Stderr, "  runctl -t api vars              Show variables for 'api' target\n")
 		fmt.Fprintf(os.Stderr, "  runctl init                     Generate runctl.yaml\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
@@ -90,6 +94,8 @@ func run() error {
 			return runBuild(*configPath, *verbose, targets)
 		case "sum":
 			return runSum(*configPath, *verbose, targets)
+		case "vars":
+			return runVars(*configPath, targets)
 		}
 	}
 
@@ -155,7 +161,7 @@ func run() error {
 		if *ui {
 			fmt.Fprintf(os.Stdout, "[runui] Dashboard: http://localhost:%d/\n", cfg.API.Port)
 		} else {
-			fmt.Fprintf(os.Stdout, "[runctl] API server listening on :%d\n", cfg.API.Port)
+			fmt.Fprintf(os.Stdout, "[runctl] API server listening on :%d, no UI\n", cfg.API.Port)
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -325,6 +331,68 @@ func runSum(configPath string, verbose bool, filterNames []string) error {
 		}
 
 		log.Success("%s: wrote %s (%d files)", entry.Name, sumPath, len(sums))
+	}
+
+	return nil
+}
+
+func runVars(configPath string, filterNames []string) error {
+	cfg, err := runctl.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	entries, err := resolveTargets(cfg, filterNames)
+	if err != nil {
+		return err
+	}
+
+	// Print global vars
+	fmt.Println("Global vars:")
+	if len(cfg.ResolvedVars) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		keys := make([]string, 0, len(cfg.ResolvedVars))
+		for k := range cfg.ResolvedVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  %s=%s\n", k, cfg.ResolvedVars[k])
+		}
+	}
+
+	// Print per-target vars (merged: global + target overrides)
+	for _, entry := range entries {
+		fmt.Printf("\nTarget %q vars:\n", entry.Name)
+
+		merged := make(map[string]string, len(cfg.ResolvedVars)+len(entry.Config.Vars))
+		maps.Copy(merged, cfg.ResolvedVars)
+		maps.Copy(merged, entry.Config.Vars)
+
+		if len(merged) == 0 {
+			fmt.Println("  (none)")
+			continue
+		}
+
+		keys := make([]string, 0, len(merged))
+		for k := range merged {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := merged[k]
+			// Mark overridden vars
+			if _, isOverride := entry.Config.Vars[k]; isOverride {
+				if _, isGlobal := cfg.ResolvedVars[k]; isGlobal {
+					fmt.Printf("  %s=%s  (overridden)\n", k, v)
+					continue
+				}
+				fmt.Printf("  %s=%s  (target-only)\n", k, v)
+				continue
+			}
+			fmt.Printf("  %s=%s\n", k, v)
+		}
 	}
 
 	return nil

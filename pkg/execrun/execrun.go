@@ -141,9 +141,16 @@ func (this *Config) Validate() error {
 	return nil
 }
 
-// Steps returns the build (preparation) commands.
+// Steps returns all preparation commands: build commands followed by
+// all exec commands except the last (the managed process).
 func (this *Config) Steps() []string {
-	return this.Build
+	if len(this.Exec) <= 1 {
+		return this.Build
+	}
+	steps := make([]string, 0, len(this.Build)+len(this.Exec)-1)
+	steps = append(steps, this.Build...)
+	steps = append(steps, this.Exec[:len(this.Exec)-1]...)
+	return steps
 }
 
 // RunCmd returns the last exec command (the long-running managed process).
