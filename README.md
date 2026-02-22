@@ -55,13 +55,16 @@ Both modes build to a temp binary, watch for changes (default: `**/*.go`, `go.mo
 `gorun.yaml` (`gorun init` generates a starter):
 
 ```yaml
+vars:
+  PORT: '{{ env "PORT" | default "8080" }}'
+
 watch:
   - "**/*.go"
   - "go.mod"
   - "go.sum"
   - "!vendor/**"
 
-args: "./cmd/server -port 8080"
+args: './cmd/server -port {{ .PORT }}'
 
 exec:
   - "go generate ./..."
@@ -69,6 +72,7 @@ exec:
 
 | Field   | Required | Description                                                                  |
 | ------- | -------- | ---------------------------------------------------------------------------- |
+| `vars`  | no       | Template variables (see [Template Variables](#template-variables))            |
 | `watch` | no       | Glob patterns for files to watch (defaults to `**/*.go`, `go.mod`, `go.sum`) |
 | `args`  | yes      | Build flags + target + app args, parsed like `go run` arguments              |
 | `exec`  | no       | Commands to run before `go build`                                            |
@@ -76,7 +80,6 @@ exec:
 ### Usage
 
 ```
-gorun [flags] [--] [go-build-flags] <target> [app-args...]
 gorun [-c <file>]                   Load config and run
 gorun [-c <file>] init              Generate a default config
 gorun [-c <file>] sum               Snapshot file hashes
@@ -98,10 +101,8 @@ gorun [-c <file>] sum               Snapshot file hashes
 ### Examples
 
 ```bash
-gorun ./cmd/server -port 8080          # CLI args, no config needed
-gorun -- -race ./cmd/server -port 8080 # Pass build flags with --
-gorun -c myapp.yaml                    # Use a specific config file
 gorun                                  # Load gorun.yaml from current dir
+gorun -c myapp.yaml                    # Use a specific config file
 ```
 
 ### Behavior
@@ -113,9 +114,15 @@ gorun                                  # Load gorun.yaml from current dir
 ### Library Usage
 
 ```go
-import "github.com/gur-shatz/go-run/pkg/gorun"
+import (
+    "github.com/gur-shatz/go-run/pkg/gorun"
+    "github.com/gur-shatz/go-run/pkg/config"
+)
 
-cfg, _ := gorun.LoadConfig("gorun.yaml")
+cfg, vars, _ := gorun.LoadConfig("gorun.yaml")
+// Or with parent vars passed down:
+cfg, vars, _ = gorun.LoadConfig("gorun.yaml", config.WithVars(parentVars))
+
 ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 defer cancel()
 gorun.Run(ctx, *cfg, gorun.Options{Verbose: true})
@@ -192,6 +199,9 @@ execrun sum
 `execrun.yaml`:
 
 ```yaml
+vars:
+  LISTEN_ADDR: '0.0.0.0:{{ .PORT | default "8081" }}'
+
 # File patterns to watch (gitignore-style globs)
 watch:
   - "**/*.go"
@@ -211,6 +221,7 @@ Commands are executed via `sh -c`, so pipes, redirects, and environment variable
 
 | Field   | Required | Description                                                             |
 | ------- | -------- | ----------------------------------------------------------------------- |
+| `vars`  | no       | Template variables (see [Template Variables](#template-variables))       |
 | `watch` | yes      | Glob patterns for files to watch (gitignore-style, `!` for exclusions)  |
 | `build` | no       | Preparation commands that run to completion before starting the process |
 | `exec`  | no       | Run commands — the last is the managed process. Empty = build-only      |
@@ -294,19 +305,14 @@ If the managed process exits on its own, execrun waits for the next file change 
 ### Library Usage
 
 ```go
-import "github.com/gur-shatz/go-run/pkg/execrun"
+import (
+    "github.com/gur-shatz/go-run/pkg/execrun"
+    "github.com/gur-shatz/go-run/pkg/config"
+)
 
-cfg, err := execrun.LoadConfig("execrun.yaml")
-if err != nil {
-    log.Fatal(err)
-}
-
-ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-defer cancel()
-
-err = execrun.Run(ctx, *cfg, execrun.Options{
-    Verbose: true,
-})
+cfg, vars, err := execrun.LoadConfig("execrun.yaml")
+// Or with parent vars:
+cfg, vars, err = execrun.LoadConfig("execrun.yaml", config.WithVars(parentVars))
 ```
 
 ---
@@ -330,23 +336,25 @@ runui                 # API + web dashboard at http://localhost:9100
 ### Config File
 
 ```yaml
-env:
-  PORT: "8080"
-  DB_HOST: "localhost"
+vars:
+  BASE_PORT: '{{ env "BASE_PORT" | default "8000" }}'
+  API_PORT:  "{{ add .BASE_PORT 80 }}"
+  UI_PORT:   "{{ add .BASE_PORT 99 }}"
+  DATA_DIR:  '{{ env "DATA_DIR" | default "/tmp/runctl-data" }}'
 
 api:
-  port: 9100              # HTTP API port (default: 9100)
+  port: {{ .UI_PORT }}
 
-logs_dir: /tmp/runctl-logs # Optional: directory for build/run log files
+logs_dir: "{{ .DATA_DIR }}/logs"
 
 targets:
   api:
-    type: gorun            # "gorun" or "execrun" (default: execrun)
+    type: gorun
     config: services/api/gorun.yaml
-    enabled: true          # Start on launch (default: true)
+    enabled: true
     links:
       - name: HTTP
-        url: "http://localhost:$PORT"
+        url: "http://localhost:{{ .API_PORT }}"
 
   frontend:
     config: services/frontend/execrun.yaml
@@ -354,7 +362,7 @@ targets:
 
 | Field              | Required | Description                                              |
 | ------------------ | -------- | -------------------------------------------------------- |
-| `env`              | no       | Environment variables available to all targets           |
+| `vars`             | no       | Template variables (see [Template Variables](#template-variables)) |
 | `api.port`         | no       | HTTP API port (default: 9100)                            |
 | `logs_dir`         | no       | Directory for log files (`<target>.build.log`/`.run.log`)|
 | `targets`          | yes      | Map of target name to target config                      |
@@ -364,6 +372,8 @@ targets:
 | `targets.*.links`  | no       | Named URLs shown in the dashboard                        |
 
 The `config` path is relative to the `runctl.yaml` directory. The target's working directory is derived from the config path's directory.
+
+Resolved vars from `runctl.yaml` are automatically passed down to child gorun/execrun configs via `config.WithVars()`. Child configs can reference parent vars with template syntax (e.g., `{{ .API_PORT | default "8080" }}`) and add their own `vars:` section.
 
 ### Web Dashboard (runui)
 
@@ -463,71 +473,78 @@ gorun emits structured protocol lines to stdout for consumption by parent servic
 
 Use `gorun.ScanOutput()` or `gorun.ParseProtocolLine()` to parse these events programmatically.
 
-## Environment Variables
+## Template Variables
 
-### Env var expansion in YAML configs
+All YAML configs (`gorun.yaml`, `execrun.yaml`, `runctl.yaml`) support Go template syntax for variable substitution, powered by `pkg/config`.
 
-All YAML configs (`gorun.yaml`, `execrun.yaml`, `runctl.yaml`) support `$VAR` and `${VAR}` syntax. Variables are expanded from the OS environment before YAML parsing, so you can use them in any string field:
+### `vars:` Section
+
+Define template variables in a top-level `vars:` section. Variables can reference environment variables, provide defaults, and depend on each other:
 
 ```yaml
-# execrun.yaml
+vars:
+  BASE_PORT: '{{ env "BASE_PORT" | default "8000" }}'
+  API_PORT:  "{{ add .BASE_PORT 80 }}"
+  DB_HOST:   '{{ env "DB_HOST" | default "localhost" }}'
+
 exec:
-  - "./bin/server --port $PORT"
+  - './bin/server --port {{ .API_PORT }} --db {{ .DB_HOST }}'
+```
+
+The `vars:` section is removed from the final parsed config — it exists only for template resolution.
+
+### Template Syntax
+
+Two delimiter styles are supported (useful when one conflicts with YAML quoting):
+
+| Syntax | Example |
+| ------ | ------- |
+| `{{ .VAR }}` | `"http://localhost:{{ .API_PORT }}"` |
+| `[[ .VAR ]]` | `port: [[.API_PORT]]` |
+
+### Template Functions
+
+| Function | Description | Example |
+| -------- | ----------- | ------- |
+| `default` | Fallback value if empty/nil | `{{ .PORT \| default "8080" }}` |
+| `env` | Read OS environment variable | `{{ env "HOME" }}` |
+| `required` | Error if value is empty/nil | `{{ .DB_URL \| required "DB_URL must be set" }}` |
+| `add` | Integer addition | `{{ add .BASE_PORT 80 }}` |
+| `int` / `asInt` | Cast to integer | `{{ .PORT \| int }}` |
+
+### Resolution
+
+Variables are resolved iteratively (up to 10 passes) to handle dependency chains. For example, `API_PORT` depends on `BASE_PORT` — the resolver evaluates `BASE_PORT` first, then uses its value to resolve `API_PORT`.
+
+**Priority** (highest wins):
+1. OS environment variables
+2. Parent vars passed via `config.WithVars()` (runctl → child configs)
+3. The config's own `vars:` section
+
+### Variable Propagation (runctl)
+
+When runctl loads child configs, resolved vars from `runctl.yaml` are passed down automatically. Child configs can reference parent vars and define their own:
+
+```yaml
+# runctl.yaml
+vars:
+  BASE_PORT: '{{ env "BASE_PORT" | default "8000" }}'
+  HELLO_PORT: "{{ add .BASE_PORT 80 }}"
+
+targets:
+  hello:
+    type: gorun
+    config: hello/gorun.yaml
+```
+
+```yaml
+# hello/gorun.yaml — HELLO_PORT comes from parent
+args: './main.go -port {{ .HELLO_PORT | default "8080" }}'
 ```
 
 ### Passing env vars to child processes
 
-Child processes (build steps, exec commands, compiled binaries) **inherit the full environment** of the parent process. There is no filtering or isolation — whatever is in the parent's environment is available to every child.
-
-This means you can pass env vars to targets using any standard method:
-
-```bash
-# Inline
-PORT=8080 gorun ./cmd/server
-
-# Export
-export PORT=8080
-gorun ./cmd/server
-
-# .env via direnv, dotenv, etc.
-```
-
-### runctl/runui `env:` block
-
-`runctl.yaml` supports a top-level `env:` block for defining env vars shared across all targets. These are set into the process environment via `os.Setenv` before any target configs are loaded:
-
-```yaml
-env:
-  PORT: "8080"
-  DB_HOST: "localhost"
-
-targets:
-  api:
-    type: gorun
-    config: api/gorun.yaml
-    links:
-      - name: HTTP
-        url: "http://localhost:$PORT"
-```
-
-**Two-pass expansion:** The config is parsed twice. First, existing OS env vars are expanded and the `env:` block is extracted and applied via `os.Setenv`. Then the full config is re-expanded with the new vars in place. This means:
-
-- Values in `env:` can reference pre-existing OS vars (e.g., `HOME: "$HOME/app"`)
-- Vars defined in `env:` are available everywhere else in `runctl.yaml` (link URLs, etc.)
-- Target configs (`gorun.yaml`, `execrun.yaml`) are loaded after `env:` is applied, so they see these vars too
-- Child processes inherit them automatically
-
-**Propagation flow:**
-
-```
-OS environment (PATH, HOME, …)
-  + runctl.yaml env: block (PORT=8080, DB_HOST=localhost)
-    → set via os.Setenv into parent process
-      → target configs expand $PORT when loaded
-      → child processes inherit PORT=8080 automatically
-```
-
-Note: `gorun.yaml` and `execrun.yaml` do not have their own `env:` block. To define env vars centrally, use the runctl/runui `env:` block or set them in the shell before running.
+Child processes (build steps, exec commands, compiled binaries) inherit the full environment of the parent process. Resolved vars from `runctl.yaml` are also set via `os.Setenv` (without overriding existing env vars), so child processes see them too.
 
 ---
 
