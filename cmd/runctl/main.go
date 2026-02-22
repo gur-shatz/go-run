@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"maps"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -15,9 +17,21 @@ import (
 	"github.com/gur-shatz/go-run/internal/color"
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
+	"github.com/gur-shatz/go-run/internal/sumfile"
+	"github.com/gur-shatz/go-run/pkg/config"
+	"github.com/gur-shatz/go-run/pkg/execrun"
 	"github.com/gur-shatz/go-run/pkg/runctl"
 	"github.com/gur-shatz/go-run/pkg/runui"
 )
+
+// stringSlice is a flag.Value that collects repeated -t values.
+type stringSlice []string
+
+func (this *stringSlice) String() string { return strings.Join(*this, ",") }
+func (this *stringSlice) Set(val string) error {
+	*this = append(*this, val)
+	return nil
+}
 
 func main() {
 	color.Init()
@@ -35,14 +49,23 @@ func run() error {
 	verbose := fs.Bool("v", false, "verbose output")
 	ui := fs.Bool("ui", false, "serve embedded web dashboard")
 
+	var targets stringSlice
+	fs.Var(&targets, "t", "target name filter (repeatable)")
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: runctl [flags] [command]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  init    Generate a starter runctl.yaml\n\n")
+		fmt.Fprintf(os.Stderr, "  init    Generate a starter runctl.yaml\n")
+		fmt.Fprintf(os.Stderr, "  build   Run build steps for all (or selected) targets and exit\n")
+		fmt.Fprintf(os.Stderr, "  sum     Write .sum files for all (or selected) targets and exit\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  runctl                          Run with default config (runctl.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  runctl -ui                      Run with web dashboard\n")
 		fmt.Fprintf(os.Stderr, "  runctl -c myconfig.yaml         Run with custom config\n")
+		fmt.Fprintf(os.Stderr, "  runctl -t api -t web            Watch only 'api' and 'web' targets\n")
+		fmt.Fprintf(os.Stderr, "  runctl build                    Build all targets and exit\n")
+		fmt.Fprintf(os.Stderr, "  runctl -t api build             Build only 'api' target\n")
+		fmt.Fprintf(os.Stderr, "  runctl sum                      Write sum files for all targets\n")
 		fmt.Fprintf(os.Stderr, "  runctl init                     Generate runctl.yaml\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
@@ -63,6 +86,10 @@ func run() error {
 		switch args[0] {
 		case "init":
 			return runInit(*configPath)
+		case "build":
+			return runBuild(*configPath, *verbose, targets)
+		case "sum":
+			return runSum(*configPath, *verbose, targets)
 		}
 	}
 
@@ -98,8 +125,17 @@ func run() error {
 		cancel()
 	}()
 
-	// Start all enabled targets
-	ctrl.StartTargets()
+	// Validate -t filter names before starting
+	if len(targets) > 0 {
+		for _, name := range targets {
+			if _, ok := cfg.Targets[name]; !ok {
+				return fmt.Errorf("unknown target %q", name)
+			}
+		}
+	}
+
+	// Start targets (filtered or all enabled)
+	ctrl.StartTargetsFiltered(targets)
 	defer ctrl.KillTargets()
 
 	// Create chi router and mount API routes
@@ -134,6 +170,164 @@ func run() error {
 	case err := <-errCh:
 		return fmt.Errorf("api server: %w", err)
 	}
+}
+
+// resolveTargets returns the (name, TargetConfig) pairs to operate on.
+// If filterNames is empty, all enabled targets are returned.
+// Returns an error if a filter name doesn't exist in the config.
+func resolveTargets(cfg *runctl.Config, filterNames []string) ([]targetEntry, error) {
+	if len(filterNames) > 0 {
+		entries := make([]targetEntry, 0, len(filterNames))
+		for _, name := range filterNames {
+			tcfg, ok := cfg.Targets[name]
+			if !ok {
+				return nil, fmt.Errorf("unknown target %q", name)
+			}
+			entries = append(entries, targetEntry{Name: name, Config: tcfg})
+		}
+		return entries, nil
+	}
+
+	entries := make([]targetEntry, 0, len(cfg.Targets))
+	for name, tcfg := range cfg.Targets {
+		if tcfg.IsEnabled() {
+			entries = append(entries, targetEntry{Name: name, Config: tcfg})
+		}
+	}
+	return entries, nil
+}
+
+type targetEntry struct {
+	Name   string
+	Config runctl.TargetConfig
+}
+
+// loadExecrunConfig loads an execrun config for a target, merging parent vars.
+func loadExecrunConfig(entry targetEntry, cfg *runctl.Config, baseDir string) (*execrun.Config, string, error) {
+	dir := filepath.Dir(entry.Config.Config)
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(baseDir, dir)
+	}
+	configFile := filepath.Base(entry.Config.Config)
+	configPath := configutil.ResolveYAMLPath(filepath.Join(dir, configFile))
+
+	parentVars := cfg.ResolvedVars
+	if len(entry.Config.Vars) > 0 {
+		parentVars = make(map[string]string, len(cfg.ResolvedVars)+len(entry.Config.Vars))
+		maps.Copy(parentVars, cfg.ResolvedVars)
+		maps.Copy(parentVars, entry.Config.Vars)
+	}
+
+	var configOpts []config.Option
+	if len(parentVars) > 0 {
+		configOpts = append(configOpts, config.WithVars(parentVars))
+	}
+
+	ecfg, _, err := execrun.LoadConfig(configPath, configOpts...)
+	if err != nil {
+		return nil, "", fmt.Errorf("target %q: load config: %w", entry.Name, err)
+	}
+	return ecfg, dir, nil
+}
+
+func runBuild(configPath string, verbose bool, filterNames []string) error {
+	log.SetPrefix("[runctl]")
+	log.Init(verbose)
+
+	cfg, err := runctl.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	baseDir := filepath.Dir(configPath)
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir: %w", err)
+	}
+
+	entries, err := resolveTargets(cfg, filterNames)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	var failed bool
+
+	for _, entry := range entries {
+		ecfg, dir, err := loadExecrunConfig(entry, cfg, absBase)
+		if err != nil {
+			log.Error("%s: %v", entry.Name, err)
+			failed = true
+			continue
+		}
+
+		opts := execrun.Options{
+			RootDir:   dir,
+			LogPrefix: fmt.Sprintf("[%s]", entry.Name),
+			Verbose:   verbose,
+		}
+
+		log.Status("%s: building...", entry.Name)
+		if err := execrun.RunBuild(ctx, *ecfg, opts); err != nil {
+			log.Error("%s: build failed: %v", entry.Name, err)
+			failed = true
+		} else {
+			log.Success("%s: build ok", entry.Name)
+		}
+	}
+
+	if failed {
+		return fmt.Errorf("one or more targets failed to build")
+	}
+	return nil
+}
+
+func runSum(configPath string, verbose bool, filterNames []string) error {
+	log.SetPrefix("[runctl]")
+	log.Init(verbose)
+
+	cfg, err := runctl.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	baseDir := filepath.Dir(configPath)
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir: %w", err)
+	}
+
+	entries, err := resolveTargets(cfg, filterNames)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		ecfg, dir, err := loadExecrunConfig(entry, cfg, absBase)
+		if err != nil {
+			log.Error("%s: %v", entry.Name, err)
+			continue
+		}
+
+		sums, err := execrun.ScanFiles(ecfg, dir)
+		if err != nil {
+			log.Error("%s: scan failed: %v", entry.Name, err)
+			continue
+		}
+
+		configFile := filepath.Base(entry.Config.Config)
+		sumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
+		sumPath := filepath.Join(dir, sumFile)
+
+		if err := sumfile.Write(sumPath, sums); err != nil {
+			log.Error("%s: write sum: %v", entry.Name, err)
+			continue
+		}
+
+		log.Success("%s: wrote %s (%d files)", entry.Name, sumPath, len(sums))
+	}
+
+	return nil
 }
 
 func runInit(configPath string) error {

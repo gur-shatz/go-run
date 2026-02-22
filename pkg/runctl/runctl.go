@@ -72,6 +72,31 @@ func (this *Controller) StartTargets() {
 	}
 }
 
+// StartTargetsFiltered launches only the named targets.
+// If names is empty, it starts all enabled targets (same as StartTargets).
+func (this *Controller) StartTargetsFiltered(names []string) {
+	if len(names) == 0 {
+		this.StartTargets()
+		return
+	}
+
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	filter := make(map[string]bool, len(names))
+	for _, n := range names {
+		filter[n] = true
+	}
+
+	for name, t := range this.targets {
+		if filter[name] {
+			if err := t.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "[runctl] Warning: failed to start %s: %v\n", name, err)
+			}
+		}
+	}
+}
+
 // StopTargets gracefully stops all targets (SIGTERM → 5s → SIGKILL).
 func (this *Controller) StopTargets() {
 	this.mu.RLock()

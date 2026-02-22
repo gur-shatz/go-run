@@ -628,6 +628,47 @@ func ScanFiles(cfg *Config, rootDir ...string) (map[string]string, error) {
 	return scan.ScanFiles(dir, patterns)
 }
 
+// RunBuild runs just the build (preparation) steps and returns.
+// It does not start watchers or the managed process.
+func RunBuild(ctx context.Context, cfg Config, opts Options) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	if opts.Stdout == nil {
+		opts.Stdout = os.Stdout
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = os.Stderr
+	}
+	if opts.ExecStdout == nil {
+		opts.ExecStdout = opts.Stdout
+	}
+	if opts.ExecStderr == nil {
+		opts.ExecStderr = opts.Stderr
+	}
+
+	color.Init()
+	prefix := "[execrun]"
+	if opts.LogPrefix != "" {
+		prefix = opts.LogPrefix
+	}
+	l := log.New(prefix, opts.Verbose)
+
+	rootDir := opts.RootDir
+	if rootDir == "" {
+		var err error
+		rootDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+	}
+
+	r := newRunner(ctx, cfg, opts, rootDir, l)
+	_, err := r.execSteps()
+	return err
+}
+
 // DefaultConfigYAML is the commented starter YAML for `execrun init`.
 //
 //go:embed execrun.default.yaml

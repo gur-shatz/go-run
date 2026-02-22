@@ -211,17 +211,33 @@ cfg, vars, err = execrun.LoadConfig("execrun.yaml", config.WithVars(parentVars))
 Multi-target orchestrator. Manage multiple execrun targets from a single `runctl.yaml`, with an HTTP API for status and control. Use `-ui` to enable the embedded web dashboard.
 
 ```bash
-runctl                # API only
-runctl -ui            # API + web dashboard at http://localhost:9100
+runctl                    # Watch all enabled targets (API + watchers)
+runctl -ui                # API + web dashboard at http://localhost:9100
+runctl -t api             # Watch only the "api" target
+runctl build              # Build all enabled targets and exit
+runctl -t api build       # Build only "api" and exit
+runctl sum                # Write .sum files for all enabled targets
+runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 ```
+
+### Commands
+
+| Command | Description |
+| ------- | ----------- |
+| `init`  | Generate a starter `runctl.yaml` |
+| `build` | Run build steps for selected targets and exit (no watchers, no HTTP server) |
+| `sum`   | Snapshot watched file hashes to `.sum` files and exit |
 
 ### Flags
 
-| Flag           | Default       | Description                      |
-| -------------- | ------------- | -------------------------------- |
-| `-c, --config` | `runctl.yaml` | Config file path                 |
-| `-ui`          | `false`       | Serve embedded web dashboard     |
-| `-v`           | `false`       | Verbose output                   |
+| Flag           | Default       | Description                                              |
+| -------------- | ------------- | -------------------------------------------------------- |
+| `-c, --config` | `runctl.yaml` | Config file path                                         |
+| `-t <name>`    |               | Target filter (repeatable). Applies to watch, build, sum |
+| `-ui`          | `false`       | Serve embedded web dashboard                             |
+| `-v`           | `false`       | Verbose output                                           |
+
+The `-t` flag can be specified multiple times to select specific targets. Without `-t`, all enabled targets are used. An error is returned if a target name doesn't exist in the config.
 
 ### Config File
 
