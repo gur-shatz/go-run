@@ -53,11 +53,14 @@ func (this *Logger) Verbose(format string, args ...any) {
 }
 
 // Tick prints a heartbeat dot — green if ok, red if not. No newline.
-func (this *Logger) Tick(ok bool) {
-	if ok {
+func (this *Logger) Tick(buildOK, execOK bool) {
+	if buildOK {
 		fmt.Print(color.Green("."))
 	} else {
 		fmt.Print(color.Red("."))
+	}
+	if !execOK {
+		fmt.Print(color.Red("\u2193"))
 	}
 	os.Stdout.Sync()
 }
@@ -96,5 +99,5 @@ func Warn(format string, args ...any)    { defaultLogger.Warn(format, args...) }
 func Success(format string, args ...any) { defaultLogger.Success(format, args...) }
 func Status(format string, args ...any)  { defaultLogger.Status(format, args...) }
 func Verbose(format string, args ...any) { defaultLogger.Verbose(format, args...) }
-func Tick(ok bool)                       { defaultLogger.Tick(ok) }
+func Tick(buildOK, execOK bool)          { defaultLogger.Tick(buildOK, execOK) }
 func Change(changes sumfile.ChangeSet)   { defaultLogger.Change(changes) }

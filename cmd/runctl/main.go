@@ -115,7 +115,7 @@ func run() error {
 
 	baseDir := filepath.Dir(*configPath)
 
-	ctrl, err := runctl.New(*cfg, baseDir)
+	ctrl, err := runctl.New(*cfg, baseDir, *verbose)
 	if err != nil {
 		return err
 	}

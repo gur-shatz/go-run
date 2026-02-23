@@ -11,13 +11,14 @@ import (
 type Controller struct {
 	cfg     Config
 	baseDir string
+	verbose bool
 	targets map[string]*target
 	mu      sync.RWMutex
 }
 
 // New creates a Controller from the given config.
 // baseDir is the directory containing runctl.yaml (used to resolve relative target dirs).
-func New(cfg Config, baseDir string) (*Controller, error) {
+func New(cfg Config, baseDir string, verbose bool) (*Controller, error) {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve base dir: %w", err)
@@ -37,6 +38,7 @@ func New(cfg Config, baseDir string) (*Controller, error) {
 	ctrl := &Controller{
 		cfg:     cfg,
 		baseDir: absBase,
+		verbose: verbose,
 		targets: make(map[string]*target, len(cfg.Targets)),
 	}
 
@@ -52,7 +54,7 @@ func New(cfg Config, baseDir string) (*Controller, error) {
 				parentVars[k] = v
 			}
 		}
-		ctrl.targets[name] = newTarget(name, tcfg, absBase, parentVars)
+		ctrl.targets[name] = newTarget(name, tcfg, absBase, parentVars, verbose)
 	}
 
 	return ctrl, nil

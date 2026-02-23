@@ -57,6 +57,7 @@ type target struct {
 	tcfg       TargetConfig
 	rootDir    string            // absolute path to target working directory
 	parentVars map[string]string // resolved vars from parent (runctl) config
+	verbose    bool
 	hasBuild   bool
 	hasRun     bool
 
@@ -79,7 +80,7 @@ type target struct {
 	execStart    chan struct{}
 }
 
-func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[string]string) *target {
+func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[string]string, verbose bool) *target {
 	dir := filepath.Dir(tcfg.Config)
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(baseDir, dir)
@@ -90,6 +91,7 @@ func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[st
 		tcfg:         tcfg,
 		rootDir:      dir,
 		parentVars:   parentVars,
+		verbose:      verbose,
 		hasBuild:     true, // default; refined for execrun targets after config load
 		hasRun:       true,
 		state:        StateIdle,
@@ -161,6 +163,7 @@ func (this *target) start() error {
 	opts := execrun.Options{
 		RootDir:    this.rootDir,
 		LogPrefix:  fmt.Sprintf("[%s]", this.name),
+		Verbose:    this.verbose,
 		Stdout:     runLog,
 		Stderr:     runLog,
 		ExecStdout: buildLog,

@@ -326,7 +326,7 @@ targets:
 					"test": {Config: "test/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ctrl).NotTo(BeNil())
 		})
@@ -339,7 +339,7 @@ targets:
 					"app2": {Config: "app2/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			statuses := ctrl.Status()
@@ -353,7 +353,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = ctrl.TargetStatus("nonexistent")
@@ -369,7 +369,7 @@ targets:
 					"app2": {Config: "app2/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, s := range ctrl.Status() {
@@ -384,7 +384,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(ctrl.StopTarget("app")).To(Succeed())
@@ -398,7 +398,7 @@ targets:
 					"app": {Config: "app/execrun.yaml", Enabled: &f},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			status, err := ctrl.TargetStatus("app")
@@ -425,7 +425,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ctrl.StartTarget("nonexistent")
@@ -440,7 +440,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ctrl.StopTarget("nonexistent")
@@ -455,7 +455,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ctrl.RestartTarget("nonexistent")
@@ -470,7 +470,7 @@ targets:
 					"app": {Config: "app/execrun.yaml"},
 				},
 			}
-			ctrl, err := runctl.New(cfg, ".")
+			ctrl, err := runctl.New(cfg, ".", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ctrl.BuildTarget("nonexistent")

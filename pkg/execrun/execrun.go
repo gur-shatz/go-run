@@ -539,6 +539,8 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 	// Heartbeat state
 	var healthy atomic.Bool
 	healthy.Store(true)
+	var execHealthy atomic.Bool
+	execHealthy.Store(true)
 
 	// Set up watcher
 	w := watcher.New(rootDir, patterns, opts.PollInterval, opts.Debounce, func(changes sumfile.ChangeSet) {
@@ -554,6 +556,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		}
 		l.Success("Launching Execs Done (pid %d, %s).", r.pid(), scan.FormatDuration(dur))
 		healthy.Store(true)
+		execHealthy.Store(true)
 
 		// Update sum file
 		newSums, err := scan.ScanFiles(rootDir, patterns)
@@ -578,7 +581,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			return nil
 		case info := <-r.exited:
 			if info.ExitCode != 0 {
-				healthy.Store(false)
+				execHealthy.Store(false)
 				l.Error("Exited with code %d. Waiting for file changes...", info.ExitCode)
 			} else {
 				l.Status("Completed. Waiting for file changes...")
@@ -592,6 +595,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			} else {
 				l.Success("Build done (pid %d, %s).", r.pid(), scan.FormatDuration(dur))
 				healthy.Store(true)
+				execHealthy.Store(true)
 			}
 		case <-opts.ExecStop:
 			l.Status("Stopping process...")
@@ -604,7 +608,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 				l.Success("Started (pid %d).", r.pid())
 			}
 		case <-ticker.C:
-			l.Tick(healthy.Load())
+			l.Tick(healthy.Load(), execHealthy.Load())
 		}
 	}
 }
@@ -665,7 +669,7 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 				healthy.Store(true)
 			}
 		case <-ticker.C:
-			l.Tick(healthy.Load())
+			l.Tick(healthy.Load(), true)
 		}
 	}
 }
