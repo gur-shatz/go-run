@@ -26,6 +26,7 @@ type RouteEntry struct {
 	Path        string `json:"path"`
 	Description string `json:"description,omitempty"`
 	IsFolder    bool   `json:"isFolder,omitempty"`
+	IsExternal  bool   `json:"isExternal,omitempty"`
 }
 
 // FolderIndex is the JSON structure served at index.json.
@@ -539,6 +540,22 @@ func (this *RouteFolder) Link(path, description string) {
 		Path:        name + "/",
 		Description: description,
 		IsFolder:    true,
+	})
+}
+
+// ExternalLink adds a link entry that opens in a new browser tab.
+// The path is relative to the current folder (just like Link), so it works
+// correctly behind reverse proxies with a base path.
+// For full external URLs (e.g. "https://grafana.example.com"), pass the
+// complete URL as path.
+func (this *RouteFolder) ExternalLink(path, description string) {
+	name := strings.Trim(path, "/")
+	this.entries = append(this.entries, &RouteEntry{
+		Name:        name,
+		Method:      "GET",
+		Path:        name + "/",
+		Description: description,
+		IsExternal:  true,
 	})
 }
 

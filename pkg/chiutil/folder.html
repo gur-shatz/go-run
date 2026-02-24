@@ -484,6 +484,10 @@
             <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75zm1.75-.25a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z"/>
         </svg>`;
 
+        const externalIcon = `<svg class="icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"/>
+        </svg>`;
+
         const homeIcon = `<svg style="width:14px;height:14px;vertical-align:-2px" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6.906.664a1.749 1.749 0 0 1 2.187 0l5.25 4.2c.415.332.657.835.657 1.367v7.019A1.75 1.75 0 0 1 13.25 15h-3.5a.75.75 0 0 1-.75-.75V9H7v5.25a.75.75 0 0 1-.75.75h-3.5A1.75 1.75 0 0 1 1 13.25V6.23c0-.531.242-1.034.657-1.366l5.25-4.2Z"/>
         </svg>`;
@@ -518,11 +522,12 @@
         }
 
         function renderEntry(entry, index) {
-            const methodClass = entry.isFolder ? 'folder' : entry.method.toLowerCase();
-            const icon = entry.isFolder ? folderIcon : fileIcon;
-            const methodLabel = entry.isFolder ? 'DIR' : entry.method;
-            const isGet = !entry.isFolder && entry.method === 'GET';
-            const folderClass = entry.isFolder ? 'folder-entry' : '';
+            const isExternal = !!entry.isExternal;
+            const methodClass = entry.isFolder ? 'folder' : (isExternal ? 'folder' : entry.method.toLowerCase());
+            const icon = isExternal ? externalIcon : (entry.isFolder ? folderIcon : fileIcon);
+            const methodLabel = entry.isFolder ? 'DIR' : (isExternal ? 'LINK' : entry.method);
+            const isGet = !entry.isFolder && !isExternal && entry.method === 'GET';
+            const folderClass = (entry.isFolder || isExternal) ? 'folder-entry' : '';
 
             const descHtml = entry.description
                 ? `<div class="entry-desc">${entry.description}</div>`
@@ -531,6 +536,7 @@
             return `
                 <div class="entry ${folderClass}" data-name="${(entry.name || entry.path).toLowerCase()}"
                      data-path="${entry.path}" data-folder="${entry.isFolder}" data-method="${entry.method || ''}"
+                     data-external="${isExternal}"
                      data-index="${index}">
                     <span class="method ${methodClass}">${methodLabel}</span>
                     ${icon}
@@ -730,8 +736,14 @@
                 if (!entry) return;
 
                 const isFolder = entry.dataset.folder === 'true';
+                const isExternal = entry.dataset.external === 'true';
                 const path = entry.dataset.path;
                 const method = entry.dataset.method;
+
+                if (isExternal) {
+                    window.open(path, '_blank');
+                    return;
+                }
 
                 if (isFolder) {
                     window.location.href = path;

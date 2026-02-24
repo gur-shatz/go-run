@@ -371,7 +371,7 @@ func New() *Backoffice {
 
 	// pprof is registered on the top-level router because pprof.Index
 	// expects to see the full /debug/pprof/ path in the request.
-	folder.Link("/debug/pprof", "Go profiling (pprof)")
+	folder.ExternalLink("/debug/pprof", "Go profiling (pprof)")
 	r.HandleFunc("/debug/pprof/*", pprof.Index)
 	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
