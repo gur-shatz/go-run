@@ -10,11 +10,13 @@ vars:
   # │  Hello Go           +80     8080             │
   # │  Echo Server        +81     8081             │
   # │  Ticker             +82     8082             │
+  # │  Backoffice Demo    +83     8083             │
   # │  RunUI Dashboard    +99     8099  (go-run)   │
   # └──────────────────────────────────────────────┘
   HELLO_PORT: "{{ add .BASE_PORT 80 }}"
   ECHO_PORT: "{{ add .BASE_PORT 81 }}"
   TICKER_PORT: "{{ add .BASE_PORT 82 }}"
+  DEMO_PORT: "{{ add .BASE_PORT 83 }}"
   RUNUI_PORT: "{{ add .BASE_PORT 99 }}"
 
   # add a default greeting if not given by the environemnt.
@@ -48,3 +50,9 @@ targets:
 
   ticker:
     config: ticker/execrun.yaml
+
+  backoffice-demo:
+    config: backoffice-demo/execrun.yaml
+    links:
+      - name: HTTP
+        url: "http://localhost:{{ .DEMO_PORT }}"

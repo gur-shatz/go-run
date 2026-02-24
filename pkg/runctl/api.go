@@ -3,6 +3,7 @@ package runctl
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httputil"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ func (this *Controller) Routes() chi.Router {
 	r.Post("/targets/{name}/enable", this.handleEnableTarget)
 	r.Post("/targets/{name}/disable", this.handleDisableTarget)
 	r.Get("/targets/{name}/logs", this.handleGetLogs)
+	r.HandleFunc("/targets/{name}/backoffice/*", this.handleBackofficeProxy)
 	r.Get("/file", this.handleServeFile)
 
 	return r
@@ -235,4 +237,38 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func (this *Controller) handleBackofficeProxy(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	this.mu.RLock()
+	t, ok := this.targets[name]
+	this.mu.RUnlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	boClient := t.BackofficeClient()
+	if boClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backoffice not available")
+		return
+	}
+
+	// chi's wildcard param gives the path after /targets/{name}/backoffice/
+	targetPath := "/" + chi.URLParam(r, "*")
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = "backoffice"
+			req.URL.Path = targetPath
+			req.URL.RawQuery = r.URL.RawQuery
+			req.Host = "backoffice"
+		},
+		Transport: boClient.Transport(),
+	}
+
+	proxy.ServeHTTP(w, r)
 }

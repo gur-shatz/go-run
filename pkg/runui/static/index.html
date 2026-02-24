@@ -110,6 +110,25 @@
       color: #aaa; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; z-index: 10;
       pointer-events: none;
     }
+    .bo-badge { cursor: pointer; }
+    .bo-content {
+      padding: 1.25rem; overflow-y: auto; height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 0.85rem; color: #d4d4d4;
+    }
+    .bo-content h5 { margin: 0 0 0.75rem; font-size: 0.95rem; color: #e0e0e0; }
+    .bo-meta-table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+    .bo-meta-table th, .bo-meta-table td {
+      text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.8rem;
+    }
+    .bo-meta-table th { color: #aaa; width: 30%; font-weight: 600; }
+    .bo-meta-table td { color: #d4d4d4; word-break: break-word; white-space: normal; }
+    .bo-proxy-note {
+      margin-top: 1rem; padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.05);
+      border-radius: 4px; color: #888; font-size: 0.75rem; font-family: monospace;
+    }
+    .bo-unavailable { color: #888; font-style: italic; padding: 2rem 0; text-align: center; }
   </style>
 </head>
 <body>
@@ -141,7 +160,7 @@
           <thead>
             <tr>
               <th>Name</th><th>State</th><th>PID</th><th>Uptime</th>
-              <th>Restarts</th><th>Links</th><th>Logs</th><th>Actions</th>
+              <th>Restarts</th><th>Links</th><th>Backoffice</th><th>Logs</th><th>Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -155,6 +174,7 @@
         <h4 id="drawer-title">Logs</h4>
         <div class="drawer-actions">
           <button id="btn-tail" class="btn-tail active" onclick="_runuiToggleTail()">Tail: ON</button>
+          <button id="btn-open-tab" style="display:none;" onclick="_runuiOpenBoNewTab()">Open in new tab</button>
           <button onclick="_runuiCloseDrawer()">Close</button>
         </div>
       </div>
@@ -165,6 +185,7 @@
           <div id="vscroll-bottom-pad"></div>
         </div>
         <div id="vscroll-status" class="vscroll-status"></div>
+        <div id="bo-content" class="bo-content" style="display:none;"></div>
       </div>
     </div>
   </div>
@@ -257,19 +278,131 @@
 
   let drawerTarget = '';
   let drawerStage = '';
+  let drawerMode = ''; // 'logs' | 'backoffice'
   let vscrollState = null;
+  let boPollTimer = null;
 
   let autoTail = true;
   let scrollAbortCtrl = null;
+
+  function setDrawerMode(mode) {
+    drawerMode = mode;
+    const vp = document.getElementById('vscroll-viewport');
+    const vs = document.getElementById('vscroll-status');
+    const bo = document.getElementById('bo-content');
+    const tailBtn = document.getElementById('btn-tail');
+    const openTabBtn = document.getElementById('btn-open-tab');
+    if (mode === 'backoffice') {
+      vp.style.display = 'none';
+      vs.style.display = 'none';
+      bo.style.display = 'block';
+      tailBtn.style.display = 'none';
+      openTabBtn.style.display = '';
+    } else {
+      vp.style.display = '';
+      vs.style.display = '';
+      bo.style.display = 'none';
+      tailBtn.style.display = '';
+      openTabBtn.style.display = 'none';
+    }
+  }
+
+  function openBoNewTab() {
+    if (!drawerTarget) return;
+    const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/backoffice/';
+    window.open(url, '_blank');
+  }
 
   function openDrawer(name, stage) {
     drawerTarget = name;
     drawerStage = stage;
     document.getElementById('drawer-title').textContent = name + ' \u2014 ' + stage + ' logs';
     document.getElementById('log-drawer').classList.add('active');
+    setDrawerMode('logs');
     autoTail = true;
     updateTailButton();
+    stopBoPoll();
     vscrollInit();
+  }
+
+  function openBackofficeDrawer(name) {
+    drawerTarget = name;
+    drawerStage = '';
+    document.getElementById('drawer-title').textContent = name + ' \u2014 backoffice';
+    document.getElementById('log-drawer').classList.add('active');
+    setDrawerMode('backoffice');
+    if (vscrollState) {
+      clearInterval(vscrollState.pollTimer);
+      vscrollState = null;
+    }
+    stopBoPoll();
+    boErrorCount = 0;
+    fetchAndRenderBackoffice(name);
+    boPollTimer = setInterval(function() { fetchAndRenderBackoffice(name); }, 2000);
+  }
+
+  function stopBoPoll() {
+    if (boPollTimer) { clearInterval(boPollTimer); boPollTimer = null; }
+  }
+
+  let boErrorCount = 0;
+  const BO_MAX_ERRORS = 3;     // after this many consecutive errors, slow down
+  const BO_SLOW_INTERVAL = 10000; // 10s backoff interval
+
+  function fetchAndRenderBackoffice(name) {
+    fetch('/api/targets/' + encodeURIComponent(name) + '/backoffice/status')
+      .then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(data => {
+        if (drawerMode !== 'backoffice' || drawerTarget !== name) return;
+        boErrorCount = 0;
+        rescheduleBoPolling(2000);
+        renderBackofficeContent(name, data);
+      })
+      .catch(() => {
+        if (drawerMode !== 'backoffice' || drawerTarget !== name) return;
+        boErrorCount++;
+        if (boErrorCount >= BO_MAX_ERRORS) {
+          rescheduleBoPolling(BO_SLOW_INTERVAL);
+        }
+        document.getElementById('bo-content').innerHTML = '<div class="bo-unavailable">Backoffice unavailable</div>';
+      });
+  }
+
+  function rescheduleBoPolling(interval) {
+    if (!boPollTimer) return;
+    clearInterval(boPollTimer);
+    const name = drawerTarget;
+    boPollTimer = setInterval(function() { fetchAndRenderBackoffice(name); }, interval);
+  }
+
+  function renderBackofficeContent(name, data) {
+    const el = document.getElementById('bo-content');
+    if (!data || (!data.ready && !data.status)) {
+      el.innerHTML = '<div class="bo-unavailable">Backoffice unavailable</div>';
+      return;
+    }
+    const readyCls = data.ready ? 'running' : 'idle';
+    const readyText = data.ready ? 'ready' : 'not ready';
+    let html = '<h5>Backoffice Status</h5>';
+    html += '<p><span class="badge badge-' + readyCls + '">' + readyText + '</span></p>';
+    if (data.status) {
+      html += '<p><strong>Status:</strong> ' + escHtml(data.status) + '</p>';
+    }
+    if (data.metadata && typeof data.metadata === 'object' && Object.keys(data.metadata).length > 0) {
+      html += '<table class="bo-meta-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+      for (const key of Object.keys(data.metadata).sort()) {
+        const val = typeof data.metadata[key] === 'object' ? JSON.stringify(data.metadata[key]) : String(data.metadata[key]);
+        html += '<tr><th>' + escHtml(key) + '</th><td>' + escHtml(val) + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    const boBase = '/api/targets/' + encodeURIComponent(name) + '/backoffice/';
+    html += '<p><a href="' + boBase + '" target="_blank">' + escHtml(boBase) + '</a></p>';
+    html += '<div class="bo-proxy-note">All backoffice routes are proxied under this path</div>';
+    el.innerHTML = html;
   }
 
   function closeDrawer() {
@@ -278,8 +411,10 @@
       clearInterval(vscrollState.pollTimer);
       vscrollState = null;
     }
+    stopBoPoll();
     drawerTarget = '';
     drawerStage = '';
+    drawerMode = '';
   }
 
   function toggleTail() {
@@ -584,6 +719,8 @@
   window._runuiOpenDrawer = openDrawer;
   window._runuiCloseDrawer = closeDrawer;
   window._runuiToggleTail = toggleTail;
+  window._runuiOpenBackoffice = openBackofficeDrawer;
+  window._runuiOpenBoNewTab = openBoNewTab;
 
   // Rendering
   function renderBuildTable(targets) {
@@ -620,7 +757,7 @@
     const tbody = document.querySelector('#run-table tbody');
     const filtered = targets.filter(t => t.has_run);
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No run targets</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No run targets</td></tr>';
       return;
     }
     tbody.innerHTML = filtered.map(t => {
@@ -633,6 +770,13 @@
         const cls = isRunning ? '' : ' class="link-disabled"';
         return '<a href="' + escHtml(href) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
       }).join(' ');
+
+      let boCell = '\u2014';
+      if (t.backoffice_ready && t.backoffice_status) {
+        const boSt = t.backoffice_status;
+        const boCls = boSt.ready ? 'running' : 'idle';
+        boCell = '<span class="badge badge-' + boCls + ' bo-badge" onclick="_runuiOpenBackoffice(\'' + escHtml(t.name) + '\')">' + escHtml(boSt.status || 'ready') + '</span>';
+      }
 
       const hasLogs = t.logs && t.logs.run;
       const logsCell = hasLogs
@@ -651,6 +795,7 @@
         '<td>' + relTime(t.last_start_time) + '</td>' +
         '<td>' + t.restart_count + '</td>' +
         '<td>' + (links || '\u2014') + '</td>' +
+        '<td>' + boCell + '</td>' +
         '<td>' + logsCell + '</td>' +
         '<td class="actions">' + actions + '</td>' +
         '</tr>';

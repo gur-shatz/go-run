@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/scan"
 	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/internal/watcher"
+	"github.com/gur-shatz/go-run/pkg/backoffice"
 	"github.com/gur-shatz/go-run/pkg/config"
 )
 
@@ -70,6 +72,9 @@ type Options struct {
 	OnExecDone     func(duration time.Duration, err error) // called after exec steps complete
 	OnProcessStart func(pid int)                           // called when the run command starts
 	OnProcessExit  func(exitCode int, err error)           // called when the run command exits
+
+	// OnBackofficeReady is called when the child's backoffice UDS becomes reachable.
+	OnBackofficeReady func(sockPath string)
 
 	// External control — all optional, used by runctl for granular control.
 	BuildTrigger <-chan struct{} // triggers rebuild + restart
@@ -214,6 +219,10 @@ type runner struct {
 	cmd      *exec.Cmd
 	exited   chan exitInfo
 	stopping bool
+
+	backofficeSockDir  string
+	backofficeSockPath string
+	backofficeCancel   context.CancelFunc
 }
 
 func newRunner(ctx context.Context, cfg Config, opts Options, rootDir string, logger *log.Logger) *runner {
@@ -354,7 +363,18 @@ func (this *runner) start() error {
 	this.cmd.Stderr = this.stderr
 	this.cmd.Stdin = os.Stdin
 
+	// Set up backoffice UDS for the child process
+	sockDir, err := os.MkdirTemp("", "gorun-bo-*")
+	if err != nil {
+		return fmt.Errorf("start: create backoffice temp dir: %w", err)
+	}
+	sockPath := filepath.Join(sockDir, "bo.sock")
+	this.backofficeSockDir = sockDir
+	this.backofficeSockPath = sockPath
+	this.cmd.Env = append(os.Environ(), backoffice.EnvSockPath+"="+sockPath)
+
 	if err := this.cmd.Start(); err != nil {
+		os.RemoveAll(sockDir)
 		return fmt.Errorf("start: %w", err)
 	}
 
@@ -362,6 +382,13 @@ func (this *runner) start() error {
 
 	if this.opts.OnProcessStart != nil {
 		this.opts.OnProcessStart(this.cmd.Process.Pid)
+	}
+
+	// Start backoffice poll goroutine
+	pollCtx, pollCancel := context.WithCancel(this.ctx)
+	this.backofficeCancel = pollCancel
+	if this.opts.OnBackofficeReady != nil {
+		go this.pollBackoffice(pollCtx, sockPath)
 	}
 
 	started := this.cmd
@@ -372,6 +399,11 @@ func (this *runner) start() error {
 		wasStopping := this.stopping
 		if this.cmd == started {
 			this.cmd = nil
+		}
+		// Cancel backoffice poll on unexpected exit
+		if this.backofficeCancel != nil {
+			this.backofficeCancel()
+			this.backofficeCancel = nil
 		}
 		this.mu.Unlock()
 
@@ -399,15 +431,51 @@ func (this *runner) start() error {
 	return nil
 }
 
+// pollBackoffice polls the UDS until it becomes reachable, then fires the callback.
+func (this *runner) pollBackoffice(ctx context.Context, sockPath string) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timeout:
+			this.log.Verbose("Backoffice poll timed out for %s", sockPath)
+			return
+		case <-ticker.C:
+			conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				this.log.Verbose("Backoffice ready at %s", sockPath)
+				this.opts.OnBackofficeReady(sockPath)
+				return
+			}
+		}
+	}
+}
+
 // stop kills the running process group. SIGTERM → 5s → SIGKILL.
 func (this *runner) stop() error {
 	this.mu.Lock()
 	cmd := this.cmd
 	this.cmd = nil
 	this.stopping = true
+	// Cancel backoffice poll goroutine
+	if this.backofficeCancel != nil {
+		this.backofficeCancel()
+		this.backofficeCancel = nil
+	}
+	sockDir := this.backofficeSockDir
+	this.backofficeSockDir = ""
+	this.backofficeSockPath = ""
 	this.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
+		if sockDir != "" {
+			os.RemoveAll(sockDir)
+		}
 		return nil
 	}
 
@@ -415,6 +483,9 @@ func (this *runner) stop() error {
 
 	// Kill the entire process group (process + children)
 	if err := killProcessGroup(cmd.Process, syscall.SIGTERM); err != nil {
+		if sockDir != "" {
+			os.RemoveAll(sockDir)
+		}
 		return nil
 	}
 
@@ -427,15 +498,18 @@ func (this *runner) stop() error {
 	select {
 	case <-done:
 		this.logTo(this.stdout, "Process stopped")
-		return nil
 	case <-time.After(5 * time.Second):
 		this.log.Warn("Process group didn't exit after SIGTERM, sending SIGKILL...")
 		this.logTo(this.stdout, "Process didn't exit after SIGTERM, sending SIGKILL")
 		killProcessGroup(cmd.Process, syscall.SIGKILL)
 		<-done
 		this.logTo(this.stdout, "Process killed")
-		return nil
 	}
+
+	if sockDir != "" {
+		os.RemoveAll(sockDir)
+	}
+	return nil
 }
 
 // kill immediately sends SIGKILL to the process group without waiting.

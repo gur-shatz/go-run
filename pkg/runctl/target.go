@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gur-shatz/go-run/internal/configutil"
+	"github.com/gur-shatz/go-run/pkg/backoffice"
+	boclient "github.com/gur-shatz/go-run/pkg/backoffice/client"
 	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 )
@@ -49,6 +51,9 @@ type TargetStatus struct {
 
 	Links []Link      `json:"links,omitempty"`
 	Logs  *LogsConfig `json:"logs,omitempty"`
+
+	BackofficeReady  bool                  `json:"backoffice_ready"`
+	BackofficeStatus *backoffice.StatusInfo `json:"backoffice_status,omitempty"`
 }
 
 // target wraps a target config and manages its lifecycle.
@@ -78,6 +83,9 @@ type target struct {
 	buildTrigger chan struct{}
 	execStop     chan struct{}
 	execStart    chan struct{}
+
+	backofficeClient *boclient.Client
+	backofficeReady  bool
 }
 
 func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[string]string, verbose bool) *target {
@@ -170,10 +178,11 @@ func (this *target) start() error {
 		ExecStderr: buildLog,
 		SumFile:    execSumFile,
 
-		OnExecStart:    this.onExecStart,
-		OnExecDone:     this.onExecDone,
-		OnProcessStart: this.onProcessStart,
-		OnProcessExit:  this.onProcessExit,
+		OnExecStart:       this.onExecStart,
+		OnExecDone:        this.onExecDone,
+		OnProcessStart:    this.onProcessStart,
+		OnProcessExit:     this.onProcessExit,
+		OnBackofficeReady: this.onBackofficeReady,
 
 		BuildTrigger: this.buildTrigger,
 		ExecStop:     this.execStop,
@@ -221,6 +230,8 @@ func (this *target) handleRunComplete(ctx context.Context, err error) {
 		this.lastExecError = err.Error()
 	}
 	this.pid = 0
+	this.backofficeClient = nil
+	this.backofficeReady = false
 }
 
 func (this *target) onExecStart() {
@@ -263,11 +274,27 @@ func (this *target) onProcessExit(exitCode int, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	this.pid = 0
+	this.backofficeClient = nil
+	this.backofficeReady = false
 	if exitCode == 0 {
 		this.state = StateExited
 	} else {
 		this.state = StateError
 	}
+}
+
+func (this *target) onBackofficeReady(sockPath string) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	this.backofficeClient = boclient.New(sockPath)
+	this.backofficeReady = true
+}
+
+// BackofficeClient returns the backoffice client if the child's backoffice is ready.
+func (this *target) BackofficeClient() *boclient.Client {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	return this.backofficeClient
 }
 
 // Build sends a build trigger (rebuild + restart).
@@ -348,7 +375,7 @@ func (this *target) Status() TargetStatus {
 		}
 	}
 
-	return TargetStatus{
+	ts := TargetStatus{
 		Name:             this.name,
 		HasBuild:         this.hasBuild,
 		HasRun:           this.hasRun,
@@ -364,5 +391,20 @@ func (this *target) Status() TargetStatus {
 		BuildCount:       this.buildCount,
 		Links:            links,
 		Logs:             this.tcfg.Logs,
+		BackofficeReady:  this.backofficeReady,
 	}
+
+	// Best-effort fetch of backoffice status
+	if this.backofficeClient != nil {
+		boClient := this.backofficeClient
+		this.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		if info, err := boClient.Status(ctx); err == nil {
+			ts.BackofficeStatus = info
+		}
+		this.mu.Lock()
+	}
+
+	return ts
 }
