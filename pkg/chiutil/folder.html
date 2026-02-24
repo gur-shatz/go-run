@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Routes</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/monokai.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --link: #58a6ff;
+            --link-hover: #79c0ff;
+            --get: #238636;
+            --post: #1f6feb;
+            --put: #9e6a03;
+            --patch: #8957e5;
+            --delete: #da3633;
+            --folder: #848d97;
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #ffffff;
+                --bg-secondary: #f6f8fa;
+                --border: #d0d7de;
+                --text: #1f2328;
+                --text-muted: #656d76;
+                --link: #0969da;
+                --link-hover: #0550ae;
+                --get: #1a7f37;
+                --post: #0969da;
+                --put: #9a6700;
+                --patch: #8250df;
+                --delete: #cf222e;
+                --folder: #656d76;
+            }
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            color: var(--text);
+            background: var(--bg);
+        }
+
+        .layout {
+            display: flex;
+            height: 100vh;
+        }
+
+        .nav-panel {
+            width: 600px;
+            min-width: 320px;
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            background: var(--bg);
+        }
+
+        .viewer-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-secondary);
+            min-width: 0;
+        }
+
+        header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .breadcrumb a {
+            color: var(--link);
+            text-decoration: none;
+        }
+
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb .sep {
+            margin: 0 2px;
+        }
+
+        h1 {
+            font-size: 15px;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .header-sep {
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .description {
+            color: var(--text-muted);
+            font-size: 12px;
+            margin-top: 4px;
+        }
+
+        .service-name {
+            background: var(--link);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .refresh-btn {
+            background: none;
+            border: none;
+            color: var(--link);
+            cursor: pointer;
+            padding: 2px;
+            display: flex;
+            align-items: center;
+            border-radius: 4px;
+        }
+
+        .refresh-btn:hover {
+            background: var(--bg-secondary);
+        }
+
+        .refresh-btn svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .refresh-btn.spinning svg {
+            animation: spin 0.5s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .back-link {
+            color: var(--link);
+            text-decoration: none;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .back-link svg {
+            width: 14px;
+            height: 14px;
+            margin-right: 2px;
+        }
+
+        .filter-box {
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .filter-box input {
+            width: 100%;
+            padding: 6px 10px;
+            font-size: 13px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text);
+            outline: none;
+        }
+
+        .filter-box input:focus {
+            border-color: var(--link);
+            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+        }
+
+        .filter-box input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .entries {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .entry {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .entry:hover {
+            background: var(--bg-secondary);
+        }
+
+        .entry.active {
+            background: var(--bg-secondary);
+            border-left: 2px solid var(--link);
+            padding-left: 14px;
+        }
+
+        .entry.hidden {
+            display: none;
+        }
+
+        .method {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 5px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            min-width: 42px;
+            text-align: center;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .method.get { background: var(--get); }
+        .method.post { background: var(--post); }
+        .method.put { background: var(--put); }
+        .method.patch { background: var(--patch); }
+        .method.delete { background: var(--delete); }
+        .method.folder {
+            background: transparent;
+            color: var(--folder);
+            border: 1px solid var(--border);
+        }
+
+        .icon {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+
+        .icon.folder-icon {
+            color: var(--link);
+        }
+
+        .entry-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .entry-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .entry.folder-entry .entry-name {
+            color: var(--link);
+        }
+
+        .entry-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .empty {
+            padding: 32px;
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .stats {
+            padding: 8px 16px;
+            font-size: 11px;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        /* Viewer panel styles */
+        .viewer-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
+            flex-shrink: 0;
+        }
+
+        .viewer-path {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 13px;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .viewer-status {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        .viewer-status.ok {
+            background: var(--get);
+            color: #fff;
+        }
+
+        .viewer-status.error {
+            background: var(--delete);
+            color: #fff;
+        }
+
+        .viewer-time {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .viewer-body {
+            flex: 1;
+            overflow: auto;
+            padding: 16px;
+        }
+
+        .viewer-content {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            background: transparent;
+            margin: 0;
+        }
+
+        .viewer-content code {
+            background: transparent !important;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+        }
+
+        /* Let highlight.js handle colors */
+        .viewer-content code.hljs {
+            background: transparent !important;
+        }
+
+        .viewer-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .viewer-loading {
+            color: var(--text-muted);
+        }
+
+        .copy-btn, .open-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px 8px;
+            font-size: 11px;
+            border-radius: 4px;
+            text-decoration: none;
+        }
+
+        .copy-btn {
+            margin-left: auto;
+        }
+
+        .copy-btn:hover, .open-btn:hover {
+            color: var(--text);
+            border-color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <div class="nav-panel">
+            <header>
+                <div class="header-row">
+                    <span class="service-name" id="service-name" style="display:none"></span>
+                    <nav class="breadcrumb" id="breadcrumb"></nav>
+                    <span class="header-sep">—</span>
+                    <h1 id="title">Routes</h1>
+                    <button class="refresh-btn" id="refresh-btn" title="Refresh (R)">
+                        <svg viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+                        </svg>
+                    </button>
+                    <span class="header-sep" id="up-sep">|</span>
+                    <a href=".." class="back-link" id="back-link">
+                        <svg viewBox="0 0 16 16" fill="currentColor">
+                            <path fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+                        </svg>
+                        <span>up</span>
+                    </a>
+                </div>
+                <p class="description" id="description"></p>
+            </header>
+
+            <div class="filter-box">
+                <input type="text" id="filter" placeholder="Filter... (press /)" autocomplete="off">
+            </div>
+
+            <div class="entries" id="entries">
+                <div class="empty">Loading...</div>
+            </div>
+
+            <div class="stats" id="stats"></div>
+        </div>
+
+        <div class="viewer-panel">
+            <div class="viewer-header" id="viewer-header" style="display: none;">
+                <div class="viewer-path">
+                    <span id="viewer-method" class="method get">GET</span>
+                    <span id="viewer-path-text">/health</span>
+                    <span id="viewer-status" class="viewer-status"></span>
+                    <span id="viewer-time" class="viewer-time"></span>
+                    <button class="copy-btn" id="copy-btn" title="Copy response">Copy</button>
+                    <a class="open-btn" id="open-btn" href="#" target="_blank" title="Open in new tab">Open</a>
+                    <button class="open-btn" id="download-btn" title="Download file">Download</button>
+                </div>
+            </div>
+            <div class="viewer-body" id="viewer-body">
+                <div class="viewer-empty">Select a GET endpoint to view response</div>
+            </div>
+        </div>
+    </div>
+    <iframe id="download-frame" style="display:none"></iframe>
+
+    <script>
+        const folderIcon = `<svg class="icon folder-icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.75 2.5a.25.25 0 00-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H7.5c-.55 0-1.07-.26-1.4-.7l-.9-1.2a.25.25 0 00-.2-.1H1.75z"/>
+        </svg>`;
+
+        const fileIcon = `<svg class="icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75zm1.75-.25a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z"/>
+        </svg>`;
+
+        const homeIcon = `<svg style="width:14px;height:14px;vertical-align:-2px" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.906.664a1.749 1.749 0 0 1 2.187 0l5.25 4.2c.415.332.657.835.657 1.367v7.019A1.75 1.75 0 0 1 13.25 15h-3.5a.75.75 0 0 1-.75-.75V9H7v5.25a.75.75 0 0 1-.75.75h-3.5A1.75 1.75 0 0 1 1 13.25V6.23c0-.531.242-1.034.657-1.366l5.25-4.2Z"/>
+        </svg>`;
+
+        let currentResponse = '';
+        let currentPath = '';
+
+        function buildBreadcrumb(path) {
+            const bc = document.getElementById('breadcrumb');
+            const backLink = document.getElementById('back-link');
+            const upSep = document.getElementById('up-sep');
+            const parts = path.split('/').filter(Boolean);
+
+            const isRoot = parts.length === 0;
+            backLink.style.display = isRoot ? 'none' : '';
+            upSep.style.display = isRoot ? 'none' : '';
+
+            let html = `<a href="/">${homeIcon}</a>`;
+            let href = '/';
+
+            parts.forEach((part, i) => {
+                href += part + '/';
+                html += `<span class="sep">/</span>`;
+                if (i === parts.length - 1) {
+                    html += `<span>${part}</span>`;
+                } else {
+                    html += `<a href="${href}">${part}</a>`;
+                }
+            });
+
+            bc.innerHTML = html;
+        }
+
+        function renderEntry(entry, index) {
+            const methodClass = entry.isFolder ? 'folder' : entry.method.toLowerCase();
+            const icon = entry.isFolder ? folderIcon : fileIcon;
+            const methodLabel = entry.isFolder ? 'DIR' : entry.method;
+            const isGet = !entry.isFolder && entry.method === 'GET';
+            const folderClass = entry.isFolder ? 'folder-entry' : '';
+
+            const descHtml = entry.description
+                ? `<div class="entry-desc">${entry.description}</div>`
+                : '';
+
+            return `
+                <div class="entry ${folderClass}" data-name="${(entry.name || entry.path).toLowerCase()}"
+                     data-path="${entry.path}" data-folder="${entry.isFolder}" data-method="${entry.method || ''}"
+                     data-index="${index}">
+                    <span class="method ${methodClass}">${methodLabel}</span>
+                    ${icon}
+                    <div class="entry-content">
+                        <div class="entry-name">${entry.name || entry.path}</div>
+                        ${descHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadEndpoint(path, method) {
+            const header = document.getElementById('viewer-header');
+            const body = document.getElementById('viewer-body');
+            const pathText = document.getElementById('viewer-path-text');
+            const methodEl = document.getElementById('viewer-method');
+            const statusEl = document.getElementById('viewer-status');
+            const timeEl = document.getElementById('viewer-time');
+            const openBtn = document.getElementById('open-btn');
+
+            header.style.display = '';
+            pathText.textContent = path;
+            methodEl.textContent = method;
+            methodEl.className = `method ${method.toLowerCase()}`;
+            statusEl.textContent = '';
+            statusEl.className = 'viewer-status';
+            timeEl.textContent = '';
+            body.innerHTML = '<div class="viewer-loading">Loading...</div>';
+            currentResponse = '';
+            currentPath = path;
+            openBtn.href = path;
+
+            const start = performance.now();
+            try {
+                const res = await fetch(path + '?preview=true');
+                const elapsed = Math.round(performance.now() - start);
+                const text = await res.text();
+
+                statusEl.textContent = res.status;
+                statusEl.classList.add(res.ok ? 'ok' : 'error');
+                timeEl.textContent = `${elapsed}ms`;
+
+                let formatted = text;
+                try {
+                    const json = JSON.parse(text);
+                    formatted = JSON.stringify(json, null, 2);
+                } catch {}
+
+                currentResponse = formatted;
+                const codeEl = document.createElement('code');
+                codeEl.textContent = formatted;
+                const preEl = document.createElement('pre');
+                preEl.className = 'viewer-content';
+                preEl.appendChild(codeEl);
+                body.innerHTML = '';
+                body.appendChild(preEl);
+                if (typeof hljs !== 'undefined') {
+                    try {
+                        hljs.highlightElement(codeEl);
+                        console.log("highlighting success")
+                    } catch (hljsErr) {
+                        console.warn('Syntax highlighting failed:', hljsErr);
+                    }
+                } else {
+                    console.warn('highlight.js not loaded - syntax highlighting disabled');
+                }
+            } catch (err) {
+                const elapsed = Math.round(performance.now() - start);
+                statusEl.textContent = 'ERR';
+                statusEl.classList.add('error');
+                timeEl.textContent = `${elapsed}ms`;
+                currentResponse = err.message;
+                const codeEl = document.createElement('code');
+                codeEl.textContent = err.message;
+                const preEl = document.createElement('pre');
+                preEl.className = 'viewer-content';
+                preEl.appendChild(codeEl);
+                body.innerHTML = '';
+                body.appendChild(preEl);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function updateStats(visible, total) {
+            const stats = document.getElementById('stats');
+            if (visible === total) {
+                stats.textContent = `${total} ${total === 1 ? 'entry' : 'entries'}`;
+            } else {
+                stats.textContent = `Showing ${visible} of ${total}`;
+            }
+        }
+
+        async function loadEntries() {
+            const entriesEl = document.getElementById('entries');
+            const refreshBtn = document.getElementById('refresh-btn');
+
+            refreshBtn.classList.add('spinning');
+
+            try {
+                const res = await fetch('./index.json');
+                const data = await res.json();
+
+                document.getElementById('title').textContent = data.title || 'Routes';
+                document.getElementById('description').textContent = data.description || '';
+
+                const serviceNameEl = document.getElementById('service-name');
+                if (data.serviceName) {
+                    serviceNameEl.textContent = data.serviceName;
+                    serviceNameEl.style.display = '';
+                    document.title = `${data.serviceName} - ${data.title || 'Routes'}`;
+                } else {
+                    serviceNameEl.style.display = 'none';
+                    document.title = data.title || 'Routes';
+                }
+
+                buildBreadcrumb(data.path || window.location.pathname);
+
+                if (!data.entries || data.entries.length === 0) {
+                    entriesEl.innerHTML = '<div class="empty">No routes registered</div>';
+                    updateStats(0, 0);
+                    return;
+                }
+
+                const sorted = [...data.entries].sort((a, b) => {
+                    if (a.isFolder && !b.isFolder) return -1;
+                    if (!a.isFolder && b.isFolder) return 1;
+                    return (a.name || a.path).localeCompare(b.name || b.path);
+                });
+
+                entriesEl.innerHTML = sorted.map((entry, i) => renderEntry(entry, i)).join('');
+                updateStats(sorted.length, sorted.length);
+
+                setupFilter();
+
+            } catch (err) {
+                console.error('Failed to load index:', err);
+                entriesEl.innerHTML = '<div class="empty">Failed to load routes</div>';
+            } finally {
+                refreshBtn.classList.remove('spinning');
+            }
+        }
+
+        function setupFilter() {
+            const filter = document.getElementById('filter');
+            const entriesEl = document.getElementById('entries');
+
+            filter.value = '';
+            filter.oninput = () => {
+                const query = filter.value.toLowerCase();
+                const entries = entriesEl.querySelectorAll('.entry');
+                let visible = 0;
+
+                entries.forEach(el => {
+                    const name = el.dataset.name;
+                    const matches = name.includes(query);
+                    el.classList.toggle('hidden', !matches);
+                    if (matches) visible++;
+                });
+
+                updateStats(visible, entries.length);
+            };
+        }
+
+        function init() {
+            loadEntries();
+
+            const entriesEl = document.getElementById('entries');
+            const filter = document.getElementById('filter');
+            const refreshBtn = document.getElementById('refresh-btn');
+            const copyBtn = document.getElementById('copy-btn');
+
+            refreshBtn.addEventListener('click', loadEntries);
+
+            copyBtn.addEventListener('click', () => {
+                if (currentResponse) {
+                    navigator.clipboard.writeText(currentResponse);
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => copyBtn.textContent = 'Copy', 1500);
+                }
+            });
+
+            const downloadBtn = document.getElementById('download-btn');
+            const downloadFrame = document.getElementById('download-frame');
+            downloadBtn.addEventListener('click', () => {
+                if (currentPath) {
+                    downloadFrame.src = currentPath + '?download=true';
+                }
+            });
+
+            entriesEl.addEventListener('click', (e) => {
+                const entry = e.target.closest('.entry');
+                if (!entry) return;
+
+                const isFolder = entry.dataset.folder === 'true';
+                const path = entry.dataset.path;
+                const method = entry.dataset.method;
+
+                if (isFolder) {
+                    window.location.href = path;
+                    return;
+                }
+
+                if (method === 'GET') {
+                    // Mark active
+                    entriesEl.querySelectorAll('.entry').forEach(el => el.classList.remove('active'));
+                    entry.classList.add('active');
+                    loadEndpoint(path, method);
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === '/' && document.activeElement !== filter) {
+                    e.preventDefault();
+                    filter.focus();
+                }
+                if (e.key === 'Escape') {
+                    filter.value = '';
+                    filter.dispatchEvent(new Event('input'));
+                    filter.blur();
+                }
+                if (e.key === 'r' && document.activeElement !== filter) {
+                    loadEntries();
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

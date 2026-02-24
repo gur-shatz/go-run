@@ -15,17 +15,86 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/gur-shatz/go-run/pkg/chiutil"
 )
 
 // EnvSockPath is the environment variable that holds the UDS path
 // for the backoffice server. Set by execrun on the child process.
 const EnvSockPath = "GORUN_BACKOFFICE_SOCK"
 
+// ServiceLevel represents the severity level of a service.
+type ServiceLevel int
+
+const (
+	OK                ServiceLevel = 0
+	RunningWithErrors ServiceLevel = 1
+	Degraded          ServiceLevel = 2
+	Down              ServiceLevel = 3
+)
+
+var serviceLevelNames = map[ServiceLevel]string{
+	OK:                "OK",
+	RunningWithErrors: "RUNNING_WITH_ERRORS",
+	Degraded:          "DEGRADED",
+	Down:              "DOWN",
+}
+
+var serviceLevelByName = map[string]ServiceLevel{
+	"OK":                  OK,
+	"RUNNING_WITH_ERRORS": RunningWithErrors,
+	"DEGRADED":            Degraded,
+	"DOWN":                Down,
+}
+
+func (this ServiceLevel) String() string {
+	if name, ok := serviceLevelNames[this]; ok {
+		return name
+	}
+	return fmt.Sprintf("ServiceLevel(%d)", int(this))
+}
+
+func (this ServiceLevel) MarshalJSON() ([]byte, error) {
+	if name, ok := serviceLevelNames[this]; ok {
+		return json.Marshal(name)
+	}
+	return nil, fmt.Errorf("unknown ServiceLevel: %d", int(this))
+}
+
+func (this *ServiceLevel) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if level, ok := serviceLevelByName[s]; ok {
+		*this = level
+		return nil
+	}
+	return fmt.Errorf("unknown ServiceLevel: %q", s)
+}
+
+// HistoryEntry records a level change for a service.
+type HistoryEntry struct {
+	Timestamp time.Time    `json:"timestamp"`
+	Level     ServiceLevel `json:"level"`
+	Data      any          `json:"data,omitempty"`
+}
+
+// ServiceStatusInfo is the per-service status in the JSON response.
+type ServiceStatusInfo struct {
+	Name        string         `json:"name"`
+	Level       ServiceLevel   `json:"level"`
+	Critical    bool           `json:"critical"`
+	TimeInState string         `json:"time_in_state"`
+	Data        any            `json:"data,omitempty"`
+	History     []HistoryEntry `json:"history"`
+	UptimePct   float64        `json:"uptime_pct"`
+}
+
 // StatusInfo is the JSON-serializable status returned by GET /status.
 type StatusInfo struct {
-	Ready    bool              `json:"ready"`
-	Status   string            `json:"status,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	GlobalLevel ServiceLevel        `json:"global_level"`
+	CausedBy    string              `json:"caused_by"`
+	Services    []ServiceStatusInfo `json:"services"`
 }
 
 var startTime = time.Now()
@@ -33,40 +102,89 @@ var startTime = time.Now()
 // singleton state
 var (
 	mu       sync.RWMutex
-	ready    bool
-	status   string
-	metadata map[string]string
+	services = map[string]*serviceState{}
+	// timeNow is used for testing; defaults to time.Now
+	timeNow = time.Now
 )
 
-// SetReady sets the ready flag.
-func SetReady(r bool) {
-	mu.Lock()
-	ready = r
-	mu.Unlock()
+const maxHistory = 10
+
+type serviceState struct {
+	name       string
+	critical   bool
+	level      ServiceLevel
+	data       any
+	lastChange time.Time
+	history    []HistoryEntry
+	created    time.Time
+	errorTime  time.Duration // accumulated Degraded/Down time
+	lastTick   time.Time     // last time errorTime was updated
 }
 
-// SetStatus sets the status string.
-func SetStatus(s string) {
-	mu.Lock()
-	status = s
-	mu.Unlock()
+// ServiceHandle is a handle returned by CreateServiceStatus for updating a service's status.
+type ServiceHandle struct {
+	name string
 }
 
-// SetMetadata replaces the metadata map.
-func SetMetadata(m map[string]string) {
+// SetStatus updates the service's level and data.
+func (this *ServiceHandle) SetStatus(level ServiceLevel, data any) {
 	mu.Lock()
-	metadata = m
-	mu.Unlock()
-}
+	defer mu.Unlock()
 
-// SetMetadataKey sets a single metadata key.
-func SetMetadataKey(key, value string) {
-	mu.Lock()
-	if metadata == nil {
-		metadata = make(map[string]string)
+	svc, ok := services[this.name]
+	if !ok {
+		return
 	}
-	metadata[key] = value
-	mu.Unlock()
+	setServiceStatus(svc, level, data)
+}
+
+func setServiceStatus(svc *serviceState, level ServiceLevel, data any) {
+	now := timeNow()
+
+	// Accumulate error time if old level was Degraded or Down
+	if svc.level >= Degraded {
+		svc.errorTime += now.Sub(svc.lastTick)
+	}
+
+	// If level changed, append to history
+	if level != svc.level {
+		entry := HistoryEntry{
+			Timestamp: now,
+			Level:     level,
+			Data:      data,
+		}
+		svc.history = append(svc.history, entry)
+		if len(svc.history) > maxHistory {
+			svc.history = svc.history[len(svc.history)-maxHistory:]
+		}
+		svc.lastChange = now
+	}
+
+	svc.level = level
+	svc.data = data
+	svc.lastTick = now
+}
+
+// CreateServiceStatus registers a new service. Starts at OK.
+// critical=true means it can push global level to any severity.
+// critical=false caps its contribution to global at RunningWithErrors.
+func CreateServiceStatus(name string, critical bool) *ServiceHandle {
+	mu.Lock()
+	defer mu.Unlock()
+
+	now := timeNow()
+	svc := &serviceState{
+		name:       name,
+		critical:   critical,
+		level:      OK,
+		lastChange: now,
+		created:    now,
+		lastTick:   now,
+		history:    []HistoryEntry{{Timestamp: now, Level: OK}},
+	}
+	services[name] = svc
+
+	return &ServiceHandle{name: name}
 }
 
 // GetStatus returns a snapshot of the current status.
@@ -74,27 +192,85 @@ func GetStatus() StatusInfo {
 	mu.RLock()
 	defer mu.RUnlock()
 
-	var md map[string]string
-	if len(metadata) > 0 {
-		md = make(map[string]string, len(metadata))
-		for k, v := range metadata {
-			md[k] = v
+	now := timeNow()
+
+	// Sort service names for deterministic output
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var svcInfos []ServiceStatusInfo
+	globalLevel := OK
+	causedBy := ""
+
+	for _, name := range names {
+		svc := services[name]
+
+		// Compute uptime
+		totalTime := now.Sub(svc.created)
+		errorTime := svc.errorTime
+		if svc.level >= Degraded {
+			errorTime += now.Sub(svc.lastTick)
+		}
+		var uptimePct float64
+		if totalTime > 0 {
+			uptimePct = 100.0 * (1.0 - float64(errorTime)/float64(totalTime))
+			if uptimePct < 0 {
+				uptimePct = 0
+			}
+		} else {
+			uptimePct = 100.0
+		}
+
+		// Time in state
+		timeInState := now.Sub(svc.lastChange).Round(time.Second).String()
+
+		// Copy history
+		history := make([]HistoryEntry, len(svc.history))
+		copy(history, svc.history)
+
+		svcInfos = append(svcInfos, ServiceStatusInfo{
+			Name:        svc.name,
+			Level:       svc.level,
+			Critical:    svc.critical,
+			TimeInState: timeInState,
+			Data:        svc.data,
+			History:     history,
+			UptimePct:   uptimePct,
+		})
+
+		// Compute contribution to global level
+		contribution := svc.level
+		if !svc.critical && contribution > RunningWithErrors {
+			contribution = RunningWithErrors
+		}
+		if contribution > globalLevel {
+			globalLevel = contribution
+			causedBy = name
 		}
 	}
 
 	return StatusInfo{
-		Ready:    ready,
-		Status:   status,
-		Metadata: md,
+		GlobalLevel: globalLevel,
+		CausedBy:    causedBy,
+		Services:    svcInfos,
 	}
 }
 
-// resetState resets the singleton state. Used in tests.
-func resetState() {
+// ResetStateForTest resets the singleton state. Used in tests.
+func ResetStateForTest() {
 	mu.Lock()
-	ready = false
-	status = ""
-	metadata = nil
+	services = map[string]*serviceState{}
+	timeNow = time.Now
+	mu.Unlock()
+}
+
+// SetTimeNowForTest overrides the time function. Used in tests.
+func SetTimeNowForTest(fn func() time.Time) {
+	mu.Lock()
+	timeNow = fn
 	mu.Unlock()
 }
 
@@ -156,43 +332,6 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(info)
 }
 
-var builtinRoutes = []struct {
-	Path string
-	Desc string
-}{
-	{"status", "Health / readiness status"},
-	{"env", "Environment variables (sensitive values masked)"},
-	{"info", "Process and runtime information"},
-	{"debug/pprof/", "Go profiling (pprof)"},
-}
-
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Backoffice</title></head><body>`)
-	fmt.Fprint(w, `<h1>Backoffice</h1><ul>`)
-
-	// built-in routes
-	for _, rt := range builtinRoutes {
-		fmt.Fprintf(w, `<li><a href="%s">%s</a> — %s</li>`, rt.Path, rt.Path, rt.Desc)
-	}
-
-	// user routes
-	sorted := make([]string, 0, len(userRoutePaths))
-	for _, p := range userRoutePaths {
-		sorted = append(sorted, p)
-	}
-	sort.Strings(sorted)
-	for _, p := range sorted {
-		rel := strings.TrimPrefix(p, "/")
-		fmt.Fprintf(w, `<li><a href="%s">%s</a> (custom)</li>`, rel, p)
-	}
-
-	fmt.Fprint(w, `</ul></body></html>`)
-}
-
-// userRoutePaths tracks paths registered by the user router for the index page.
-var userRoutePaths []string
-
 // ListenAndServe starts the backoffice HTTP server on the UDS specified
 // by the GORUN_BACKOFFICE_SOCK environment variable. If the env var is
 // not set, it returns nil immediately (safe to call outside go-run).
@@ -205,12 +344,17 @@ func ListenAndServe(ctx context.Context, userRouter chi.Router) error {
 	}
 
 	r := chi.NewRouter()
+	folder := chiutil.NewRouteFolderOn(r, "/")
+	folder.ServiceName("Backoffice")
 
 	// Built-in routes
-	r.Get("/", handleIndex)
-	r.Get("/status", handleStatus)
-	r.Get("/env", handleEnv)
-	r.Get("/info", handleInfo)
+	folder.GetDesc("/status", "Health / readiness status", handleStatus)
+	folder.GetDesc("/env", "Environment variables (sensitive values masked)", handleEnv)
+	folder.GetDesc("/info", "Process and runtime information", handleInfo)
+
+	// pprof is registered on the top-level router because pprof.Index
+	// expects to see the full /debug/pprof/ path in the request.
+	folder.Link("/debug/pprof", "Go profiling (pprof)")
 	r.HandleFunc("/debug/pprof/*", pprof.Index)
 	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -219,15 +363,7 @@ func ListenAndServe(ctx context.Context, userRouter chi.Router) error {
 
 	// User-provided routes
 	if userRouter != nil {
-		// Collect user route paths for the index page
-		userRoutePaths = nil
-		chi.Walk(userRouter, func(method, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
-			if method == "GET" {
-				userRoutePaths = append(userRoutePaths, route)
-			}
-			return nil
-		})
-		r.Mount("/", userRouter)
+		folder.Router().Mount("/", userRouter)
 	}
 
 	// Remove stale socket file if it exists

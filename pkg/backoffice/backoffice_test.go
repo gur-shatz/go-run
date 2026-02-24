@@ -3,7 +3,6 @@ package backoffice_test
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,75 +14,155 @@ import (
 
 	"github.com/gur-shatz/go-run/pkg/backoffice"
 	boclient "github.com/gur-shatz/go-run/pkg/backoffice/client"
+	"github.com/gur-shatz/go-run/pkg/chiutil"
 )
 
 var _ = Describe("Backoffice", func() {
 	Describe("State Management", func() {
 		BeforeEach(func() {
-			// Reset singleton state between tests
-			backoffice.SetReady(false)
-			backoffice.SetStatus("")
-			backoffice.SetMetadata(nil)
+			backoffice.ResetStateForTest()
 		})
 
-		It("defaults to not ready with empty status", func() {
+		It("defaults to OK global with no services", func() {
 			info := backoffice.GetStatus()
-			Expect(info.Ready).To(BeFalse())
-			Expect(info.Status).To(BeEmpty())
-			Expect(info.Metadata).To(BeNil())
+			Expect(info.GlobalLevel).To(Equal(backoffice.OK))
+			Expect(info.CausedBy).To(BeEmpty())
+			Expect(info.Services).To(BeEmpty())
 		})
 
-		It("tracks ready state", func() {
-			backoffice.SetReady(true)
-			Expect(backoffice.GetStatus().Ready).To(BeTrue())
-
-			backoffice.SetReady(false)
-			Expect(backoffice.GetStatus().Ready).To(BeFalse())
-		})
-
-		It("tracks status string", func() {
-			backoffice.SetStatus("initializing")
-			Expect(backoffice.GetStatus().Status).To(Equal("initializing"))
-		})
-
-		It("tracks metadata", func() {
-			backoffice.SetMetadata(map[string]string{"version": "1.0"})
+		It("registers a service at OK", func() {
+			backoffice.CreateServiceStatus("db", true)
 			info := backoffice.GetStatus()
-			Expect(info.Metadata).To(HaveKeyWithValue("version", "1.0"))
+			Expect(info.Services).To(HaveLen(1))
+			Expect(info.Services[0].Name).To(Equal("db"))
+			Expect(info.Services[0].Level).To(Equal(backoffice.OK))
+			Expect(info.GlobalLevel).To(Equal(backoffice.OK))
 		})
 
-		It("sets individual metadata keys", func() {
-			backoffice.SetMetadataKey("key1", "val1")
-			backoffice.SetMetadataKey("key2", "val2")
+		It("updates level via handle", func() {
+			svc := backoffice.CreateServiceStatus("db", true)
+			svc.SetStatus(backoffice.Down, map[string]string{"error": "connection refused"})
 			info := backoffice.GetStatus()
-			Expect(info.Metadata).To(HaveKeyWithValue("key1", "val1"))
-			Expect(info.Metadata).To(HaveKeyWithValue("key2", "val2"))
+			Expect(info.Services[0].Level).To(Equal(backoffice.Down))
+			Expect(info.Services[0].Data).To(HaveKeyWithValue("error", "connection refused"))
 		})
 
-		It("returns a copy of metadata", func() {
-			backoffice.SetMetadata(map[string]string{"a": "b"})
+		It("global equals worst of all services", func() {
+			db := backoffice.CreateServiceStatus("db", true)
+			cache := backoffice.CreateServiceStatus("cache", true)
+			db.SetStatus(backoffice.Degraded, nil)
+			cache.SetStatus(backoffice.OK, nil)
 			info := backoffice.GetStatus()
-			info.Metadata["a"] = "modified"
-			Expect(backoffice.GetStatus().Metadata).To(HaveKeyWithValue("a", "b"))
+			Expect(info.GlobalLevel).To(Equal(backoffice.Degraded))
+			Expect(info.CausedBy).To(Equal("db"))
+		})
+
+		It("non-critical caps at RunningWithErrors", func() {
+			cache := backoffice.CreateServiceStatus("cache", false)
+			cache.SetStatus(backoffice.Down, nil)
+			info := backoffice.GetStatus()
+			Expect(info.GlobalLevel).To(Equal(backoffice.RunningWithErrors))
+			Expect(info.CausedBy).To(Equal("cache"))
+		})
+
+		It("critical pushes global to full level", func() {
+			db := backoffice.CreateServiceStatus("db", true)
+			db.SetStatus(backoffice.Down, nil)
+			info := backoffice.GetStatus()
+			Expect(info.GlobalLevel).To(Equal(backoffice.Down))
+		})
+
+		It("tracks time in state", func() {
+			now := time.Now()
+			backoffice.SetTimeNowForTest(func() time.Time { return now })
+
+			svc := backoffice.CreateServiceStatus("db", true)
+			backoffice.SetTimeNowForTest(func() time.Time { return now.Add(30 * time.Second) })
+
+			svc.SetStatus(backoffice.OK, nil) // no-op level change, but updates lastTick
+			info := backoffice.GetStatus()
+			Expect(info.Services[0].TimeInState).To(Equal("30s"))
+		})
+
+		It("history capped at 10 entries", func() {
+			svc := backoffice.CreateServiceStatus("db", true)
+			// Initial history has 1 entry (OK). Alternate between levels to create changes.
+			for i := 0; i < 15; i++ {
+				if i%2 == 0 {
+					svc.SetStatus(backoffice.Down, nil)
+				} else {
+					svc.SetStatus(backoffice.OK, nil)
+				}
+			}
+			info := backoffice.GetStatus()
+			Expect(len(info.Services[0].History)).To(Equal(10))
+		})
+
+		It("uptime < 100% after time in error", func() {
+			now := time.Now()
+			backoffice.SetTimeNowForTest(func() time.Time { return now })
+
+			svc := backoffice.CreateServiceStatus("db", true)
+
+			// Move to Degraded
+			backoffice.SetTimeNowForTest(func() time.Time { return now.Add(10 * time.Second) })
+			svc.SetStatus(backoffice.Degraded, nil)
+
+			// Stay degraded for 10s then recover
+			backoffice.SetTimeNowForTest(func() time.Time { return now.Add(20 * time.Second) })
+			svc.SetStatus(backoffice.OK, nil)
+
+			// Check at 20s: 10s degraded out of 20s total = 50% error time
+			info := backoffice.GetStatus()
+			Expect(info.Services[0].UptimePct).To(BeNumerically("<", 100.0))
+			Expect(info.Services[0].UptimePct).To(BeNumerically("~", 50.0, 1.0))
+		})
+
+		It("CausedBy reports correct service (deterministic by name sort)", func() {
+			// Both critical and both Down — CausedBy should be first alphabetically
+			a := backoffice.CreateServiceStatus("alpha", true)
+			b := backoffice.CreateServiceStatus("beta", true)
+			a.SetStatus(backoffice.Down, nil)
+			b.SetStatus(backoffice.Down, nil)
+			info := backoffice.GetStatus()
+			Expect(info.CausedBy).To(Equal("alpha"))
+		})
+	})
+
+	Describe("ServiceLevel JSON", func() {
+		It("marshals to string", func() {
+			data, err := json.Marshal(backoffice.RunningWithErrors)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal(`"RUNNING_WITH_ERRORS"`))
+		})
+
+		It("unmarshals from string", func() {
+			var level backoffice.ServiceLevel
+			err := json.Unmarshal([]byte(`"DEGRADED"`), &level)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(level).To(Equal(backoffice.Degraded))
 		})
 	})
 
 	Describe("ListenAndServe", func() {
+		BeforeEach(func() {
+			backoffice.ResetStateForTest()
+		})
+
 		It("returns nil immediately when env var is not set", func() {
 			os.Unsetenv(backoffice.EnvSockPath)
 			err := backoffice.ListenAndServe(context.Background(), nil)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("serves /status endpoint on UDS", func() {
+		It("serves /status endpoint with new JSON shape", func() {
 			tmpDir := GinkgoT().TempDir()
 			sockPath := filepath.Join(tmpDir, "test.sock")
 			os.Setenv(backoffice.EnvSockPath, sockPath)
 			defer os.Unsetenv(backoffice.EnvSockPath)
 
-			backoffice.SetReady(true)
-			backoffice.SetStatus("healthy")
-			backoffice.SetMetadata(map[string]string{"v": "2"})
+			db := backoffice.CreateServiceStatus("database", true)
+			db.SetStatus(backoffice.OK, map[string]string{"version": "1.0"})
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -103,9 +182,11 @@ var _ = Describe("Backoffice", func() {
 			c := boclient.New(sockPath)
 			info, err := c.Status(context.Background())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Ready).To(BeTrue())
-			Expect(info.Status).To(Equal("healthy"))
-			Expect(info.Metadata).To(HaveKeyWithValue("v", "2"))
+			Expect(info.GlobalLevel).To(Equal(backoffice.OK))
+			Expect(info.Services).To(HaveLen(1))
+			Expect(info.Services[0].Name).To(Equal("database"))
+			Expect(info.Services[0].Level).To(Equal(backoffice.OK))
+			Expect(info.Services[0].Critical).To(BeTrue())
 
 			cancel()
 			Eventually(errCh, 2*time.Second).Should(Receive(BeNil()))
@@ -183,7 +264,7 @@ var _ = Describe("Backoffice", func() {
 			Expect(info).To(HaveKey("memory"))
 		})
 
-		It("serves / index page with HTML links", func() {
+		It("serves / index page with HTML content", func() {
 			tmpDir := GinkgoT().TempDir()
 			sockPath := filepath.Join(tmpDir, "test.sock")
 			os.Setenv(backoffice.EnvSockPath, sockPath)
@@ -199,20 +280,53 @@ var _ = Describe("Backoffice", func() {
 				return c.Alive(context.Background())
 			}, 2*time.Second, 50*time.Millisecond).Should(BeTrue())
 
+			// Verify / returns 200 OK with HTML
 			req, err := http.NewRequest(http.MethodGet, "http://backoffice/", nil)
 			Expect(err).NotTo(HaveOccurred())
 			resp, err := (&http.Client{Transport: c.Transport()}).Do(req)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(resp.Header.Get("Content-Type")).To(ContainSubstring("text/html"))
+		})
 
-			body, err := io.ReadAll(resp.Body)
+		It("serves /index.json with route entries", func() {
+			tmpDir := GinkgoT().TempDir()
+			sockPath := filepath.Join(tmpDir, "test.sock")
+			os.Setenv(backoffice.EnvSockPath, sockPath)
+			defer os.Unsetenv(backoffice.EnvSockPath)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go backoffice.ListenAndServe(ctx, nil)
+
+			c := boclient.New(sockPath)
+			Eventually(func() bool {
+				return c.Alive(context.Background())
+			}, 2*time.Second, 50*time.Millisecond).Should(BeTrue())
+
+			// Verify /index.json returns a valid FolderIndex
+			req, err := http.NewRequest(http.MethodGet, "http://backoffice/index.json", nil)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(body)).To(ContainSubstring("<html>"))
-			Expect(string(body)).To(ContainSubstring(`href="status"`))
-			Expect(string(body)).To(ContainSubstring(`href="env"`))
-			Expect(string(body)).To(ContainSubstring(`href="info"`))
-			Expect(string(body)).To(ContainSubstring(`href="debug/pprof/"`))
+			resp, err := (&http.Client{Transport: c.Transport()}).Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var index chiutil.FolderIndex
+			Expect(json.NewDecoder(resp.Body).Decode(&index)).To(Succeed())
+			Expect(index.ServiceName).To(Equal("Backoffice"))
+
+			// Check that expected entries are present
+			entryNames := map[string]bool{}
+			for _, e := range index.Entries {
+				entryNames[e.Name] = true
+			}
+			Expect(entryNames).To(HaveKey("status"))
+			Expect(entryNames).To(HaveKey("env"))
+			Expect(entryNames).To(HaveKey("info"))
+			Expect(entryNames).To(HaveKey("debug/pprof"))
 		})
 
 		It("serves /debug/pprof/ endpoint", func() {
