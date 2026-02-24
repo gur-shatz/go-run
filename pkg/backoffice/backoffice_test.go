@@ -28,6 +28,11 @@ var _ = Describe("Backoffice", func() {
 			Expect(info.GlobalLevel).To(Equal(backoffice.OK))
 			Expect(info.CausedBy).To(BeEmpty())
 			Expect(info.Services).To(BeEmpty())
+
+			// Verify services marshals as [] not null
+			data, err := json.Marshal(info)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(ContainSubstring(`"services":[]`))
 		})
 
 		It("registers a service at OK", func() {

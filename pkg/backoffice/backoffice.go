@@ -201,7 +201,7 @@ func GetStatus() StatusInfo {
 	}
 	sort.Strings(names)
 
-	var svcInfos []ServiceStatusInfo
+	svcInfos := make([]ServiceStatusInfo, 0, len(services))
 	globalLevel := OK
 	causedBy := ""
 
