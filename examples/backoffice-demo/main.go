@@ -24,9 +24,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
+	// Register services with backoffice
+	dbSvc := backoffice.CreateServiceStatus("database", true)
+	cacheSvc := backoffice.CreateServiceStatus("cache", false)
+
 	// Set up backoffice with a custom debug endpoint.
 	// If not running under go-run, this is a no-op.
-	backoffice.SetStatus("starting")
 	userRouter := chi.NewRouter()
 	userRouter.Get("/debug", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -38,16 +41,20 @@ func main() {
 	})
 	backoffice.ListenAndServeBackground(ctx, userRouter)
 
-	// Simulate a short startup delay, then mark ready.
+	// Simulate startup and intermittent cache failure
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		backoffice.SetReady(true)
-		backoffice.SetStatus("running")
-		backoffice.SetMetadata(map[string]string{
-			"version": "0.1.0",
-			"port":    port,
-		})
-		fmt.Println("backoffice-demo: marked ready")
+		dbSvc.SetStatus(backoffice.OK, map[string]string{"version": "0.1.0", "port": port})
+		cacheSvc.SetStatus(backoffice.OK, nil)
+		fmt.Println("backoffice-demo: services marked OK")
+
+		time.Sleep(5 * time.Second)
+		cacheSvc.SetStatus(backoffice.Down, map[string]string{"error": "connection refused"})
+		fmt.Println("backoffice-demo: cache DOWN")
+
+		time.Sleep(3 * time.Second)
+		cacheSvc.SetStatus(backoffice.OK, nil)
+		fmt.Println("backoffice-demo: cache recovered")
 	}()
 
 	// Main HTTP server

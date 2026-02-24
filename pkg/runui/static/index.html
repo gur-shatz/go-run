@@ -59,6 +59,19 @@
     .badge-exited { background: #e65100; }
     .badge-build { background: #6a1b9a; }
     .badge-run { background: #2e7d32; }
+    .badge-ok { background: #2e7d32; }
+    .badge-running_with_errors { background: #f9a825; color: #000; }
+    .badge-degraded { background: #e65100; }
+    .badge-down { background: #c62828; }
+    .badge-level-mini { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; vertical-align: middle; }
+    .bo-svc-table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+    .bo-svc-table th, .bo-svc-table td {
+      text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.8rem;
+    }
+    .bo-svc-table th { color: #aaa; font-weight: 600; }
+    .bo-svc-table td { color: #d4d4d4; }
+    .bo-svc-data { padding: 0.2rem 0.6rem 0.5rem 1.5rem; color: #888; font-size: 0.75rem; font-family: monospace; word-break: break-all; }
     .error-text { color: #e53935; font-size: 0.85rem; max-width: 300px; word-break: break-word; }
     table { font-size: 0.9rem; }
     td, th { white-space: nowrap; }
@@ -66,11 +79,11 @@
     .actions { white-space: nowrap; }
     .actions button {
       padding: 0.2rem 0.35rem; font-size: 1rem; margin-right: 0.1rem; line-height: 1; min-width: 0;
-      background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 4px;
-      color: var(--pico-color); cursor: pointer; box-shadow: none;
+      background: transparent !important; border: 1px solid var(--pico-muted-border-color) !important; border-radius: 4px;
+      color: inherit !important; cursor: pointer; box-shadow: none;
     }
-    .actions button:hover { background: var(--pico-muted-border-color); }
-    .actions button:disabled { opacity: 0.3; cursor: not-allowed; background: none; }
+    .actions button:hover { background: var(--pico-muted-border-color) !important; }
+    .actions button:disabled { opacity: 0.3; cursor: not-allowed; background: transparent !important; }
     a.link-disabled { pointer-events: none; opacity: 0.4; }
     .log-link { cursor: pointer; color: var(--pico-primary); text-decoration: underline; font-size: 0.85rem; }
     .empty-state { text-align: center; padding: 2rem; color: var(--pico-muted-color); }
@@ -380,25 +393,49 @@
 
   function renderBackofficeContent(name, data) {
     const el = document.getElementById('bo-content');
-    if (!data || (!data.ready && !data.status)) {
+    if (!data || !data.services) {
       el.innerHTML = '<div class="bo-unavailable">Backoffice unavailable</div>';
       return;
     }
-    const readyCls = data.ready ? 'running' : 'idle';
-    const readyText = data.ready ? 'ready' : 'not ready';
+
+    const globalCls = boLevelClass(data.global_level);
     let html = '<h5>Backoffice Status</h5>';
-    html += '<p><span class="badge badge-' + readyCls + '">' + readyText + '</span></p>';
-    if (data.status) {
-      html += '<p><strong>Status:</strong> ' + escHtml(data.status) + '</p>';
+    html += '<p><span class="badge badge-' + globalCls + '">' + escHtml(boLevelLabel(data.global_level)) + '</span>';
+    if (data.caused_by) {
+      html += ' <span style="color:#aaa;font-size:0.8rem;">caused by <strong>' + escHtml(data.caused_by) + '</strong></span>';
     }
-    if (data.metadata && typeof data.metadata === 'object' && Object.keys(data.metadata).length > 0) {
-      html += '<table class="bo-meta-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
-      for (const key of Object.keys(data.metadata).sort()) {
-        const val = typeof data.metadata[key] === 'object' ? JSON.stringify(data.metadata[key]) : String(data.metadata[key]);
-        html += '<tr><th>' + escHtml(key) + '</th><td>' + escHtml(val) + '</td></tr>';
+    html += '</p>';
+
+    if (data.services.length > 0) {
+      html += '<table class="bo-svc-table"><thead><tr>';
+      html += '<th>Service</th><th>Status</th><th>Critical</th><th>Time in State</th><th>Uptime%</th><th>History</th>';
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < data.services.length; i++) {
+        var svc = data.services[i];
+        var svcCls = boLevelClass(svc.level);
+        var historyDots = '';
+        if (svc.history && svc.history.length > 0) {
+          for (var h = 0; h < svc.history.length; h++) {
+            var hCls = boLevelClass(svc.history[h].level);
+            historyDots += '<span class="badge-level-mini" style="background:' + boLevelColor(hCls) + ';" title="' + escHtml(svc.history[h].level) + '"></span>';
+          }
+        }
+        html += '<tr>';
+        html += '<td><strong>' + escHtml(svc.name) + '</strong></td>';
+        html += '<td><span class="badge badge-' + svcCls + '">' + escHtml(boLevelLabel(svc.level)) + '</span></td>';
+        html += '<td>' + (svc.critical ? 'Yes' : 'No') + '</td>';
+        html += '<td>' + escHtml(svc.time_in_state || '\u2014') + '</td>';
+        html += '<td>' + (svc.uptime_pct != null ? svc.uptime_pct.toFixed(1) + '%' : '\u2014') + '</td>';
+        html += '<td>' + historyDots + '</td>';
+        html += '</tr>';
+        if (svc.data != null) {
+          var dataStr = typeof svc.data === 'object' ? JSON.stringify(svc.data) : String(svc.data);
+          html += '<tr><td colspan="6" class="bo-svc-data">' + escHtml(dataStr) + '</td></tr>';
+        }
       }
       html += '</tbody></table>';
     }
+
     const boBase = '/api/targets/' + encodeURIComponent(name) + '/backoffice/';
     html += '<p><a href="' + boBase + '" target="_blank">' + escHtml(boBase) + '</a></p>';
     html += '<div class="bo-proxy-note">All backoffice routes are proxied under this path</div>';
@@ -722,6 +759,22 @@
   window._runuiOpenBackoffice = openBackofficeDrawer;
   window._runuiOpenBoNewTab = openBoNewTab;
 
+  // Backoffice level helpers
+  function boLevelClass(level) {
+    if (!level) return 'ok';
+    return level.toLowerCase();
+  }
+
+  function boLevelLabel(level) {
+    if (!level) return 'OK';
+    return level.replace(/_/g, ' ');
+  }
+
+  var boLevelColors = { ok: '#2e7d32', running_with_errors: '#f9a825', degraded: '#e65100', down: '#c62828' };
+  function boLevelColor(cls) {
+    return boLevelColors[cls] || '#757575';
+  }
+
   // Rendering
   function renderBuildTable(targets) {
     const tbody = document.querySelector('#build-table tbody');
@@ -774,8 +827,15 @@
       let boCell = '\u2014';
       if (t.backoffice_ready && t.backoffice_status) {
         const boSt = t.backoffice_status;
-        const boCls = boSt.ready ? 'running' : 'idle';
-        boCell = '<span class="badge badge-' + boCls + ' bo-badge" onclick="_runuiOpenBackoffice(\'' + escHtml(t.name) + '\')">' + escHtml(boSt.status || 'ready') + '</span>';
+        const svcs = boSt.services || [];
+        const okCount = svcs.filter(function(s) { return s.level === 'OK'; }).length;
+        const total = svcs.length;
+        const levelCls = boLevelClass(boSt.global_level);
+        if (total > 0) {
+          boCell = '<span class="badge badge-' + levelCls + ' bo-badge" onclick="_runuiOpenBackoffice(\'' + escHtml(t.name) + '\')">' + okCount + '/' + total + ' OK</span>';
+        } else {
+          boCell = '<span class="badge badge-ok bo-badge" onclick="_runuiOpenBackoffice(\'' + escHtml(t.name) + '\')">OK</span>';
+        }
       }
 
       const hasLogs = t.logs && t.logs.run;
