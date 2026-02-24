@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/gur-shatz/go-run/pkg/backoffice"
 )
 
@@ -28,10 +27,11 @@ func main() {
 	dbSvc := backoffice.CreateServiceStatus("database", true)
 	cacheSvc := backoffice.CreateServiceStatus("cache", false)
 
-	// Set up backoffice with a custom debug endpoint.
-	// If not running under go-run, this is a no-op.
-	userRouter := chi.NewRouter()
-	userRouter.Get("/debug", func(w http.ResponseWriter, r *http.Request) {
+	// Set up backoffice with custom endpoints.
+	// If not running under go-run, ListenAndServeBackground is a no-op.
+	bo := backoffice.New()
+	app := bo.Folder()
+	app.GetDesc("/debug", "Application debug information", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"uptime":  time.Since(startTime).String(),
@@ -39,7 +39,26 @@ func main() {
 			"version": "0.1.0",
 		})
 	})
-	backoffice.ListenAndServeBackground(ctx, userRouter)
+	app.GetDesc("/config", "Application configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"port":      port,
+			"log_level": "info",
+			"cache_ttl": "5m",
+		})
+	})
+
+	app.GetDesc("/connections", "Active connections and pools", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"database": map[string]any{"host": "localhost:5432", "pool_size": 10, "active": 3},
+			"cache":    map[string]any{"host": "localhost:6379", "connected": true},
+		})
+	})
+	bo.SetAuth("admin", "admin123")
+	bo.ListenAndServeBackground(ctx)
+	bo.ListenAndServeTCPBackground(ctx, ":9090")
+	fmt.Println("backoffice-demo: backoffice TCP on :9090 (user: admin)")
 
 	// Simulate startup and intermittent cache failure
 	go func() {

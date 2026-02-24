@@ -554,6 +554,20 @@ func (this *RouteFolder) Mount(path string, handler http.Handler) {
 	this.router.Mount(path, handler)
 }
 
+// MountDesc mounts an http.Handler at the given path with a description.
+func (this *RouteFolder) MountDesc(path, description string, handler http.Handler) {
+	name := strings.Trim(path, "/")
+	this.entries = append(this.entries, &RouteEntry{
+		Name:        name,
+		Method:      "GET",
+		Path:        name + "/",
+		Description: description,
+		IsFolder:    true,
+	})
+	this.router.Mount(path, handler)
+}
+
+
 // Static serves static files from the given directory.
 func (this *RouteFolder) Static(path, dir string) {
 	name := strings.Trim(path, "/")
@@ -598,6 +612,10 @@ func normalizePath(path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	return strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
