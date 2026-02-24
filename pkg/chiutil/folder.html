@@ -501,12 +501,24 @@
             const upSep = document.getElementById('up-sep');
             const parts = path.split('/').filter(Boolean);
 
+            // Derive the base path by subtracting the JSON path from the browser location.
+            // e.g. location=/proxy/svc/backoffice/sub/, path=/backoffice/sub -> base=/proxy/svc
+            const loc = window.location.pathname.replace(/\/+$/, '');
+            const normalized = path.replace(/\/+$/, '');
+            let basePath = '';
+            if (normalized && loc.endsWith(normalized)) {
+                basePath = loc.slice(0, loc.length - normalized.length);
+            } else if (normalized === '/' || normalized === '') {
+                basePath = loc;
+            }
+            basePath = basePath.replace(/\/+$/, '');
+
             const isRoot = parts.length === 0;
             backLink.style.display = isRoot ? 'none' : '';
             upSep.style.display = isRoot ? 'none' : '';
 
-            let html = `<a href="/">${homeIcon}</a>`;
-            let href = '/';
+            let html = `<a href="${basePath}/">${homeIcon}</a>`;
+            let href = basePath + '/';
 
             parts.forEach((part, i) => {
                 href += part + '/';
