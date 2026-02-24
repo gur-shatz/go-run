@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/google/shlex"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -202,6 +203,43 @@ exec:
 		})
 	})
 
+	Describe("Command Parsing (shlex)", func() {
+		It("splits a simple command", func() {
+			args, err := shlex.Split("go build .")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(args).To(Equal([]string{"go", "build", "."}))
+		})
+
+		It("splits a command with flags", func() {
+			args, err := shlex.Split("go build -o ./bin/app .")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(args).To(Equal([]string{"go", "build", "-o", "./bin/app", "."}))
+		})
+
+		It("handles double-quoted arguments", func() {
+			args, err := shlex.Split(`echo "hello world"`)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(args).To(Equal([]string{"echo", "hello world"}))
+		})
+
+		It("handles single-quoted arguments", func() {
+			args, err := shlex.Split(`echo 'hello world'`)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(args).To(Equal([]string{"echo", "hello world"}))
+		})
+
+		It("returns empty slice for empty string", func() {
+			args, err := shlex.Split("")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(args).To(BeEmpty())
+		})
+
+		It("returns error for unterminated quote", func() {
+			_, err := shlex.Split(`echo "hello`)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
 	Describe("Validate", func() {
 		It("accepts config with watch and single exec command", func() {
 			cfg := &execrun.Config{
@@ -231,6 +269,46 @@ exec:
 				Watch: []string{"*.go"},
 			}
 			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		It("rejects build command with $VAR syntax", func() {
+			cfg := &execrun.Config{
+				Watch: []string{"*.go"},
+				Build: []string{"echo $MY_VAR"},
+			}
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("shell variable syntax"))
+			Expect(err.Error()).To(ContainSubstring("Go template syntax"))
+		})
+
+		It("rejects exec command with ${VAR} syntax", func() {
+			cfg := &execrun.Config{
+				Watch: []string{"*.go"},
+				Exec:  []string{"./app --port=${PORT}"},
+			}
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("shell variable syntax"))
+		})
+
+		It("rejects command with $(...) substitution", func() {
+			cfg := &execrun.Config{
+				Watch: []string{"*.go"},
+				Build: []string{"echo $(date)"},
+			}
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("shell variable syntax"))
+		})
+
+		It("accepts commands without shell variable syntax", func() {
+			cfg := &execrun.Config{
+				Watch: []string{"*.go"},
+				Build: []string{"go build -o ./bin/app ."},
+				Exec:  []string{"./bin/app --port=8080"},
+			}
+			Expect(cfg.Validate()).NotTo(HaveOccurred())
 		})
 	})
 })

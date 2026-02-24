@@ -267,9 +267,9 @@ func (this *Watcher) buildFileList() error {
 			if this.trackedDirs == nil || !this.trackedDirs[dir] {
 				absDir := filepath.Join(this.rootDir, dir)
 				if err := this.fsw.Add(absDir); err != nil {
-					this.log.Warn("watch %s: %v", dir, err)
+					this.log.Warn("no watch %s: %v", dir, err)
 				} else {
-					this.log.Status("Watching directory: %s (%s)", dir, absDir)
+					this.log.Verbose("Watching: %s (%s)", dir, absDir)
 				}
 			}
 		}

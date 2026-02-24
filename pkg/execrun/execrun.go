@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/google/shlex"
 	"gopkg.in/yaml.v3"
 
 	"github.com/gur-shatz/go-run/internal/color"
@@ -123,6 +125,24 @@ func WriteConfig(path string, cfg Config) error {
 	return nil
 }
 
+// shellVarRe matches shell-style variable references like $VAR, ${VAR}, and
+// $(...) command substitutions that won't be expanded without a shell.
+var shellVarRe = regexp.MustCompile(`\$[A-Za-z_{\(]`)
+
+// checkShellVars returns an error if the command contains shell variable
+// references. Commands are executed directly without a shell, so $VAR syntax
+// won't be expanded. Users should use Go template syntax instead.
+func checkShellVars(cmd string) error {
+	if m := shellVarRe.FindString(cmd); m != "" {
+		return fmt.Errorf(
+			"command %q contains shell variable syntax (%s) which won't be expanded; "+
+				"use Go template syntax instead, e.g. {{ .VAR }}",
+			cmd, m,
+		)
+	}
+	return nil
+}
+
 // Validate checks that the config has required fields and trims whitespace
 // from commands (YAML literal blocks add trailing newlines).
 func (this *Config) Validate() error {
@@ -134,9 +154,15 @@ func (this *Config) Validate() error {
 	}
 	for i := range this.Build {
 		this.Build[i] = strings.TrimSpace(this.Build[i])
+		if err := checkShellVars(this.Build[i]); err != nil {
+			return err
+		}
 	}
 	for i := range this.Exec {
 		this.Exec[i] = strings.TrimSpace(this.Exec[i])
+		if err := checkShellVars(this.Exec[i]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -203,6 +229,44 @@ func newRunner(ctx context.Context, cfg Config, opts Options, rootDir string, lo
 	}
 }
 
+// parseCmd splits a command string into program + args using POSIX shell
+// word splitting (handles quoting, escaping) without invoking a shell.
+func parseCmd(cmdStr string) ([]string, error) {
+	args, err := shlex.Split(cmdStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse command %q: %w", cmdStr, err)
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+	return args, nil
+}
+
+// buildCmd parses a command string and returns a context-aware *exec.Cmd.
+func (this *runner) buildCmd(ctx context.Context, cmdStr string) (*exec.Cmd, error) {
+	args, err := parseCmd(cmdStr)
+	if err != nil {
+		return nil, err
+	}
+	c := exec.CommandContext(ctx, args[0], args[1:]...)
+	c.Dir = this.rootDir
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return c, nil
+}
+
+// buildCmdNoCtx parses a command string and returns an *exec.Cmd without context.
+// Used for the managed process which is stopped explicitly via signals.
+func (this *runner) buildCmdNoCtx(cmdStr string) (*exec.Cmd, error) {
+	args, err := parseCmd(cmdStr)
+	if err != nil {
+		return nil, err
+	}
+	c := exec.Command(args[0], args[1:]...)
+	c.Dir = this.rootDir
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return c, nil
+}
+
 // logTo writes a timestamped marker line to the given writer.
 func (this *runner) logTo(w io.Writer, format string, args ...any) {
 	ts := time.Now().Format("2006-01-02 15:04:05")
@@ -210,25 +274,26 @@ func (this *runner) logTo(w io.Writer, format string, args ...any) {
 	fmt.Fprintf(w, "======== %s : %s\n", ts, msg)
 }
 
-// runStep runs a single shell command with the given stdout/stderr writers.
+// runStep runs a single command with the given stdout/stderr writers.
 // The command is cancelled if the runner's context is done.
 func (this *runner) runStep(cmd string, stdout, stderr io.Writer) error {
 	this.log.Verbose("Running: %s", cmd)
 	this.logTo(stdout, "Running: %s", cmd)
-	c := exec.CommandContext(this.ctx, "sh", "-c", cmd)
-	c.Dir = this.rootDir
+	c, err := this.buildCmd(this.ctx, cmd)
+	if err != nil {
+		return err
+	}
 	c.Stdout = stdout
 	c.Stderr = stderr
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		return killProcessGroup(c.Process, syscall.SIGTERM)
 	}
 	c.WaitDelay = 5 * time.Second
-	err := c.Run()
-	if err != nil {
+	if err := c.Run(); err != nil {
 		this.logTo(stdout, "Command failed: %s", err)
+		return err
 	}
-	return err
+	return nil
 }
 
 // execSteps runs build steps and exec prep steps.
@@ -280,12 +345,14 @@ func (this *runner) start() error {
 	defer this.mu.Unlock()
 
 	this.stopping = false
-	this.cmd = exec.Command("sh", "-c", this.cfg.RunCmd())
-	this.cmd.Dir = this.rootDir
+	cmd, err := this.buildCmdNoCtx(this.cfg.RunCmd())
+	if err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
+	this.cmd = cmd
 	this.cmd.Stdout = this.stdout
 	this.cmd.Stderr = this.stderr
 	this.cmd.Stdin = os.Stdin
-	this.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := this.cmd.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
@@ -297,13 +364,13 @@ func (this *runner) start() error {
 		this.opts.OnProcessStart(this.cmd.Process.Pid)
 	}
 
-	cmd := this.cmd
+	started := this.cmd
 	go func() {
-		err := cmd.Wait()
+		err := started.Wait()
 
 		this.mu.Lock()
 		wasStopping := this.stopping
-		if this.cmd == cmd {
+		if this.cmd == started {
 			this.cmd = nil
 		}
 		this.mu.Unlock()
@@ -346,7 +413,7 @@ func (this *runner) stop() error {
 
 	this.logTo(this.stdout, "Stopping process (pid %d, SIGTERM)", cmd.Process.Pid)
 
-	// Kill the entire process group (shell + children)
+	// Kill the entire process group (process + children)
 	if err := killProcessGroup(cmd.Process, syscall.SIGTERM); err != nil {
 		return nil
 	}
@@ -546,16 +613,32 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 	w := watcher.New(rootDir, patterns, opts.PollInterval, opts.Debounce, func(changes sumfile.ChangeSet) {
 		l.Change(changes)
 
-		l.Status("Launching Execs...")
-		dur, err := r.restart()
+		l.Status("Rebuilding...")
+		dur, err := r.execSteps()
 		if err != nil {
-			l.Error("Exec failed: %v", err)
+			l.Error("Build failed: %v", err)
 			l.Warn("Keeping previous process running.")
 			healthy.Store(false)
 			return
 		}
-		l.Success("Launching Execs Done (pid %d, %s).", r.pid(), scan.FormatDuration(dur))
+		l.Success("Build done (%s).", scan.FormatDuration(dur))
 		healthy.Store(true)
+
+		l.Status("Executing...")
+		if err := r.stop(); err != nil {
+			l.Error("Stop failed: %v", err)
+			return
+		}
+		// Drain stale exit info
+		select {
+		case <-r.exited:
+		default:
+		}
+		if err := r.start(); err != nil {
+			l.Error("Start failed: %v", err)
+			return
+		}
+		l.Success("Started (pid %d).", r.pid())
 		execHealthy.Store(true)
 
 		// Update sum file

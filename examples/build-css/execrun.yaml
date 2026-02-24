@@ -1,5 +1,6 @@
 watch:
   - "*.css"
 build:
-  - mkdir -p dist && cp style.src.css dist/style.css
+  - mkdir -p dist
+  - cp style.src.css dist/style.css
   - echo "CSS build complete"
