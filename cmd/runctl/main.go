@@ -20,6 +20,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/internal/sumfile"
+
 	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 	"github.com/gur-shatz/go-run/pkg/runctl"
@@ -48,6 +49,7 @@ func run() error {
 
 	configPath := fs.String("config", "runctl.yaml", "path to config file")
 	fs.StringVar(configPath, "c", "runctl.yaml", "path to config file (shorthand)")
+	envFile := fs.String("e", "", "load environment variables from YAML file")
 	verbose := fs.Bool("v", false, "verbose output")
 	ui := fs.Bool("ui", false, "serve embedded web dashboard")
 
@@ -65,6 +67,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  runctl                          Run with default config (runctl.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  runctl -ui                      Run with web dashboard\n")
+		fmt.Fprintf(os.Stderr, "  runctl -e vars.yaml             Load env vars from YAML file\n")
 		fmt.Fprintf(os.Stderr, "  runctl -c myconfig.yaml         Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api -t web            Watch only 'api' and 'web' targets\n")
 		fmt.Fprintf(os.Stderr, "  runctl build                    Build all targets and exit\n")
@@ -82,6 +85,13 @@ func run() error {
 			return nil
 		}
 		return err
+	}
+
+	// Load env file if specified (before config loading so vars are available)
+	if *envFile != "" {
+		if err := config.LoadEnvFile(*envFile); err != nil {
+			return err
+		}
 	}
 
 	// Resolve .yml/.yaml fallback

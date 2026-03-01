@@ -104,6 +104,28 @@ func loadFromFile(path string, env map[string]string, quiet bool) (O, map[string
 	return cfg, resolvedVars, nil
 }
 
+// LoadEnvFile reads a YAML file of key-value pairs and sets them as
+// environment variables. Existing environment variables take precedence
+// (they are not overwritten). This is intended for use with the -e CLI flag.
+func LoadEnvFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read env file %s: %w", path, err)
+	}
+
+	var vars map[string]any
+	if err := yaml.Unmarshal(data, &vars); err != nil {
+		return fmt.Errorf("parse env file %s: %w", path, err)
+	}
+
+	for k, v := range vars {
+		if _, exists := os.LookupEnv(k); !exists {
+			os.Setenv(k, fmt.Sprintf("%v", v))
+		}
+	}
+	return nil
+}
+
 // loadVarsFile reads a vars.yml file and merges its values into the env map.
 // Real environment variables take precedence over vars file values.
 func loadVarsFile(path string, env map[string]string) map[string]string {

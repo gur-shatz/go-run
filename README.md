@@ -100,8 +100,6 @@ exec:
   - "./bin/app"
 ```
 
-Commands are executed via `sh -c`, so pipes, redirects, and environment variables all work.
-
 | Field   | Required | Description                                                             |
 | ------- | -------- | ----------------------------------------------------------------------- |
 | `vars`  | no       | Template variables (see [Template Variables](#template-variables))      |

@@ -16,6 +16,7 @@ import (
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/internal/sumfile"
+	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 )
 
@@ -32,6 +33,7 @@ func run() error {
 
 	configPath := fs.String("config", "execrun.yaml", "path to config file")
 	fs.StringVar(configPath, "c", "execrun.yaml", "path to config file (shorthand)")
+	envFile := fs.String("e", "", "load environment variables from YAML file")
 	poll := fs.Duration("poll", 500*time.Millisecond, "poll interval")
 	debounce := fs.Duration("debounce", 300*time.Millisecond, "debounce duration")
 	verbose := fs.Bool("v", false, "verbose output")
@@ -49,6 +51,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "  execrun                          Run with default config (execrun.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  execrun -c myapp.yaml            Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  execrun init                     Generate execrun.yaml\n")
+		fmt.Fprintf(os.Stderr, "  execrun -e vars.yaml             Load env vars from YAML file\n")
 		fmt.Fprintf(os.Stderr, "  execrun -c myapp.yaml init       Generate myapp.yaml\n")
 		fmt.Fprintf(os.Stderr, "  execrun sum                      Snapshot file hashes\n")
 		fmt.Fprintf(os.Stderr, "  execrun -c myapp.yaml sum        Snapshot using custom config\n\n")
@@ -61,6 +64,13 @@ func run() error {
 			return nil
 		}
 		return err
+	}
+
+	// Load env file if specified (before config loading so vars are available)
+	if *envFile != "" {
+		if err := config.LoadEnvFile(*envFile); err != nil {
+			return err
+		}
 	}
 
 	// Resolve .yml/.yaml fallback
