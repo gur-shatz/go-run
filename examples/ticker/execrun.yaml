@@ -2,5 +2,7 @@ watch:
   - "*.go"
 build:
   - go build -o ./bin/ticker .
+test:
+  - go test ./...
 exec:
   - ./bin/ticker

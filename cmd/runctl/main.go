@@ -62,6 +62,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  init    Generate a starter runctl.yaml\n")
 		fmt.Fprintf(os.Stderr, "  build   Run build steps for all (or selected) targets and exit\n")
+		fmt.Fprintf(os.Stderr, "  test    Run test steps for all (or selected) targets and exit\n")
 		fmt.Fprintf(os.Stderr, "  sum     Write .sum files for all (or selected) targets and exit\n")
 		fmt.Fprintf(os.Stderr, "  vars    Dump resolved variables for all (or selected) targets\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
@@ -71,7 +72,9 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "  runctl -c myconfig.yaml         Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api -t web            Watch only 'api' and 'web' targets\n")
 		fmt.Fprintf(os.Stderr, "  runctl build                    Build all targets and exit\n")
+		fmt.Fprintf(os.Stderr, "  runctl test                     Test all targets and exit\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api build             Build only 'api' target\n")
+		fmt.Fprintf(os.Stderr, "  runctl -t api test              Test only 'api' target\n")
 		fmt.Fprintf(os.Stderr, "  runctl sum                      Write sum files for all targets\n")
 		fmt.Fprintf(os.Stderr, "  runctl vars                     Show resolved variables\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api vars              Show variables for 'api' target\n")
@@ -104,6 +107,8 @@ func run() error {
 			return runInit(*configPath)
 		case "build":
 			return runBuild(*configPath, *verbose, targets)
+		case "test":
+			return runTest(*configPath, *verbose, targets)
 		case "sum":
 			return runSum(*configPath, *verbose, targets)
 		case "vars":
@@ -346,6 +351,58 @@ func runSum(configPath string, verbose bool, filterNames []string) error {
 		log.Success("%s: wrote %s (%d files)", entry.Name, sumPath, len(sums))
 	}
 
+	return nil
+}
+
+func runTest(configPath string, verbose bool, filterNames []string) error {
+	log.SetPrefix("[runctl]")
+	log.Init(verbose)
+
+	cfg, err := runctl.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	baseDir := filepath.Dir(configPath)
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir: %w", err)
+	}
+
+	entries, err := resolveTargets(cfg, filterNames)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	var failed bool
+
+	for _, entry := range entries {
+		ecfg, dir, _, err := loadExecrunConfig(entry, cfg, absBase)
+		if err != nil {
+			log.Error("%s: %v", entry.Name, err)
+			failed = true
+			continue
+		}
+
+		opts := execrun.Options{
+			RootDir:   dir,
+			LogPrefix: fmt.Sprintf("[%s]", entry.Name),
+			Verbose:   verbose,
+		}
+
+		log.Status("%s: testing...", entry.Name)
+		if err := execrun.RunTests(ctx, *ecfg, opts); err != nil {
+			log.Error("%s: tests failed: %v", entry.Name, err)
+			failed = true
+		} else {
+			log.Success("%s: tests ok", entry.Name)
+		}
+	}
+
+	if failed {
+		return fmt.Errorf("one or more targets failed tests")
+	}
 	return nil
 }
 

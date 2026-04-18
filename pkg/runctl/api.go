@@ -19,6 +19,7 @@ func (this *Controller) Routes() chi.Router {
 	r.Get("/targets", this.handleListTargets)
 	r.Get("/targets/{name}", this.handleGetTarget)
 	r.Post("/targets/{name}/build", this.handleBuildTarget)
+	r.Post("/targets/{name}/test", this.handleTestTarget)
 	r.Post("/targets/{name}/start", this.handleStartExec)
 	r.Post("/targets/{name}/stop", this.handleStopExec)
 	r.Post("/targets/{name}/restart", this.handleRestartTarget)
@@ -60,6 +61,19 @@ func (this *Controller) handleBuildTarget(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "building"})
+}
+
+func (this *Controller) handleTestTarget(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := this.TestTarget(name); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+		} else {
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "testing"})
 }
 
 func (this *Controller) handleStartExec(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +152,8 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	if stage == "" {
 		stage = "run"
 	}
-	if stage != "build" && stage != "run" {
-		writeError(w, http.StatusBadRequest, "stage must be build or run")
+	if stage != "build" && stage != "test" && stage != "run" {
+		writeError(w, http.StatusBadRequest, "stage must be build, test, or run")
 		return
 	}
 
@@ -152,6 +166,8 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	switch stage {
 	case "build":
 		path = t.tcfg.Logs.Build
+	case "test":
+		path = t.tcfg.Logs.Test
 	case "run":
 		path = t.tcfg.Logs.Run
 	}

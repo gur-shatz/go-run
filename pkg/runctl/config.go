@@ -32,7 +32,7 @@ type APIConfig struct {
 
 // TargetConfig describes a single managed target.
 type TargetConfig struct {
-	Config  string            `yaml:"config"`          // path to config file (relative to runctl.yaml dir)
+	Config  string            `yaml:"config"` // path to config file (relative to runctl.yaml dir)
 	Enabled *bool             `yaml:"enabled,omitempty"`
 	Links   []Link            `yaml:"links,omitempty"`
 	Vars    map[string]string `yaml:"vars,omitempty"` // per-target template vars (override global vars)
@@ -54,6 +54,7 @@ type Link struct {
 // Files are separated by stage: build (compile/exec steps) and run (managed process).
 type LogsConfig struct {
 	Build string `json:"build,omitempty"` // build stage log file
+	Test  string `json:"test,omitempty"`  // test stage log file
 	Run   string `json:"run,omitempty"`   // run stage log file
 }
 
@@ -178,6 +179,7 @@ func (this *Config) Validate() error {
 			norm := normalizeTargetName(name)
 			t.Logs = &LogsConfig{
 				Build: filepath.Join(this.LogsDir, norm+".build.log"),
+				Test:  filepath.Join(this.LogsDir, norm+".test.log"),
 				Run:   filepath.Join(this.LogsDir, norm+".run.log"),
 			}
 			this.Targets[name] = t

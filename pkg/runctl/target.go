@@ -33,26 +33,39 @@ const (
 
 // TargetStatus is the JSON-serializable status of a target.
 type TargetStatus struct {
-	Name     string      `json:"name"`
-	HasBuild bool        `json:"has_build"`
-	HasRun   bool        `json:"has_run"`
-	State   TargetState `json:"state"`
-	Enabled bool        `json:"enabled"`
-	PID     int         `json:"pid,omitempty"`
+	Name         string      `json:"name"`
+	HasBuild     bool        `json:"has_build"`
+	HasTest      bool        `json:"has_test"`
+	HasRun       bool        `json:"has_run"`
+	State        TargetState `json:"state"`
+	CurrentStage string      `json:"current_stage,omitempty"`
+	Enabled      bool        `json:"enabled"`
+	PID          int         `json:"pid,omitempty"`
 
-	LastExecTime     *time.Time `json:"last_exec_time,omitempty"`
-	LastExecDuration *float64   `json:"last_exec_duration_secs,omitempty"`
-	LastExecResult   string     `json:"last_exec_result,omitempty"`
-	LastExecError    string     `json:"last_exec_error,omitempty"`
+	LastBuildTime     *time.Time `json:"last_build_time,omitempty"`
+	LastBuildDuration *float64   `json:"last_build_duration_secs,omitempty"`
+	LastBuildResult   string     `json:"last_build_result,omitempty"`
+	LastBuildError    string     `json:"last_build_error,omitempty"`
+
+	LastTestTime     *time.Time `json:"last_test_time,omitempty"`
+	LastTestDuration *float64   `json:"last_test_duration_secs,omitempty"`
+	LastTestResult   string     `json:"last_test_result,omitempty"`
+	LastTestError    string     `json:"last_test_error,omitempty"`
+
+	LastExecTime     *time.Time `json:"last_exec_time,omitempty"`          // deprecated alias for build
+	LastExecDuration *float64   `json:"last_exec_duration_secs,omitempty"` // deprecated alias for build
+	LastExecResult   string     `json:"last_exec_result,omitempty"`        // deprecated alias for build
+	LastExecError    string     `json:"last_exec_error,omitempty"`         // deprecated alias for build
 
 	LastStartTime *time.Time `json:"last_start_time,omitempty"`
 	RestartCount  int        `json:"restart_count"`
 	BuildCount    int        `json:"build_count"`
+	TestCount     int        `json:"test_count"`
 
 	Links []Link      `json:"links,omitempty"`
 	Logs  *LogsConfig `json:"logs,omitempty"`
 
-	BackofficeReady  bool                  `json:"backoffice_ready"`
+	BackofficeReady  bool                   `json:"backoffice_ready"`
 	BackofficeStatus *backoffice.StatusInfo `json:"backoffice_status,omitempty"`
 }
 
@@ -64,23 +77,31 @@ type target struct {
 	parentVars map[string]string // resolved vars from parent (runctl) config
 	verbose    bool
 	hasBuild   bool
+	hasTest    bool
 	hasRun     bool
 
-	mu      sync.Mutex
-	state   TargetState
-	enabled bool
-	cancel  context.CancelFunc
-	pid     int
+	mu           sync.Mutex
+	state        TargetState
+	currentStage string
+	enabled      bool
+	cancel       context.CancelFunc
+	pid          int
 
-	lastExecTime     *time.Time
-	lastExecDuration *float64
-	lastExecResult   string
-	lastExecError    string
-	lastStartTime    *time.Time
-	restartCount     int
-	buildCount       int
+	lastBuildTime     *time.Time
+	lastBuildDuration *float64
+	lastBuildResult   string
+	lastBuildError    string
+	lastTestTime      *time.Time
+	lastTestDuration  *float64
+	lastTestResult    string
+	lastTestError     string
+	lastStartTime     *time.Time
+	restartCount      int
+	buildCount        int
+	testCount         int
 
 	buildTrigger chan struct{}
+	testTrigger  chan struct{}
 	execStop     chan struct{}
 	execStart    chan struct{}
 
@@ -100,11 +121,13 @@ func newTarget(name string, tcfg TargetConfig, baseDir string, parentVars map[st
 		rootDir:      dir,
 		parentVars:   parentVars,
 		verbose:      verbose,
-		hasBuild:     true, // default; refined for execrun targets after config load
+		hasBuild:     false,
+		hasTest:      false,
 		hasRun:       true,
 		state:        StateIdle,
 		enabled:      tcfg.IsEnabled(),
 		buildTrigger: make(chan struct{}, 1),
+		testTrigger:  make(chan struct{}, 1),
 		execStop:     make(chan struct{}, 1),
 		execStart:    make(chan struct{}, 1),
 	}
@@ -134,12 +157,14 @@ func (this *target) start() error {
 	if err != nil {
 		this.mu.Lock()
 		this.state = StateError
-		this.lastExecError = err.Error()
+		this.currentStage = "build"
+		this.lastBuildError = err.Error()
 		this.mu.Unlock()
 		return fmt.Errorf("target %q: load config: %w", this.name, err)
 	}
 
-	this.hasBuild = true
+	this.hasBuild = len(ecfg.BuildSteps()) > 0
+	this.hasTest = len(ecfg.TestSteps()) > 0
 	this.hasRun = !ecfg.IsBuildOnly()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,11 +173,19 @@ func (this *target) start() error {
 	this.mu.Unlock()
 
 	var closers []io.Closer
-	var buildLog, runLog io.Writer = os.Stdout, os.Stdout
+	var buildLog, testLog, runLog io.Writer = os.Stdout, os.Stdout, os.Stdout
 	if this.tcfg.Logs != nil {
 		var err error
 		buildLog, err = openLogFile(this.tcfg.Logs.Build, os.Stdout, &closers)
 		if err != nil {
+			cancel()
+			return fmt.Errorf("target %q: %w", this.name, err)
+		}
+		testLog, err = openLogFile(this.tcfg.Logs.Test, os.Stdout, &closers)
+		if err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
 			cancel()
 			return fmt.Errorf("target %q: %w", this.name, err)
 		}
@@ -169,22 +202,28 @@ func (this *target) start() error {
 	execSumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
 
 	opts := execrun.Options{
-		RootDir:    this.rootDir,
-		LogPrefix:  fmt.Sprintf("[%s]", this.name),
-		Verbose:    this.verbose,
-		Stdout:     runLog,
-		Stderr:     runLog,
+		RootDir:   this.rootDir,
+		LogPrefix: fmt.Sprintf("[%s]", this.name),
+		Verbose:   this.verbose,
+		Stdout:    runLog,
+		Stderr:    runLog,
+		SumFile:   execSumFile,
+
 		ExecStdout: buildLog,
 		ExecStderr: buildLog,
-		SumFile:    execSumFile,
+		TestStdout: testLog,
+		TestStderr: testLog,
 
-		OnExecStart:       this.onExecStart,
-		OnExecDone:        this.onExecDone,
+		OnBuildStart:      this.onBuildStart,
+		OnBuildDone:       this.onBuildDone,
+		OnTestStart:       this.onTestStart,
+		OnTestDone:        this.onTestDone,
 		OnProcessStart:    this.onProcessStart,
 		OnProcessExit:     this.onProcessExit,
 		OnBackofficeReady: this.onBackofficeReady,
 
 		BuildTrigger: this.buildTrigger,
+		TestTrigger:  this.testTrigger,
 		ExecStop:     this.execStop,
 		ExecStart:    this.execStart,
 	}
@@ -227,34 +266,65 @@ func (this *target) handleRunComplete(ctx context.Context, err error) {
 		}
 	} else if err != nil {
 		this.state = StateError
-		this.lastExecError = err.Error()
+		this.lastBuildError = err.Error()
 	}
 	this.pid = 0
+	this.currentStage = ""
 	this.backofficeClient = nil
 	this.backofficeReady = false
 }
 
-func (this *target) onExecStart() {
+func (this *target) onBuildStart() {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	now := time.Now()
-	this.lastExecTime = &now
+	this.lastBuildTime = &now
+	this.currentStage = "build"
 	this.state = StateStarting
-	this.buildCount++
 }
 
-func (this *target) onExecDone(duration time.Duration, err error) {
+func (this *target) onBuildDone(duration time.Duration, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	dur := duration.Seconds()
-	this.lastExecDuration = &dur
+	this.lastBuildDuration = &dur
 	if err != nil {
-		this.lastExecResult = "failed"
-		this.lastExecError = err.Error()
+		this.lastBuildResult = "failed"
+		this.lastBuildError = err.Error()
 		this.state = StateError
 	} else {
-		this.lastExecResult = "success"
-		this.lastExecError = ""
+		this.lastBuildResult = "success"
+		this.lastBuildError = ""
+		if this.hasBuild {
+			this.buildCount++
+		}
+	}
+}
+
+func (this *target) onTestStart() {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	now := time.Now()
+	this.lastTestTime = &now
+	this.currentStage = "test"
+	this.state = StateStarting
+}
+
+func (this *target) onTestDone(duration time.Duration, err error) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	dur := duration.Seconds()
+	this.lastTestDuration = &dur
+	if err != nil {
+		this.lastTestResult = "failed"
+		this.lastTestError = err.Error()
+		this.state = StateError
+	} else {
+		this.lastTestResult = "success"
+		this.lastTestError = ""
+		if this.hasTest {
+			this.testCount++
+		}
 	}
 }
 
@@ -262,10 +332,12 @@ func (this *target) onProcessStart(pid int) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	this.pid = pid
+	hadStartedBefore := this.lastStartTime != nil
 	now := time.Now()
 	this.lastStartTime = &now
+	this.currentStage = "run"
 	this.state = StateRunning
-	if this.restartCount > 0 || this.lastExecTime != nil {
+	if this.restartCount > 0 || hadStartedBefore {
 		this.restartCount++
 	}
 }
@@ -274,6 +346,7 @@ func (this *target) onProcessExit(exitCode int, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	this.pid = 0
+	this.currentStage = ""
 	this.backofficeClient = nil
 	this.backofficeReady = false
 	if exitCode == 0 {
@@ -301,6 +374,14 @@ func (this *target) BackofficeClient() *boclient.Client {
 func (this *target) Build() {
 	select {
 	case this.buildTrigger <- struct{}{}:
+	default:
+	}
+}
+
+// Test sends a test trigger (tests only).
+func (this *target) Test() {
+	select {
+	case this.testTrigger <- struct{}{}:
 	default:
 	}
 }
@@ -376,22 +457,33 @@ func (this *target) Status() TargetStatus {
 	}
 
 	ts := TargetStatus{
-		Name:             this.name,
-		HasBuild:         this.hasBuild,
-		HasRun:           this.hasRun,
-		State:            this.state,
-		Enabled:          this.enabled,
-		PID:              this.pid,
-		LastExecTime:     this.lastExecTime,
-		LastExecDuration: this.lastExecDuration,
-		LastExecResult:   this.lastExecResult,
-		LastExecError:    this.lastExecError,
-		LastStartTime:    this.lastStartTime,
-		RestartCount:     this.restartCount,
-		BuildCount:       this.buildCount,
-		Links:            links,
-		Logs:             this.tcfg.Logs,
-		BackofficeReady:  this.backofficeReady,
+		Name:              this.name,
+		HasBuild:          this.hasBuild,
+		HasTest:           this.hasTest,
+		HasRun:            this.hasRun,
+		State:             this.state,
+		CurrentStage:      this.currentStage,
+		Enabled:           this.enabled,
+		PID:               this.pid,
+		LastBuildTime:     this.lastBuildTime,
+		LastBuildDuration: this.lastBuildDuration,
+		LastBuildResult:   this.lastBuildResult,
+		LastBuildError:    this.lastBuildError,
+		LastTestTime:      this.lastTestTime,
+		LastTestDuration:  this.lastTestDuration,
+		LastTestResult:    this.lastTestResult,
+		LastTestError:     this.lastTestError,
+		LastExecTime:      this.lastBuildTime,
+		LastExecDuration:  this.lastBuildDuration,
+		LastExecResult:    this.lastBuildResult,
+		LastExecError:     this.lastBuildError,
+		LastStartTime:     this.lastStartTime,
+		RestartCount:      this.restartCount,
+		BuildCount:        this.buildCount,
+		TestCount:         this.testCount,
+		Links:             links,
+		Logs:              this.tcfg.Logs,
+		BackofficeReady:   this.backofficeReady,
 	}
 
 	// Best-effort fetch of backoffice status

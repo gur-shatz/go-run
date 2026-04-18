@@ -10,7 +10,8 @@
 #            Each link must have exactly one of "url" or "file" (not both).
 #
 # logs_dir: redirect all target output to log files under this directory.
-#           Creates two files per target: <target>.build.log and <target>.run.log.
+#           Creates three files per target: <target>.build.log, <target>.test.log,
+#           and <target>.run.log.
 #
 # vars:  template variables available via {{ .VAR }} or [[ .VAR ]] syntax.
 #        Environment variables override vars values.

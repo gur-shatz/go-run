@@ -477,5 +477,20 @@ targets:
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("not found"))
 		})
+
+		It("TestTarget on nonexistent target returns error", func() {
+			cfg := runctl.Config{
+				API: runctl.APIConfig{Port: 9100},
+				Targets: map[string]runctl.TargetConfig{
+					"app": {Config: "app/execrun.yaml"},
+				},
+			}
+			ctrl, err := runctl.New(cfg, ".", false)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = ctrl.TestTarget("nonexistent")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not found"))
+		})
 	})
 })

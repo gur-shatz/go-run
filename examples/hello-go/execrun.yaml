@@ -7,6 +7,8 @@ watch:
   - "../ticker/*.md"
 build:
   - "go build -o ./bin/hello-go ./main.go"
+test:
+  - "go test ./..."
 exec:
   - echo "Hello Go build complete. Starting server... {{ .LOCAL_VAR}}"
   - "./bin/hello-go"

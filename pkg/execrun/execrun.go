@@ -37,6 +37,7 @@ import (
 type Config struct {
 	Watch []string `yaml:"watch"`
 	Build []string `yaml:"build,omitempty"` // prep commands, run to completion
+	Test  []string `yaml:"test,omitempty"`  // test commands, run after build and before exec
 	Exec  []string `yaml:"exec,omitempty"`  // run commands; last is the managed process
 }
 
@@ -66,10 +67,14 @@ type Options struct {
 	// Defaults to Stdout/Stderr if nil.
 	ExecStdout io.Writer
 	ExecStderr io.Writer
+	TestStdout io.Writer
+	TestStderr io.Writer
 
 	// Lifecycle callbacks — all optional.
-	OnExecStart    func()                                 // called before exec steps run
-	OnExecDone     func(duration time.Duration, err error) // called after exec steps complete
+	OnBuildStart   func()                                  // called before build steps run
+	OnBuildDone    func(duration time.Duration, err error) // called after build steps complete
+	OnTestStart    func()                                  // called before test steps run
+	OnTestDone     func(duration time.Duration, err error) // called after test steps complete
 	OnProcessStart func(pid int)                           // called when the run command starts
 	OnProcessExit  func(exitCode int, err error)           // called when the run command exits
 
@@ -78,6 +83,7 @@ type Options struct {
 
 	// External control — all optional, used by runctl for granular control.
 	BuildTrigger <-chan struct{} // triggers rebuild + restart
+	TestTrigger  <-chan struct{} // triggers tests only
 	ExecStop     <-chan struct{} // stops just the managed process
 	ExecStart    <-chan struct{} // starts just the managed process (no rebuild)
 }
@@ -114,6 +120,7 @@ func DefaultConfig() Config {
 	return Config{
 		Watch: []string{"**/*.go", "go.mod", "go.sum"},
 		Build: []string{"go build -o ./bin/app ."},
+		Test:  []string{"go test ./..."},
 		Exec:  []string{"./bin/app"},
 	}
 }
@@ -154,12 +161,18 @@ func (this *Config) Validate() error {
 	if len(this.Watch) == 0 {
 		return fmt.Errorf("watch must have at least one pattern")
 	}
-	if len(this.Build)+len(this.Exec) == 0 {
-		return fmt.Errorf("at least one build or exec command is required")
+	if len(this.Build)+len(this.Test)+len(this.Exec) == 0 {
+		return fmt.Errorf("at least one build, test, or exec command is required")
 	}
 	for i := range this.Build {
 		this.Build[i] = strings.TrimSpace(this.Build[i])
 		if err := checkShellVars(this.Build[i]); err != nil {
+			return err
+		}
+	}
+	for i := range this.Test {
+		this.Test[i] = strings.TrimSpace(this.Test[i])
+		if err := checkShellVars(this.Test[i]); err != nil {
 			return err
 		}
 	}
@@ -175,6 +188,9 @@ func (this *Config) Validate() error {
 // BuildSteps returns the build commands.
 func (this *Config) BuildSteps() []string { return this.Build }
 
+// TestSteps returns the test commands.
+func (this *Config) TestSteps() []string { return this.Test }
+
 // ExecPrepSteps returns all exec commands except the last (preparation steps
 // that are logically part of the run phase, not the build phase).
 func (this *Config) ExecPrepSteps() []string {
@@ -184,14 +200,21 @@ func (this *Config) ExecPrepSteps() []string {
 	return this.Exec[:len(this.Exec)-1]
 }
 
-// Steps returns all preparation commands: build commands followed by
-// all exec commands except the last (the managed process).
+// Steps returns all preparation commands: build commands, test commands,
+// and all exec commands except the last (the managed process).
 func (this *Config) Steps() []string {
 	if len(this.Exec) <= 1 {
-		return this.Build
+		steps := make([]string, 0, len(this.Build)+len(this.Test))
+		steps = append(steps, this.Build...)
+		steps = append(steps, this.Test...)
+		if len(steps) == 0 {
+			return nil
+		}
+		return steps
 	}
-	steps := make([]string, 0, len(this.Build)+len(this.Exec)-1)
+	steps := make([]string, 0, len(this.Build)+len(this.Test)+len(this.Exec)-1)
 	steps = append(steps, this.Build...)
+	steps = append(steps, this.Test...)
 	steps = append(steps, this.Exec[:len(this.Exec)-1]...)
 	return steps
 }
@@ -305,34 +328,17 @@ func (this *runner) runStep(cmd string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// execSteps runs build steps and exec prep steps.
-// Build steps write to ExecStdout/ExecStderr (build log).
-// Exec prep steps write to Stdout/Stderr (run log).
-// Returns the total duration and any error.
-func (this *runner) execSteps() (time.Duration, error) {
-	if this.opts.OnExecStart != nil {
-		this.opts.OnExecStart()
+func (this *runner) runBuildSteps() (time.Duration, error) {
+	start := time.Now()
+	if this.opts.OnBuildStart != nil {
+		this.opts.OnBuildStart()
 	}
 
-	start := time.Now()
-
-	// Phase 1: build steps → build log
 	for _, cmd := range this.cfg.BuildSteps() {
 		if err := this.runStep(cmd, this.opts.ExecStdout, this.opts.ExecStderr); err != nil {
 			dur := time.Since(start)
-			if this.opts.OnExecDone != nil {
-				this.opts.OnExecDone(dur, err)
-			}
-			return dur, fmt.Errorf("command %q failed: %w", cmd, err)
-		}
-	}
-
-	// Phase 2: exec prep steps → run log
-	for _, cmd := range this.cfg.ExecPrepSteps() {
-		if err := this.runStep(cmd, this.stdout, this.stderr); err != nil {
-			dur := time.Since(start)
-			if this.opts.OnExecDone != nil {
-				this.opts.OnExecDone(dur, err)
+			if this.opts.OnBuildDone != nil {
+				this.opts.OnBuildDone(dur, err)
 			}
 			return dur, fmt.Errorf("command %q failed: %w", cmd, err)
 		}
@@ -342,10 +348,61 @@ func (this *runner) execSteps() (time.Duration, error) {
 	if len(this.cfg.BuildSteps()) > 0 {
 		this.logTo(this.opts.ExecStdout, "Build done (%s)", scan.FormatDuration(dur))
 	}
-	if this.opts.OnExecDone != nil {
-		this.opts.OnExecDone(dur, nil)
+	if this.opts.OnBuildDone != nil {
+		this.opts.OnBuildDone(dur, nil)
 	}
 	return dur, nil
+}
+
+func (this *runner) runTestSteps() (time.Duration, error) {
+	start := time.Now()
+	if this.opts.OnTestStart != nil {
+		this.opts.OnTestStart()
+	}
+
+	for _, cmd := range this.cfg.TestSteps() {
+		if err := this.runStep(cmd, this.opts.TestStdout, this.opts.TestStderr); err != nil {
+			dur := time.Since(start)
+			if this.opts.OnTestDone != nil {
+				this.opts.OnTestDone(dur, err)
+			}
+			return dur, fmt.Errorf("command %q failed: %w", cmd, err)
+		}
+	}
+
+	dur := time.Since(start)
+	if len(this.cfg.TestSteps()) > 0 {
+		this.logTo(this.opts.TestStdout, "Tests done (%s)", scan.FormatDuration(dur))
+	}
+	if this.opts.OnTestDone != nil {
+		this.opts.OnTestDone(dur, nil)
+	}
+	return dur, nil
+}
+
+// execSteps runs build steps, test steps, and exec prep steps.
+// Build steps write to ExecStdout/ExecStderr (build log).
+// Test steps write to TestStdout/TestStderr (test log).
+// Exec prep steps write to Stdout/Stderr (run log).
+// Returns the total duration and any error.
+func (this *runner) execSteps() (time.Duration, error) {
+	start := time.Now()
+
+	if _, err := this.runBuildSteps(); err != nil {
+		return time.Since(start), err
+	}
+
+	if _, err := this.runTestSteps(); err != nil {
+		return time.Since(start), err
+	}
+
+	for _, cmd := range this.cfg.ExecPrepSteps() {
+		if err := this.runStep(cmd, this.stdout, this.stderr); err != nil {
+			return time.Since(start), fmt.Errorf("command %q failed: %w", cmd, err)
+		}
+	}
+
+	return time.Since(start), nil
 }
 
 // start runs the run command.
@@ -609,6 +666,12 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 	if opts.ExecStderr == nil {
 		opts.ExecStderr = opts.Stderr
 	}
+	if opts.TestStdout == nil {
+		opts.TestStdout = opts.Stdout
+	}
+	if opts.TestStderr == nil {
+		opts.TestStderr = opts.Stderr
+	}
 
 	color.Init()
 	prefix := "[execrun]"
@@ -754,6 +817,16 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 				healthy.Store(true)
 				execHealthy.Store(true)
 			}
+		case <-opts.TestTrigger:
+			l.Status("Tests triggered...")
+			dur, err := r.runTestSteps()
+			if err != nil {
+				l.Error("Tests failed: %v", err)
+				healthy.Store(false)
+			} else {
+				l.Success("Tests done (%s).", scan.FormatDuration(dur))
+				healthy.Store(true)
+			}
 		case <-opts.ExecStop:
 			l.Status("Stopping process...")
 			r.stop()
@@ -825,6 +898,16 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 				l.Success("Build done in %s", scan.FormatDuration(dur))
 				healthy.Store(true)
 			}
+		case <-opts.TestTrigger:
+			l.Status("Tests triggered...")
+			dur, err := r.runTestSteps()
+			if err != nil {
+				l.Error("Tests failed: %v", err)
+				healthy.Store(false)
+			} else {
+				l.Success("Tests done in %s", scan.FormatDuration(dur))
+				healthy.Store(true)
+			}
 		case <-ticker.C:
 			l.Tick(healthy.Load(), true)
 		}
@@ -869,6 +952,12 @@ func RunBuild(ctx context.Context, cfg Config, opts Options) error {
 	if opts.ExecStderr == nil {
 		opts.ExecStderr = opts.Stderr
 	}
+	if opts.TestStdout == nil {
+		opts.TestStdout = opts.Stdout
+	}
+	if opts.TestStderr == nil {
+		opts.TestStderr = opts.Stderr
+	}
 
 	color.Init()
 	prefix := "[execrun]"
@@ -887,7 +976,54 @@ func RunBuild(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	r := newRunner(ctx, cfg, opts, rootDir, l)
-	_, err := r.execSteps()
+	_, err := r.runBuildSteps()
+	return err
+}
+
+// RunTests runs just the test steps and returns.
+// It does not start watchers or the managed process.
+func RunTests(ctx context.Context, cfg Config, opts Options) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	if opts.Stdout == nil {
+		opts.Stdout = os.Stdout
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = os.Stderr
+	}
+	if opts.ExecStdout == nil {
+		opts.ExecStdout = opts.Stdout
+	}
+	if opts.ExecStderr == nil {
+		opts.ExecStderr = opts.Stderr
+	}
+	if opts.TestStdout == nil {
+		opts.TestStdout = opts.Stdout
+	}
+	if opts.TestStderr == nil {
+		opts.TestStderr = opts.Stderr
+	}
+
+	color.Init()
+	prefix := "[execrun]"
+	if opts.LogPrefix != "" {
+		prefix = opts.LogPrefix
+	}
+	l := log.New(prefix, opts.Verbose)
+
+	rootDir := opts.RootDir
+	if rootDir == "" {
+		var err error
+		rootDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+	}
+
+	r := newRunner(ctx, cfg, opts, rootDir, l)
+	_, err := r.runTestSteps()
 	return err
 }
 

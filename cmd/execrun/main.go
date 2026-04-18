@@ -46,11 +46,13 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "Usage: execrun [flags] [command]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  init    Generate a starter config file\n")
+		fmt.Fprintf(os.Stderr, "  test    Run configured test steps and exit\n")
 		fmt.Fprintf(os.Stderr, "  sum     Snapshot watched file hashes to execrun.sum\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  execrun                          Run with default config (execrun.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  execrun -c myapp.yaml            Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  execrun init                     Generate execrun.yaml\n")
+		fmt.Fprintf(os.Stderr, "  execrun test                     Run configured test steps\n")
 		fmt.Fprintf(os.Stderr, "  execrun -e vars.yaml             Load env vars from YAML file\n")
 		fmt.Fprintf(os.Stderr, "  execrun -c myapp.yaml init       Generate myapp.yaml\n")
 		fmt.Fprintf(os.Stderr, "  execrun sum                      Snapshot file hashes\n")
@@ -82,6 +84,8 @@ func run() error {
 		switch args[0] {
 		case "init":
 			return runInit(*configPath)
+		case "test":
+			return runTest(*configPath, *verbose)
 		case "sum":
 			return runSum(*configPath)
 		}
@@ -198,6 +202,31 @@ func runSum(configPath string) error {
 
 	log.Success("Created %s (%d files)", sumFile, len(sums))
 	return nil
+}
+
+func runTest(configPath string, verbose bool) error {
+	log.Init(verbose)
+
+	cfg, _, err := execrun.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	configAbs, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	rootDir := filepath.Dir(configAbs)
+
+	opts := execrun.Options{
+		RootDir:   rootDir,
+		LogPrefix: "[execrun]",
+		Verbose:   verbose,
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+	}
+
+	return execrun.RunTests(context.Background(), *cfg, opts)
 }
 
 func runInit(configPath string) error {

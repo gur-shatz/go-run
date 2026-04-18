@@ -154,6 +154,18 @@ func (this *Controller) BuildTarget(name string) error {
 	return nil
 }
 
+// TestTarget triggers tests for a target.
+func (this *Controller) TestTarget(name string) error {
+	this.mu.RLock()
+	t, ok := this.targets[name]
+	this.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("target %q not found", name)
+	}
+	t.Test()
+	return nil
+}
+
 // StartExec starts just the managed process (no rebuild).
 func (this *Controller) StartExec(name string) error {
 	this.mu.RLock()

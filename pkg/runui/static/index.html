@@ -149,6 +149,7 @@
     <div class="topbar-title">runui</div>
     <ul class="topbar-tabs">
       <li><a href="#build" data-tab="build" class="active">Build</a></li>
+      <li><a href="#test" data-tab="test">Tests</a></li>
       <li><a href="#run" data-tab="run">Run</a></li>
     </ul>
     <div class="topbar-spacer"></div>
@@ -162,6 +163,18 @@
             <tr>
               <th>Name</th><th>Status</th><th>Duration</th>
               <th>Last Build</th><th>Builds</th><th>Error</th><th>Logs</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="tab-test" class="tab-content">
+        <table id="test-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Status</th><th>Duration</th>
+              <th>Last Test</th><th>Runs</th><th>Error</th><th>Logs</th><th>Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -241,7 +254,7 @@
 
   // Restore tab from hash
   const hash = window.location.hash.replace('#', '');
-  if (hash === 'build' || hash === 'run') switchTab(hash);
+  if (hash === 'build' || hash === 'test' || hash === 'run') switchTab(hash);
 
   // Relative time formatting
   function relTime(isoStr) {
@@ -784,7 +797,9 @@
       return;
     }
     tbody.innerHTML = filtered.map(t => {
-      const statusText = t.last_exec_result || (t.state === 'starting' ? 'building' : (t.state === 'running' ? 'success' : 'pending'));
+      const statusText = t.current_stage === 'build'
+        ? 'building'
+        : (t.last_build_result || 'pending');
       const statusCls = statusText === 'building' ? 'starting' : statusText;
       const buildBtn = '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>';
 
@@ -796,12 +811,44 @@
       return '<tr>' +
         '<td><strong>' + escHtml(t.name) + '</strong></td>' +
         '<td>' + badge(statusText, statusCls) + '</td>' +
-        '<td>' + fmtDuration(t.last_exec_duration_secs) + '</td>' +
-        '<td>' + relTime(t.last_exec_time) + '</td>' +
+        '<td>' + fmtDuration(t.last_build_duration_secs) + '</td>' +
+        '<td>' + relTime(t.last_build_time) + '</td>' +
         '<td>' + t.build_count + '</td>' +
-        '<td class="wrap">' + (t.last_exec_error ? '<span class="error-text">' + escHtml(t.last_exec_error) + '</span>' : '\u2014') + '</td>' +
+        '<td class="wrap">' + (t.last_build_error ? '<span class="error-text">' + escHtml(t.last_build_error) + '</span>' : '\u2014') + '</td>' +
         '<td>' + logsCell + '</td>' +
         '<td class="actions">' + buildBtn + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderTestTable(targets) {
+    const tbody = document.querySelector('#test-table tbody');
+    const filtered = targets.filter(t => t.has_test);
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No test targets</td></tr>';
+      return;
+    }
+    tbody.innerHTML = filtered.map(t => {
+      const statusText = t.current_stage === 'test'
+        ? 'testing'
+        : (t.last_test_result || 'pending');
+      const statusCls = statusText === 'testing' ? 'starting' : statusText;
+      const testBtn = '<button title="Test" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'test\')">\u{1F9EA}</button>';
+
+      const hasLogs = t.logs && t.logs.test;
+      const logsCell = hasLogs
+        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'test\')">tests</span>'
+        : '\u2014';
+
+      return '<tr>' +
+        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
+        '<td>' + badge(statusText, statusCls) + '</td>' +
+        '<td>' + fmtDuration(t.last_test_duration_secs) + '</td>' +
+        '<td>' + relTime(t.last_test_time) + '</td>' +
+        '<td>' + t.test_count + '</td>' +
+        '<td class="wrap">' + (t.last_test_error ? '<span class="error-text">' + escHtml(t.last_test_error) + '</span>' : '\u2014') + '</td>' +
+        '<td>' + logsCell + '</td>' +
+        '<td class="actions">' + testBtn + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -871,6 +918,7 @@
         if (!Array.isArray(targets)) return;
         targets.sort((a, b) => a.name.localeCompare(b.name));
         renderBuildTable(targets);
+        renderTestTable(targets);
         renderRunTable(targets);
       })
       .catch(err => console.error('poll error:', err));

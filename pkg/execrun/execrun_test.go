@@ -42,6 +42,7 @@ exec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Watch).To(Equal([]string{"**/*.go", "!vendor/**"}))
 			Expect(cfg.Build).To(Equal([]string{"go build -o ./bin/app ."}))
+			Expect(cfg.Test).To(BeNil())
 			Expect(cfg.Exec).To(Equal([]string{"./bin/app"}))
 			Expect(cfg.Steps()).To(Equal([]string{"go build -o ./bin/app ."}))
 			Expect(cfg.RunCmd()).To(Equal("./bin/app"))
@@ -69,6 +70,29 @@ exec:
 				"make build",
 			}))
 			Expect(cfg.RunCmd()).To(Equal("./bin/server"))
+		})
+
+		It("loads config with test steps", func() {
+			configPath := filepath.Join(tmpDir, "execrun.yaml")
+			content := `watch:
+  - "**/*.go"
+build:
+  - "go build ./..."
+test:
+  - "go test ./..."
+exec:
+  - "./bin/server"
+`
+			err := os.WriteFile(configPath, []byte(content), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, _, err := execrun.LoadConfig(configPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.TestSteps()).To(Equal([]string{"go test ./..."}))
+			Expect(cfg.Steps()).To(Equal([]string{
+				"go build ./...",
+				"go test ./...",
+			}))
 		})
 
 		It("loads config with only an exec command (no build steps)", func() {
@@ -104,11 +128,12 @@ build:
 			Expect(cfg.RunCmd()).To(Equal(""))
 		})
 
-		It("returns error for empty build and exec", func() {
+		It("returns error for empty build, test, and exec", func() {
 			configPath := filepath.Join(tmpDir, "execrun.yaml")
 			content := `watch:
   - "**/*.go"
 build: []
+test: []
 exec: []
 `
 			err := os.WriteFile(configPath, []byte(content), 0644)
@@ -116,7 +141,7 @@ exec: []
 
 			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at least one build or exec command"))
+			Expect(err.Error()).To(ContainSubstring("at least one build, test, or exec command"))
 		})
 
 		It("returns error for missing build and exec fields", func() {
@@ -129,7 +154,7 @@ exec: []
 
 			_, _, err = execrun.LoadConfig(configPath)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at least one build or exec command"))
+			Expect(err.Error()).To(ContainSubstring("at least one build, test, or exec command"))
 		})
 
 		It("returns error for empty watch field", func() {
@@ -189,6 +214,7 @@ exec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Watch).To(Equal(cfg.Watch))
 			Expect(loaded.Build).To(Equal(cfg.Build))
+			Expect(loaded.Test).To(Equal(cfg.Test))
 			Expect(loaded.Exec).To(Equal(cfg.Exec))
 		})
 	})
@@ -199,6 +225,7 @@ exec:
 			Expect(cfg.Validate()).NotTo(HaveOccurred())
 			Expect(cfg.Watch).NotTo(BeEmpty())
 			Expect(cfg.Build).NotTo(BeEmpty())
+			Expect(cfg.Test).NotTo(BeEmpty())
 			Expect(cfg.Exec).NotTo(BeEmpty())
 		})
 	})
@@ -264,11 +291,19 @@ exec:
 			Expect(cfg.Validate()).To(HaveOccurred())
 		})
 
-		It("rejects config with no build or exec commands", func() {
+		It("rejects config with no build, test, or exec commands", func() {
 			cfg := &execrun.Config{
 				Watch: []string{"*.go"},
 			}
 			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		It("accepts config with test-only", func() {
+			cfg := &execrun.Config{
+				Watch: []string{"*.go"},
+				Test:  []string{"go test ./..."},
+			}
+			Expect(cfg.Validate()).NotTo(HaveOccurred())
 		})
 
 		It("rejects build command with $VAR syntax", func() {

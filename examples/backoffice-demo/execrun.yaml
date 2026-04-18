@@ -2,5 +2,7 @@ watch:
   - "**/*.go"
 build:
   - "go build -o ./bin/backoffice-demo ."
+test:
+  - "go test ./..."
 exec:
   - "./bin/backoffice-demo"

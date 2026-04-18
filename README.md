@@ -17,6 +17,27 @@ Additionally, provides helper packages so a go application can work even better 
 | `backoffice` | `pkg/backoffice` | Embeddable admin/debug HTTP server with service status, env, info, pprof         |
 | `chiutil`    | `pkg/chiutil`    | Self-documenting route folders for chi routers with auto-generated navigation UI |
 
+## Start With The Examples
+
+If you cloned this repo, the fastest way to understand the project is to run the configs under [`examples/`](./examples).
+
+```bash
+# Full multi-target demo with the dashboard
+go run ./cmd/runctl -c examples/runctl.yaml -ui
+
+# Or run one example directly with execrun
+go run ./cmd/execrun -c examples/hello-go/execrun.yaml
+```
+
+Open `http://localhost:28099` for the example `runui` dashboard when running `examples/runctl.yaml`.
+The example targets cover:
+
+- `examples/hello-go` — small Go HTTP app
+- `examples/ticker` — Go ticker process
+- `examples/build-css` — build-only target
+- `examples/echo-server` — shell-based HTTP server
+- `examples/backoffice-demo` — embedded backoffice demo
+
 ## Install
 
 ```bash
@@ -42,10 +63,11 @@ Generic, language-agnostic file-watching command runner. Works with any language
 ### Quick Start
 
 ```bash
-# Generate a starter config
-execrun init
+# Run one of the repo examples
+go run ./cmd/execrun -c examples/hello-go/execrun.yaml
 
-# Edit execrun.yaml for your project, then run
+# Or generate a starter config for your own project
+execrun init
 execrun
 ```
 
@@ -54,6 +76,7 @@ execrun
 ```
 execrun [flags] [command]
 execrun init
+execrun test
 execrun sum
 ```
 
@@ -74,6 +97,7 @@ execrun sum
 | ---------------------------- | --------------------------------------------- |
 | `execrun init`               | Generate a starter `execrun.yaml`             |
 | `execrun -c myapp.yaml init` | Generate `myapp.yaml`                         |
+| `execrun test`               | Run configured `test:` steps and exit         |
 | `execrun sum`                | Snapshot watched file hashes to `execrun.sum` |
 
 ### Config File
@@ -94,20 +118,25 @@ watch:
 build:
   - "go build -o ./bin/app ."
 
+# Test commands — run after build and before the managed process starts.
+test:
+  - "go test ./..."
+
 # Exec commands — the last command is the long-running managed process.
 exec:
   - "echo address is {{ .LISTEN_ADDR }}"
   - "./bin/app"
 ```
 
-| Field   | Required | Description                                                             |
-| ------- | -------- | ----------------------------------------------------------------------- |
-| `vars`  | no       | Template variables (see [Template Variables](#template-variables))      |
-| `watch` | yes      | Glob patterns for files to watch (gitignore-style, `!` for exclusions)  |
-| `build` | no       | Preparation commands that run to completion before starting the process |
-| `exec`  | no       | Run commands — the last is the managed process. Empty = build-only      |
+| Field   | Required | Description                                                                     |
+| ------- | -------- | ------------------------------------------------------------------------------- |
+| `vars`  | no       | Template variables (see [Template Variables](#template-variables))              |
+| `watch` | yes      | Glob patterns for files to watch (gitignore-style, `!` for exclusions)          |
+| `build` | no       | Build commands that run to completion before tests or process start             |
+| `test`  | no       | Test commands that run after `build` and before the managed process starts      |
+| `exec`  | no       | Run commands — the last is the managed process. Empty = build/test-only target  |
 
-At least one of `build` or `exec` must be non-empty.
+At least one of `build`, `test`, or `exec` must be non-empty.
 
 ### Examples
 
@@ -120,6 +149,8 @@ watch:
   - "go.sum"
 build:
   - "go build -o ./bin/server ./cmd/server"
+test:
+  - "go test ./..."
 exec:
   - "./bin/server"
 ```
@@ -168,6 +199,15 @@ build:
   - "echo CSS build complete"
 ```
 
+**Test-only:**
+
+```yaml
+watch:
+  - "**/*.go"
+test:
+  - "go test ./..."
+```
+
 **Multi-step with code generation:**
 
 ```yaml
@@ -179,6 +219,8 @@ build:
   - "protoc --go_out=. api/*.proto"
   - "go generate ./..."
   - "go build -o ./bin/server ./cmd/server"
+test:
+  - "go test ./..."
 exec:
   - "./bin/server"
 ```
@@ -188,11 +230,12 @@ exec:
 ```
 File change detected
   → Run build steps sequentially (fail → keep old process)
+  → Run test steps sequentially (fail → keep old process)
   → Stop old process (SIGTERM → 5s timeout → SIGKILL)
   → Start last exec command as new process
 ```
 
-If there are no build steps, the old process is stopped and restarted directly.
+If there are no build or test steps, the old process is stopped and restarted directly.
 
 If the managed process exits on its own, execrun waits for the next file change to re-run the pipeline.
 
@@ -220,7 +263,9 @@ runctl                    # Watch all enabled targets (API + watchers)
 runctl -ui                # API + web dashboard at http://localhost:9100
 runctl -t api             # Watch only the "api" target
 runctl build              # Build all enabled targets and exit
+runctl test               # Run tests for all enabled targets and exit
 runctl -t api build       # Build only "api" and exit
+runctl -t api test        # Test only "api" and exit
 runctl sum                # Write .sum files for all enabled targets
 runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 ```
@@ -231,6 +276,7 @@ runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 | ------- | --------------------------------------------------------------------------- |
 | `init`  | Generate a starter `runctl.yaml`                                            |
 | `build` | Run build steps for selected targets and exit (no watchers, no HTTP server) |
+| `test`  | Run test steps for selected targets and exit (no watchers, no HTTP server)  |
 | `sum`   | Snapshot watched file hashes to `.sum` files and exit                       |
 
 ### Flags
@@ -238,7 +284,7 @@ runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 | Flag           | Default       | Description                                              |
 | -------------- | ------------- | -------------------------------------------------------- |
 | `-c, --config` | `runctl.yaml` | Config file path                                         |
-| `-t <name>`    |               | Target filter (repeatable). Applies to watch, build, sum |
+| `-t <name>`    |               | Target filter (repeatable). Applies to watch, build, test, sum |
 | `-ui`          | `false`       | Serve embedded web dashboard                             |
 | `-v`           | `false`       | Verbose output                                           |
 
@@ -275,7 +321,7 @@ targets:
 | ------------------- | -------- | ------------------------------------------------------------------------- |
 | `vars`              | no       | Global template variables (see [Template Variables](#template-variables)) |
 | `api.port`          | no       | HTTP API port (default: 9100)                                             |
-| `logs_dir`          | no       | Directory for log files (`<target>.build.log`/`.run.log`)                 |
+| `logs_dir`          | no       | Directory for log files (`<target>.build.log`/`.test.log`/`.run.log`)     |
 | `targets`           | yes      | Map of target name to target config                                       |
 | `targets.*.config`  | yes      | Path to the target's execrun YAML config                                  |
 | `targets.*.enabled` | no       | Whether to start on launch (default: `true`)                              |
@@ -288,9 +334,10 @@ Resolved vars from `runctl.yaml` (both global and per-target) are automatically 
 
 ### Web Dashboard (`-ui`)
 
-The web UI provides two tabs:
+The web UI provides three tabs:
 
 - **Build** — last build duration/timestamp, build count, errors, and a rebuild button
+- **Tests** — last test duration/timestamp, test count, errors, and a re-run button
 - **Run** — target state, PID, uptime, restart count, custom links, and start/stop/restart buttons
 
 Each target has a log viewer with virtual scrolling and a real-time tail mode.
@@ -302,12 +349,13 @@ GET  /api/health                    Health check
 GET  /api/targets                   List all targets
 GET  /api/targets/{name}            Get target status
 POST /api/targets/{name}/build      Trigger rebuild + restart
+POST /api/targets/{name}/test       Trigger tests only
 POST /api/targets/{name}/start      Start target
 POST /api/targets/{name}/stop       Stop target
 POST /api/targets/{name}/restart    Stop + rebuild + restart
 POST /api/targets/{name}/enable     Enable + start
 POST /api/targets/{name}/disable    Disable + stop
-GET  /api/targets/{name}/logs       Get logs (?stage=build|run&offset=N&limit=M)
+GET  /api/targets/{name}/logs       Get logs (?stage=build|test|run&offset=N&limit=M)
 ```
 
 ### Library Usage

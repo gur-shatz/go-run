@@ -12,6 +12,11 @@ watch:
 build:
   - "go build -o ./bin/app ."
 
+# Test commands — run after build and before the managed process starts.
+# If any test fails, the previous process keeps running.
+test:
+  - "go test ./..."
+
 # Exec commands — the last command is the long-running managed process.
 # If exec is empty, the target is build-only (no managed process).
 exec:
@@ -22,6 +27,8 @@ exec:
 # Build-only (no managed process):
 #   build:
 #     - "npm run build"
+#   test:
+#     - "npm test"
 #     - "echo done"
 #
 # Run-only (no build steps):
@@ -32,6 +39,8 @@ exec:
 #   build:
 #     - "go generate ./..."
 #     - "go build -o ./bin/app ."
+#   test:
+#     - "go test ./..."
 #   exec:
 #     - "./bin/app"
 #
