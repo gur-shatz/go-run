@@ -293,6 +293,9 @@ The `-t` flag can be specified multiple times to select specific targets. Withou
 ### Config File
 
 ```yaml
+title: Local Dev
+description: API, worker, and frontend dev stack
+
 vars:
   BASE_PORT: '{{ env "BASE_PORT" | default "8000" }}'
   API_PORT: "{{ add .BASE_PORT 80 }}"
@@ -319,6 +322,8 @@ targets:
 
 | Field               | Required | Description                                                               |
 | ------------------- | -------- | ------------------------------------------------------------------------- |
+| `title`             | no       | Project title shown in the UI header and browser title                    |
+| `description`       | no       | Optional summary text shown on the UI summary page                        |
 | `vars`              | no       | Global template variables (see [Template Variables](#template-variables)) |
 | `api.port`          | no       | HTTP API port (default: 9100)                                             |
 | `logs_dir`          | no       | Directory for log files (`<target>.build.log`/`.test.log`/`.run.log`)     |
@@ -334,11 +339,24 @@ Resolved vars from `runctl.yaml` (both global and per-target) are automatically 
 
 ### Web Dashboard (`-ui`)
 
-The web UI provides three tabs:
+The web UI provides four tabs:
 
+- **Summary** — aggregate build/run/test state, counts, and failing target names
 - **Build** — last build duration/timestamp, build count, errors, and a rebuild button
 - **Tests** — last test duration/timestamp, test count, errors, and a re-run button
 - **Run** — target state, PID, uptime, restart count, custom links, and start/stop/restart buttons
+
+If `title` is set in `runctl.yaml`, the browser title becomes:
+
+```text
+<title> <build-emoji><run-emoji><test-emoji>
+```
+
+Each emoji is computed per dimension:
+
+- `🔴` when any target in that dimension is failed or exited
+- `🟡` when nothing is failing but at least one target is pending/in progress
+- `🟢` when all relevant targets in that dimension are healthy
 
 Each target has a log viewer with virtual scrolling and a real-time tail mode.
 
@@ -346,6 +364,7 @@ Each target has a log viewer with virtual scrolling and a real-time tail mode.
 
 ```
 GET  /api/health                    Health check
+GET  /api/overview                  Project metadata and all target statuses
 GET  /api/targets                   List all targets
 GET  /api/targets/{name}            Get target status
 POST /api/targets/{name}/build      Trigger rebuild + restart

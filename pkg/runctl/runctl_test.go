@@ -12,6 +12,26 @@ import (
 
 var _ = Describe("Config", func() {
 	Describe("LoadConfig", func() {
+		It("loads optional title and description", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+title: "Local Stack"
+description: "API and workers for local development"
+targets:
+  my-app:
+    config: "execrun.yaml"
+`
+			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Title).To(Equal("Local Stack"))
+			Expect(cfg.Description).To(Equal("API and workers for local development"))
+		})
+
 		It("loads a valid execrun config file", func() {
 			dir := GinkgoT().TempDir()
 			cfgPath := filepath.Join(dir, "runctl.yaml")
@@ -344,6 +364,24 @@ targets:
 
 			statuses := ctrl.Status()
 			Expect(statuses).To(HaveLen(2))
+		})
+
+		It("returns overview metadata and targets", func() {
+			cfg := runctl.Config{
+				Title:       "Local Stack",
+				Description: "API and workers",
+				API:         runctl.APIConfig{Port: 9100},
+				Targets: map[string]runctl.TargetConfig{
+					"app1": {Config: "app1/execrun.yaml"},
+				},
+			}
+			ctrl, err := runctl.New(cfg, ".", false)
+			Expect(err).NotTo(HaveOccurred())
+
+			overview := ctrl.Overview()
+			Expect(overview.Title).To(Equal("Local Stack"))
+			Expect(overview.Description).To(Equal("API and workers"))
+			Expect(overview.Targets).To(HaveLen(1))
 		})
 
 		It("returns error for unknown target", func() {

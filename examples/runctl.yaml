@@ -1,3 +1,6 @@
+title: go-run examples
+description: Example stack for execrun, runctl, runui, and backoffice.
+
 vars:
   # Base port — all service ports are derived from this offset.
   # Override via environment: BASE_PORT=9000 runctl

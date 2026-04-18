@@ -16,6 +16,13 @@ type Controller struct {
 	mu      sync.RWMutex
 }
 
+// Overview is the dashboard/API payload for project-level metadata and targets.
+type Overview struct {
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Targets     []TargetStatus `json:"targets"`
+}
+
 // New creates a Controller from the given config.
 // baseDir is the directory containing runctl.yaml (used to resolve relative target dirs).
 func New(cfg Config, baseDir string, verbose bool) (*Controller, error) {
@@ -258,6 +265,15 @@ func (this *Controller) Status() []TargetStatus {
 		statuses = append(statuses, t.Status())
 	}
 	return statuses
+}
+
+// Overview returns project metadata and current target status.
+func (this *Controller) Overview() Overview {
+	return Overview{
+		Title:       this.cfg.Title,
+		Description: this.cfg.Description,
+		Targets:     this.Status(),
+	}
 }
 
 // TargetStatus returns the status of a single target.

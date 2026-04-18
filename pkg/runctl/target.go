@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/go-run/internal/configutil"
+	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/pkg/backoffice"
 	boclient "github.com/gur-shatz/go-run/pkg/backoffice/client"
 	"github.com/gur-shatz/go-run/pkg/config"
@@ -57,10 +58,11 @@ type TargetStatus struct {
 	LastExecResult   string     `json:"last_exec_result,omitempty"`        // deprecated alias for build
 	LastExecError    string     `json:"last_exec_error,omitempty"`         // deprecated alias for build
 
-	LastStartTime *time.Time `json:"last_start_time,omitempty"`
-	RestartCount  int        `json:"restart_count"`
-	BuildCount    int        `json:"build_count"`
-	TestCount     int        `json:"test_count"`
+	LastStartTime      *time.Time `json:"last_start_time,omitempty"`
+	LastFileChangeTime *time.Time `json:"last_file_change_time,omitempty"`
+	RestartCount       int        `json:"restart_count"`
+	BuildCount         int        `json:"build_count"`
+	TestCount          int        `json:"test_count"`
 
 	Links []Link      `json:"links,omitempty"`
 	Logs  *LogsConfig `json:"logs,omitempty"`
@@ -87,18 +89,19 @@ type target struct {
 	cancel       context.CancelFunc
 	pid          int
 
-	lastBuildTime     *time.Time
-	lastBuildDuration *float64
-	lastBuildResult   string
-	lastBuildError    string
-	lastTestTime      *time.Time
-	lastTestDuration  *float64
-	lastTestResult    string
-	lastTestError     string
-	lastStartTime     *time.Time
-	restartCount      int
-	buildCount        int
-	testCount         int
+	lastBuildTime      *time.Time
+	lastBuildDuration  *float64
+	lastBuildResult    string
+	lastBuildError     string
+	lastTestTime       *time.Time
+	lastTestDuration   *float64
+	lastTestResult     string
+	lastTestError      string
+	lastStartTime      *time.Time
+	lastFileChangeTime *time.Time
+	restartCount       int
+	buildCount         int
+	testCount          int
 
 	buildTrigger chan struct{}
 	testTrigger  chan struct{}
@@ -218,6 +221,7 @@ func (this *target) start() error {
 		OnBuildDone:       this.onBuildDone,
 		OnTestStart:       this.onTestStart,
 		OnTestDone:        this.onTestDone,
+		OnFilesChanged:    this.onFilesChanged,
 		OnProcessStart:    this.onProcessStart,
 		OnProcessExit:     this.onProcessExit,
 		OnBackofficeReady: this.onBackofficeReady,
@@ -264,12 +268,37 @@ func (this *target) handleRunComplete(ctx context.Context, err error) {
 		if this.state != StateStopped {
 			this.state = StateStopped
 		}
+		this.currentStage = ""
 	} else if err != nil {
 		this.state = StateError
-		this.lastBuildError = err.Error()
+		if this.currentStage == "" {
+			switch {
+			case this.lastTestResult == "failed" || this.lastTestError != "":
+				this.currentStage = "test"
+			case this.lastBuildResult == "failed" || this.lastBuildError != "":
+				this.currentStage = "build"
+			}
+		}
+		if this.currentStage == "test" {
+			if this.lastTestResult == "" {
+				this.lastTestResult = "failed"
+			}
+			if this.lastTestError == "" {
+				this.lastTestError = err.Error()
+			}
+		} else {
+			if this.currentStage == "" {
+				this.currentStage = "build"
+			}
+			if this.lastBuildResult == "" {
+				this.lastBuildResult = "failed"
+			}
+			if this.lastBuildError == "" {
+				this.lastBuildError = err.Error()
+			}
+		}
 	}
 	this.pid = 0
-	this.currentStage = ""
 	this.backofficeClient = nil
 	this.backofficeReady = false
 }
@@ -326,6 +355,12 @@ func (this *target) onTestDone(duration time.Duration, err error) {
 			this.testCount++
 		}
 	}
+}
+
+func (this *target) onFilesChanged(at time.Time, _ sumfile.ChangeSet) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	this.lastFileChangeTime = &at
 }
 
 func (this *target) onProcessStart(pid int) {
@@ -457,33 +492,34 @@ func (this *target) Status() TargetStatus {
 	}
 
 	ts := TargetStatus{
-		Name:              this.name,
-		HasBuild:          this.hasBuild,
-		HasTest:           this.hasTest,
-		HasRun:            this.hasRun,
-		State:             this.state,
-		CurrentStage:      this.currentStage,
-		Enabled:           this.enabled,
-		PID:               this.pid,
-		LastBuildTime:     this.lastBuildTime,
-		LastBuildDuration: this.lastBuildDuration,
-		LastBuildResult:   this.lastBuildResult,
-		LastBuildError:    this.lastBuildError,
-		LastTestTime:      this.lastTestTime,
-		LastTestDuration:  this.lastTestDuration,
-		LastTestResult:    this.lastTestResult,
-		LastTestError:     this.lastTestError,
-		LastExecTime:      this.lastBuildTime,
-		LastExecDuration:  this.lastBuildDuration,
-		LastExecResult:    this.lastBuildResult,
-		LastExecError:     this.lastBuildError,
-		LastStartTime:     this.lastStartTime,
-		RestartCount:      this.restartCount,
-		BuildCount:        this.buildCount,
-		TestCount:         this.testCount,
-		Links:             links,
-		Logs:              this.tcfg.Logs,
-		BackofficeReady:   this.backofficeReady,
+		Name:               this.name,
+		HasBuild:           this.hasBuild,
+		HasTest:            this.hasTest,
+		HasRun:             this.hasRun,
+		State:              this.state,
+		CurrentStage:       this.currentStage,
+		Enabled:            this.enabled,
+		PID:                this.pid,
+		LastBuildTime:      this.lastBuildTime,
+		LastBuildDuration:  this.lastBuildDuration,
+		LastBuildResult:    this.lastBuildResult,
+		LastBuildError:     this.lastBuildError,
+		LastTestTime:       this.lastTestTime,
+		LastTestDuration:   this.lastTestDuration,
+		LastTestResult:     this.lastTestResult,
+		LastTestError:      this.lastTestError,
+		LastExecTime:       this.lastBuildTime,
+		LastExecDuration:   this.lastBuildDuration,
+		LastExecResult:     this.lastBuildResult,
+		LastExecError:      this.lastBuildError,
+		LastStartTime:      this.lastStartTime,
+		LastFileChangeTime: this.lastFileChangeTime,
+		RestartCount:       this.restartCount,
+		BuildCount:         this.buildCount,
+		TestCount:          this.testCount,
+		Links:              links,
+		Logs:               this.tcfg.Logs,
+		BackofficeReady:    this.backofficeReady,
 	}
 
 	// Best-effort fetch of backoffice status

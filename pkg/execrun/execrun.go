@@ -75,8 +75,9 @@ type Options struct {
 	OnBuildDone    func(duration time.Duration, err error) // called after build steps complete
 	OnTestStart    func()                                  // called before test steps run
 	OnTestDone     func(duration time.Duration, err error) // called after test steps complete
-	OnProcessStart func(pid int)                           // called when the run command starts
-	OnProcessExit  func(exitCode int, err error)           // called when the run command exits
+	OnFilesChanged func(at time.Time, changes sumfile.ChangeSet)
+	OnProcessStart func(pid int)                 // called when the run command starts
+	OnProcessExit  func(exitCode int, err error) // called when the run command exits
 
 	// OnBackofficeReady is called when the child's backoffice UDS becomes reachable.
 	OnBackofficeReady func(sockPath string)
@@ -748,6 +749,9 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 
 	// Set up watcher
 	w := watcher.New(rootDir, patterns, opts.PollInterval, opts.Debounce, func(changes sumfile.ChangeSet) {
+		if opts.OnFilesChanged != nil {
+			opts.OnFilesChanged(time.Now(), changes)
+		}
 		l.Change(changes)
 
 		l.Status("Rebuilding...")
@@ -857,6 +861,9 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 	healthy.Store(true)
 
 	w := watcher.New(rootDir, patterns, r.opts.PollInterval, r.opts.Debounce, func(changes sumfile.ChangeSet) {
+		if opts.OnFilesChanged != nil {
+			opts.OnFilesChanged(time.Now(), changes)
+		}
 		l.Change(changes)
 
 		l.Status("Rebuilding...")

@@ -1,6 +1,9 @@
 # runctl.yaml — multi-target orchestrator
 # See: https://github.com/gur-shatz/go-run
 #
+# title: shown in the UI header and browser title.
+# description: optional summary text shown in the UI summary page.
+#
 # Each target only requires "config" — everything else is optional:
 #   config:  path to execrun config file, relative to runctl.yaml's directory (required)
 #   enabled: start on launch (default: true)
@@ -21,6 +24,9 @@
 # vars:
 #   PORT: "8080"
 #   DB_HOST: '{{ env "DB_HOST" | default "localhost" }}'
+
+# title: Local Dev
+# description: API, worker, and frontend dev stack
 
 api:
   port: 9100  # HTTP API port

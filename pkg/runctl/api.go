@@ -16,6 +16,7 @@ func (this *Controller) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/health", this.handleHealth)
+	r.Get("/overview", this.handleOverview)
 	r.Get("/targets", this.handleListTargets)
 	r.Get("/targets/{name}", this.handleGetTarget)
 	r.Post("/targets/{name}/build", this.handleBuildTarget)
@@ -34,6 +35,10 @@ func (this *Controller) Routes() chi.Router {
 
 func (this *Controller) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (this *Controller) handleOverview(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, this.Overview())
 }
 
 func (this *Controller) handleListTargets(w http.ResponseWriter, r *http.Request) {

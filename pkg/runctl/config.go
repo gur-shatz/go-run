@@ -15,10 +15,12 @@ import (
 
 // Config is the top-level runctl.yaml configuration.
 type Config struct {
-	Vars    map[string]string       `yaml:"vars,omitempty"`
-	API     APIConfig               `yaml:"api"`
-	LogsDir string                  `yaml:"logs_dir,omitempty"` // directory for auto-generated log files
-	Targets map[string]TargetConfig `yaml:"targets"`
+	Title       string                  `yaml:"title,omitempty"`
+	Description string                  `yaml:"description,omitempty"`
+	Vars        map[string]string       `yaml:"vars,omitempty"`
+	API         APIConfig               `yaml:"api"`
+	LogsDir     string                  `yaml:"logs_dir,omitempty"` // directory for auto-generated log files
+	Targets     map[string]TargetConfig `yaml:"targets"`
 
 	// ResolvedVars holds all resolved template variables (vars section + env).
 	// Populated by LoadConfig, not from YAML.
