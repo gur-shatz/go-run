@@ -35,10 +35,12 @@ import (
 // long-running process whose lifecycle is managed (SIGTERM/SIGKILL on restart).
 // If build is non-empty and exec is empty, the target is build-only.
 type Config struct {
-	Watch []string `yaml:"watch"`
-	Build []string `yaml:"build,omitempty"` // prep commands, run to completion
-	Test  []string `yaml:"test,omitempty"`  // test commands, run after build and before exec
-	Exec  []string `yaml:"exec,omitempty"`  // run commands; last is the managed process
+	Title       string   `yaml:"title,omitempty"`
+	Description string   `yaml:"description,omitempty"`
+	Watch       []string `yaml:"watch"`
+	Build       []string `yaml:"build,omitempty"` // prep commands, run to completion
+	Test        []string `yaml:"test,omitempty"`  // test commands, run after build and before exec
+	Exec        []string `yaml:"exec,omitempty"`  // run commands; last is the managed process
 }
 
 // IsBuildOnly returns true when there are no exec commands (build-only target).
@@ -119,10 +121,12 @@ func LoadConfig(path string, opts ...config.Option) (*Config, map[string]string,
 // DefaultConfig returns a sensible starter config.
 func DefaultConfig() Config {
 	return Config{
-		Watch: []string{"**/*.go", "go.mod", "go.sum"},
-		Build: []string{"go build -o ./bin/app ."},
-		Test:  []string{"go test ./..."},
-		Exec:  []string{"./bin/app"},
+		Title:       "App",
+		Description: "Watched app target",
+		Watch:       []string{"**/*.go", "go.mod", "go.sum"},
+		Build:       []string{"go build -o ./bin/app ."},
+		Test:        []string{"go test ./..."},
+		Exec:        []string{"./bin/app"},
 	}
 }
 

@@ -91,6 +91,8 @@
     table { font-size: 0.9rem; }
     td, th { white-space: nowrap; }
     td.wrap { white-space: normal; }
+    .item-title { font-weight: 700; }
+    .item-desc { color: var(--pico-muted-color); font-size: 0.78rem; margin-top: 0.15rem; white-space: normal; opacity: 0.8; }
     .actions { white-space: nowrap; }
     .actions button {
       padding: 0.2rem 0.35rem; font-size: 1rem; margin-right: 0.1rem; line-height: 1; min-width: 0;
@@ -308,33 +310,41 @@
     return '<span class="badge badge-' + (cls || text) + '">' + text + '</span>';
   }
 
-  function buildStatus(t) {
-    if (t.state === 'error' && t.current_stage === 'build') {
-      return { text: 'failed', cls: 'failed', state: 'failed' };
-    }
-    if (t.current_stage === 'build') {
-      return { text: 'building', cls: 'starting', state: 'pending' };
-    }
-    if (t.last_build_result === 'failed') {
-      return { text: 'failed', cls: 'failed', state: 'failed' };
-    }
-    if (t.last_build_result === 'success') {
-      return { text: 'success', cls: 'success', state: 'healthy' };
-    }
-    return { text: 'pending', cls: 'starting', state: 'pending' };
+  const PHASES = [
+    { key: 'build', label: 'Build', hasField: 'has_build', tableId: 'build-table', emptyText: 'No build targets', action: 'build', actionTitle: 'Build', actionIcon: '\u{1F528}', logLabel: 'build' },
+    { key: 'test', label: 'Tests', hasField: 'has_test', tableId: 'test-table', emptyText: 'No test targets', action: 'test', actionTitle: 'Test', actionIcon: '\u{1F9EA}', logLabel: 'tests' }
+  ];
+
+  function phaseConfig(phaseKey) {
+    return PHASES.find(function(phase) { return phase.key === phaseKey; }) || null;
   }
 
-  function testStatus(t) {
-    if (t.state === 'error' && (t.current_stage === 'test' || t.current_stage === 'build')) {
+  function phaseField(t, phaseKey, field) {
+    const phase = t[phaseKey] || {};
+    return phase[field];
+  }
+
+  function itemHeading(t) {
+    const title = t.title || t.name;
+    const desc = t.description || '';
+    return '<div class="item-title">' + escHtml(title) + '</div>' +
+      (desc ? '<div class="item-desc">' + escHtml(desc) + '</div>' : '');
+  }
+
+  function phaseStatus(t, phaseKey) {
+    if (t.state === 'error' && t.current_stage === phaseKey) {
       return { text: 'failed', cls: 'failed', state: 'failed' };
     }
-    if (t.current_stage === 'test') {
-      return { text: 'testing', cls: 'starting', state: 'pending' };
-    }
-    if (t.last_test_result === 'failed') {
+    if (phaseKey === 'test' && t.state === 'error' && t.current_stage === 'build') {
       return { text: 'failed', cls: 'failed', state: 'failed' };
     }
-    if (t.last_test_result === 'success') {
+    if (t.current_stage === phaseKey) {
+      return { text: phaseKey === 'build' ? 'building' : 'testing', cls: 'starting', state: 'pending' };
+    }
+    if (phaseField(t, phaseKey, 'result') === 'failed') {
+      return { text: 'failed', cls: 'failed', state: 'failed' };
+    }
+    if (phaseField(t, phaseKey, 'result') === 'success') {
       return { text: 'success', cls: 'success', state: 'healthy' };
     }
     return { text: 'pending', cls: 'starting', state: 'pending' };
@@ -351,9 +361,9 @@
   }
 
   function stageState(targets, stage) {
+    const phase = phaseConfig(stage);
     const relevant = targets.filter(function(t) {
-      if (stage === 'build') return t.has_build;
-      if (stage === 'test') return t.has_test;
+      if (phase) return t[phase.hasField];
       return t.has_run;
     });
     if (!relevant.length) {
@@ -366,14 +376,7 @@
     const failing = [];
 
     relevant.forEach(function(t) {
-      let status;
-      if (stage === 'build') {
-        status = buildStatus(t);
-      } else if (stage === 'test') {
-        status = testStatus(t);
-      } else {
-        status = runStatus(t);
-      }
+      const status = phase ? phaseStatus(t, phase.key) : runStatus(t);
 
       if (status.state === 'healthy') healthy++;
       if (status.state === 'pending') pending++;
@@ -392,8 +395,11 @@
     const title = overview.title || 'runui';
     const description = overview.description || '';
     const targets = overview.targets || [];
-    const build = stageState(targets, 'build');
-    const test = stageState(targets, 'test');
+    const phaseStates = PHASES.map(function(phase) {
+      return { phase: phase, state: stageState(targets, phase.key) };
+    });
+    const build = phaseStates.find(function(p) { return p.phase.key === 'build'; }).state;
+    const test = phaseStates.find(function(p) { return p.phase.key === 'test'; }).state;
     const run = stageState(targets, 'run');
     const emojiSuffix = [build.emoji, run.emoji, test.emoji].join('');
 
@@ -411,19 +417,23 @@
     }
 
     const metricsEl = document.getElementById('summary-metrics');
-    metricsEl.innerHTML =
-      '<div class="summary-card"><h3>Build</h3><div class="summary-value">' + build.emoji + ' ' + escHtml(build.label) + '</div><div class="summary-meta">' + build.healthy + ' healthy, ' + build.pending + ' pending, ' + build.failed + ' failed</div></div>' +
-      '<div class="summary-card"><h3>Run</h3><div class="summary-value">' + run.emoji + ' ' + escHtml(run.label) + '</div><div class="summary-meta">' + run.healthy + ' healthy, ' + run.pending + ' pending, ' + run.failed + ' failed</div></div>' +
-      '<div class="summary-card"><h3>Tests</h3><div class="summary-value">' + test.emoji + ' ' + escHtml(test.label) + '</div><div class="summary-meta">' + test.healthy + ' healthy, ' + test.pending + ' pending, ' + test.failed + ' failed</div></div>';
+    const cards = [
+      { label: 'Build', state: build },
+      { label: 'Run', state: run },
+      { label: 'Tests', state: test }
+    ];
+    metricsEl.innerHTML = cards.map(function(card) {
+      return '<div class="summary-card"><h3>' + card.label + '</h3><div class="summary-value">' + card.state.emoji + ' ' + escHtml(card.state.label) + '</div><div class="summary-meta">' + card.state.healthy + ' healthy, ' + card.state.pending + ' pending, ' + card.state.failed + ' failed</div></div>';
+    }).join('');
   }
 
   function renderSummaryTable(targets) {
     const tbody = document.querySelector('#summary-table tbody');
-    const rows = [
-      { label: 'Build', key: 'build' },
+    const rows = PHASES.map(function(phase) {
+      return { label: phase.label, key: phase.key };
+    }).concat([
       { label: 'Run', key: 'run' },
-      { label: 'Tests', key: 'test' }
-    ];
+    ]);
     tbody.innerHTML = rows.map(function(row) {
       const s = stageState(targets, row.key);
       const failing = s.failing.length ? s.failing.join(', ') : '\u2014';
@@ -949,60 +959,31 @@
   }
 
   // Rendering
-  function renderBuildTable(targets) {
-    const tbody = document.querySelector('#build-table tbody');
-    const filtered = targets.filter(t => t.has_build);
+  function renderPhaseTable(targets, phase) {
+    const tbody = document.querySelector('#' + phase.tableId + ' tbody');
+    const filtered = targets.filter(function(t) { return t[phase.hasField]; });
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No build targets</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">' + phase.emptyText + '</td></tr>';
       return;
     }
-    tbody.innerHTML = filtered.map(t => {
-      const status = buildStatus(t);
-      const buildBtn = '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>';
+    tbody.innerHTML = filtered.map(function(t) {
+      const status = phaseStatus(t, phase.key);
+      const actionBtn = '<button title="' + phase.actionTitle + '" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'' + phase.action + '\')">' + phase.actionIcon + '</button>';
 
-      const hasLogs = t.logs && t.logs.build;
+      const hasLogs = t.logs && t.logs[phase.key];
       const logsCell = hasLogs
-        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'build\')">build</span>'
+        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'' + phase.key + '\')">' + phase.logLabel + '</span>'
         : '\u2014';
 
       return '<tr>' +
-        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
+        '<td class="wrap">' + itemHeading(t) + '</td>' +
         '<td>' + badge(status.text, status.cls) + '</td>' +
-        '<td>' + fmtDuration(t.last_build_duration_secs) + '</td>' +
-        '<td>' + relTime(t.last_build_time) + '</td>' +
-        '<td>' + t.build_count + '</td>' +
-        '<td class="wrap">' + (t.last_build_error ? '<span class="error-text">' + escHtml(t.last_build_error) + '</span>' : '\u2014') + '</td>' +
+        '<td>' + fmtDuration(phaseField(t, phase.key, 'duration_secs')) + '</td>' +
+        '<td>' + relTime(phaseField(t, phase.key, 'time')) + '</td>' +
+        '<td>' + (phaseField(t, phase.key, 'count') || 0) + '</td>' +
+        '<td class="wrap">' + (phaseField(t, phase.key, 'error') ? '<span class="error-text">' + escHtml(phaseField(t, phase.key, 'error')) + '</span>' : '\u2014') + '</td>' +
         '<td>' + logsCell + '</td>' +
-        '<td class="actions">' + buildBtn + '</td>' +
-        '</tr>';
-    }).join('');
-  }
-
-  function renderTestTable(targets) {
-    const tbody = document.querySelector('#test-table tbody');
-    const filtered = targets.filter(t => t.has_test);
-    if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No test targets</td></tr>';
-      return;
-    }
-    tbody.innerHTML = filtered.map(t => {
-      const status = testStatus(t);
-      const testBtn = '<button title="Test" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'test\')">\u{1F9EA}</button>';
-
-      const hasLogs = t.logs && t.logs.test;
-      const logsCell = hasLogs
-        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'test\')">tests</span>'
-        : '\u2014';
-
-      return '<tr>' +
-        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
-        '<td>' + badge(status.text, status.cls) + '</td>' +
-        '<td>' + fmtDuration(t.last_test_duration_secs) + '</td>' +
-        '<td>' + relTime(t.last_test_time) + '</td>' +
-        '<td>' + t.test_count + '</td>' +
-        '<td class="wrap">' + (t.last_test_error ? '<span class="error-text">' + escHtml(t.last_test_error) + '</span>' : '\u2014') + '</td>' +
-        '<td>' + logsCell + '</td>' +
-        '<td class="actions">' + testBtn + '</td>' +
+        '<td class="actions">' + actionBtn + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -1050,7 +1031,7 @@
         '<button title="Restart" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'restart\')"' + (isRunning ? '' : ' disabled') + '>\u21BB</button>';
 
       return '<tr>' +
-        '<td><strong>' + escHtml(t.name) + '</strong></td>' +
+        '<td class="wrap">' + itemHeading(t) + '</td>' +
         '<td>' + badge(t.state) + '</td>' +
         '<td>' + (t.pid || '\u2014') + '</td>' +
         '<td>' + relTime(t.last_start_time) + '</td>' +
@@ -1073,8 +1054,7 @@
         targets.sort((a, b) => a.name.localeCompare(b.name));
         applyPageMetadata(overview);
         renderSummaryTable(targets);
-        renderBuildTable(targets);
-        renderTestTable(targets);
+        PHASES.forEach(function(phase) { renderPhaseTable(targets, phase); });
         renderRunTable(targets);
       })
       .catch(err => console.error('poll error:', err));

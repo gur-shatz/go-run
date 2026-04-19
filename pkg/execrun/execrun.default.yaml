@@ -1,6 +1,10 @@
 # execrun.yaml - file watcher configuration
 # See: https://github.com/gur-shatz/go-run
 
+# Optional UI metadata when run under runctl/runui
+title: App
+description: Watched app target
+
 # File patterns to watch (gitignore-style globs)
 watch:
   - "**/*.go"

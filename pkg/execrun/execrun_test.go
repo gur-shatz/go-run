@@ -27,7 +27,9 @@ var _ = Describe("Execrun", func() {
 	Describe("LoadConfig", func() {
 		It("loads a valid YAML config with build and exec", func() {
 			configPath := filepath.Join(tmpDir, "execrun.yaml")
-			content := `watch:
+			content := `title: "Hello App"
+description: "Main HTTP service"
+watch:
   - "**/*.go"
   - "!vendor/**"
 build:
@@ -40,6 +42,8 @@ exec:
 
 			cfg, _, err := execrun.LoadConfig(configPath)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Title).To(Equal("Hello App"))
+			Expect(cfg.Description).To(Equal("Main HTTP service"))
 			Expect(cfg.Watch).To(Equal([]string{"**/*.go", "!vendor/**"}))
 			Expect(cfg.Build).To(Equal([]string{"go build -o ./bin/app ."}))
 			Expect(cfg.Test).To(BeNil())
@@ -223,6 +227,8 @@ exec:
 		It("returns a valid config", func() {
 			cfg := execrun.DefaultConfig()
 			Expect(cfg.Validate()).NotTo(HaveOccurred())
+			Expect(cfg.Title).NotTo(BeEmpty())
+			Expect(cfg.Description).NotTo(BeEmpty())
 			Expect(cfg.Watch).NotTo(BeEmpty())
 			Expect(cfg.Build).NotTo(BeEmpty())
 			Expect(cfg.Test).NotTo(BeEmpty())

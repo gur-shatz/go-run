@@ -105,6 +105,9 @@ execrun sum
 `execrun.yaml`:
 
 ```yaml
+title: Hello App
+description: Main HTTP service
+
 vars:
   LISTEN_ADDR: '0.0.0.0:{{ .PORT | default "8081" }}'
 
@@ -130,6 +133,8 @@ exec:
 
 | Field   | Required | Description                                                                     |
 | ------- | -------- | ------------------------------------------------------------------------------- |
+| `title` | no       | Optional display title used by `runui` for this target                          |
+| `description` | no | Optional display description used by `runui` for this target                    |
 | `vars`  | no       | Template variables (see [Template Variables](#template-variables))              |
 | `watch` | yes      | Glob patterns for files to watch (gitignore-style, `!` for exclusions)          |
 | `build` | no       | Build commands that run to completion before tests or process start             |

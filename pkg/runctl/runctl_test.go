@@ -382,6 +382,8 @@ targets:
 			Expect(overview.Title).To(Equal("Local Stack"))
 			Expect(overview.Description).To(Equal("API and workers"))
 			Expect(overview.Targets).To(HaveLen(1))
+			Expect(overview.Targets[0].Build.Count).To(Equal(0))
+			Expect(overview.Targets[0].Test.Count).To(Equal(0))
 		})
 
 		It("returns error for unknown target", func() {

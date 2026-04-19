@@ -32,9 +32,20 @@ const (
 	StateExited   TargetState = "exited"
 )
 
+// PhaseStatus is the structured status for a build/test phase.
+type PhaseStatus struct {
+	Time     *time.Time `json:"time,omitempty"`
+	Duration *float64   `json:"duration_secs,omitempty"`
+	Result   string     `json:"result,omitempty"`
+	Error    string     `json:"error,omitempty"`
+	Count    int        `json:"count"`
+}
+
 // TargetStatus is the JSON-serializable status of a target.
 type TargetStatus struct {
 	Name         string      `json:"name"`
+	Title        string      `json:"title,omitempty"`
+	Description  string      `json:"description,omitempty"`
 	HasBuild     bool        `json:"has_build"`
 	HasTest      bool        `json:"has_test"`
 	HasRun       bool        `json:"has_run"`
@@ -42,6 +53,9 @@ type TargetStatus struct {
 	CurrentStage string      `json:"current_stage,omitempty"`
 	Enabled      bool        `json:"enabled"`
 	PID          int         `json:"pid,omitempty"`
+
+	Build PhaseStatus `json:"build"`
+	Test  PhaseStatus `json:"test"`
 
 	LastBuildTime     *time.Time `json:"last_build_time,omitempty"`
 	LastBuildDuration *float64   `json:"last_build_duration_secs,omitempty"`
@@ -73,14 +87,16 @@ type TargetStatus struct {
 
 // target wraps a target config and manages its lifecycle.
 type target struct {
-	name       string
-	tcfg       TargetConfig
-	rootDir    string            // absolute path to target working directory
-	parentVars map[string]string // resolved vars from parent (runctl) config
-	verbose    bool
-	hasBuild   bool
-	hasTest    bool
-	hasRun     bool
+	name        string
+	tcfg        TargetConfig
+	rootDir     string            // absolute path to target working directory
+	parentVars  map[string]string // resolved vars from parent (runctl) config
+	verbose     bool
+	title       string
+	description string
+	hasBuild    bool
+	hasTest     bool
+	hasRun      bool
 
 	mu           sync.Mutex
 	state        TargetState
@@ -169,6 +185,8 @@ func (this *target) start() error {
 	this.hasBuild = len(ecfg.BuildSteps()) > 0
 	this.hasTest = len(ecfg.TestSteps()) > 0
 	this.hasRun = !ecfg.IsBuildOnly()
+	this.title = ecfg.Title
+	this.description = ecfg.Description
 
 	ctx, cancel := context.WithCancel(context.Background())
 	this.mu.Lock()
@@ -260,6 +278,138 @@ func openLogFile(path string, fallback io.Writer, closers *[]io.Closer) (io.Writ
 	return f, nil
 }
 
+func phaseSnapshot(t *time.Time, d *float64, result, err string, count int) PhaseStatus {
+	return PhaseStatus{
+		Time:     t,
+		Duration: d,
+		Result:   result,
+		Error:    err,
+		Count:    count,
+	}
+}
+
+type phaseFields struct {
+	time     **time.Time
+	duration **float64
+	result   *string
+	err      *string
+	count    *int
+}
+
+func (this *target) phaseFields(stage string) *phaseFields {
+	switch stage {
+	case "build":
+		return &phaseFields{
+			time:     &this.lastBuildTime,
+			duration: &this.lastBuildDuration,
+			result:   &this.lastBuildResult,
+			err:      &this.lastBuildError,
+			count:    &this.buildCount,
+		}
+	case "test":
+		return &phaseFields{
+			time:     &this.lastTestTime,
+			duration: &this.lastTestDuration,
+			result:   &this.lastTestResult,
+			err:      &this.lastTestError,
+			count:    &this.testCount,
+		}
+	default:
+		return nil
+	}
+}
+
+func (this *target) markPhaseStart(stage string, at time.Time) {
+	p := this.phaseFields(stage)
+	if p == nil {
+		return
+	}
+	*p.time = &at
+	this.currentStage = stage
+	this.state = StateStarting
+}
+
+func (this *target) markPhaseDone(stage string, duration time.Duration, err error, countEnabled bool) {
+	p := this.phaseFields(stage)
+	if p == nil {
+		return
+	}
+	dur := duration.Seconds()
+	*p.duration = &dur
+	if err != nil {
+		*p.result = "failed"
+		*p.err = err.Error()
+		this.state = StateError
+		return
+	}
+	*p.result = "success"
+	*p.err = ""
+	if countEnabled {
+		*p.count++
+	}
+}
+
+func (this *target) inferFailedStage() string {
+	switch {
+	case this.lastTestResult == "failed" || this.lastTestError != "":
+		return "test"
+	case this.lastBuildResult == "failed" || this.lastBuildError != "":
+		return "build"
+	default:
+		return ""
+	}
+}
+
+func (this *target) markPhaseErrored(stage string, err error) {
+	if stage == "" {
+		stage = this.inferFailedStage()
+	}
+	if stage == "" {
+		stage = "build"
+	}
+
+	p := this.phaseFields(stage)
+	if p != nil {
+		if *p.result == "" {
+			*p.result = "failed"
+		}
+		if *p.err == "" {
+			*p.err = err.Error()
+		}
+	}
+	this.currentStage = stage
+	this.state = StateError
+}
+
+func (this *target) clearRuntimeState() {
+	this.pid = 0
+	this.backofficeClient = nil
+	this.backofficeReady = false
+}
+
+func (this *target) markRunStart(pid int, at time.Time) {
+	hadStartedBefore := this.lastStartTime != nil
+	this.pid = pid
+	this.lastStartTime = &at
+	this.currentStage = "run"
+	this.state = StateRunning
+	if this.restartCount > 0 || hadStartedBefore {
+		this.restartCount++
+	}
+}
+
+func (this *target) markRunExit(exitCode int) {
+	this.pid = 0
+	this.currentStage = ""
+	this.backofficeClient = nil
+	this.backofficeReady = false
+	if exitCode == 0 {
+		this.state = StateExited
+	} else {
+		this.state = StateError
+	}
+}
+
 func (this *target) handleRunComplete(ctx context.Context, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
@@ -270,91 +420,33 @@ func (this *target) handleRunComplete(ctx context.Context, err error) {
 		}
 		this.currentStage = ""
 	} else if err != nil {
-		this.state = StateError
-		if this.currentStage == "" {
-			switch {
-			case this.lastTestResult == "failed" || this.lastTestError != "":
-				this.currentStage = "test"
-			case this.lastBuildResult == "failed" || this.lastBuildError != "":
-				this.currentStage = "build"
-			}
-		}
-		if this.currentStage == "test" {
-			if this.lastTestResult == "" {
-				this.lastTestResult = "failed"
-			}
-			if this.lastTestError == "" {
-				this.lastTestError = err.Error()
-			}
-		} else {
-			if this.currentStage == "" {
-				this.currentStage = "build"
-			}
-			if this.lastBuildResult == "" {
-				this.lastBuildResult = "failed"
-			}
-			if this.lastBuildError == "" {
-				this.lastBuildError = err.Error()
-			}
-		}
+		this.markPhaseErrored(this.currentStage, err)
 	}
-	this.pid = 0
-	this.backofficeClient = nil
-	this.backofficeReady = false
+	this.clearRuntimeState()
 }
 
 func (this *target) onBuildStart() {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	now := time.Now()
-	this.lastBuildTime = &now
-	this.currentStage = "build"
-	this.state = StateStarting
+	this.markPhaseStart("build", time.Now())
 }
 
 func (this *target) onBuildDone(duration time.Duration, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	dur := duration.Seconds()
-	this.lastBuildDuration = &dur
-	if err != nil {
-		this.lastBuildResult = "failed"
-		this.lastBuildError = err.Error()
-		this.state = StateError
-	} else {
-		this.lastBuildResult = "success"
-		this.lastBuildError = ""
-		if this.hasBuild {
-			this.buildCount++
-		}
-	}
+	this.markPhaseDone("build", duration, err, this.hasBuild)
 }
 
 func (this *target) onTestStart() {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	now := time.Now()
-	this.lastTestTime = &now
-	this.currentStage = "test"
-	this.state = StateStarting
+	this.markPhaseStart("test", time.Now())
 }
 
 func (this *target) onTestDone(duration time.Duration, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	dur := duration.Seconds()
-	this.lastTestDuration = &dur
-	if err != nil {
-		this.lastTestResult = "failed"
-		this.lastTestError = err.Error()
-		this.state = StateError
-	} else {
-		this.lastTestResult = "success"
-		this.lastTestError = ""
-		if this.hasTest {
-			this.testCount++
-		}
-	}
+	this.markPhaseDone("test", duration, err, this.hasTest)
 }
 
 func (this *target) onFilesChanged(at time.Time, _ sumfile.ChangeSet) {
@@ -366,29 +458,14 @@ func (this *target) onFilesChanged(at time.Time, _ sumfile.ChangeSet) {
 func (this *target) onProcessStart(pid int) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	this.pid = pid
-	hadStartedBefore := this.lastStartTime != nil
-	now := time.Now()
-	this.lastStartTime = &now
-	this.currentStage = "run"
-	this.state = StateRunning
-	if this.restartCount > 0 || hadStartedBefore {
-		this.restartCount++
-	}
+	this.markRunStart(pid, time.Now())
 }
 
 func (this *target) onProcessExit(exitCode int, err error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
-	this.pid = 0
-	this.currentStage = ""
-	this.backofficeClient = nil
-	this.backofficeReady = false
-	if exitCode == 0 {
-		this.state = StateExited
-	} else {
-		this.state = StateError
-	}
+	_ = err
+	this.markRunExit(exitCode)
 }
 
 func (this *target) onBackofficeReady(sockPath string) {
@@ -493,6 +570,8 @@ func (this *target) Status() TargetStatus {
 
 	ts := TargetStatus{
 		Name:               this.name,
+		Title:              this.title,
+		Description:        this.description,
 		HasBuild:           this.hasBuild,
 		HasTest:            this.hasTest,
 		HasRun:             this.hasRun,
@@ -500,6 +579,8 @@ func (this *target) Status() TargetStatus {
 		CurrentStage:       this.currentStage,
 		Enabled:            this.enabled,
 		PID:                this.pid,
+		Build:              phaseSnapshot(this.lastBuildTime, this.lastBuildDuration, this.lastBuildResult, this.lastBuildError, this.buildCount),
+		Test:               phaseSnapshot(this.lastTestTime, this.lastTestDuration, this.lastTestResult, this.lastTestError, this.testCount),
 		LastBuildTime:      this.lastBuildTime,
 		LastBuildDuration:  this.lastBuildDuration,
 		LastBuildResult:    this.lastBuildResult,

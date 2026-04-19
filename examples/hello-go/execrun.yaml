@@ -1,4 +1,7 @@
 # HELLO_PORT is passed from the parent runctl.yaml vars as an env var
+title: Hello Go
+description: Small example HTTP service with build and test steps.
+
 vars:
   LOCAL_VAR: "hello-go-local-var"
 
