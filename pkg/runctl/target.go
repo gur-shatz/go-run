@@ -223,12 +223,14 @@ func (this *target) start() error {
 	execSumFile := strings.TrimSuffix(configFile, filepath.Ext(configFile)) + ".sum"
 
 	opts := execrun.Options{
-		RootDir:   this.rootDir,
-		LogPrefix: fmt.Sprintf("[%s]", this.name),
-		Verbose:   this.verbose,
-		Stdout:    runLog,
-		Stderr:    runLog,
-		SumFile:   execSumFile,
+		RootDir:          this.rootDir,
+		LogPrefix:        fmt.Sprintf("[%s]", this.name),
+		Verbose:          this.verbose,
+		ContinueOnError:  true,
+		DisableHeartbeat: true,
+		Stdout:           runLog,
+		Stderr:           runLog,
+		SumFile:          execSumFile,
 
 		ExecStdout: buildLog,
 		ExecStderr: buildLog,

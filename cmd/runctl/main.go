@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -161,6 +162,8 @@ func run() error {
 	ctrl.StartTargetsFiltered(targets)
 	defer ctrl.KillTargets()
 
+	go runHeartbeat(ctx, ctrl, targets)
+
 	// Create chi router and mount API routes
 	r := chi.NewRouter()
 	r.Mount("/api", ctrl.Routes())
@@ -192,6 +195,34 @@ func run() error {
 		return nil
 	case err := <-errCh:
 		return fmt.Errorf("api server: %w", err)
+	}
+}
+
+func runHeartbeat(ctx context.Context, ctrl *runctl.Controller, targets []string) {
+	selected := make(map[string]bool, len(targets))
+	for _, name := range targets {
+		selected[name] = true
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			summary := runctl.SummarizeHeartbeat(ctrl.Status(), selected)
+			if summary.AllHealthy {
+				fmt.Print(color.Green("."))
+				continue
+			}
+
+			fmt.Print(color.Red("."))
+			if summary.HasFailures() {
+				fmt.Print(color.Red(summary.FailureTuple()))
+			}
+		}
 	}
 }
 

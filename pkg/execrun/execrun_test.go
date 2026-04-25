@@ -1,13 +1,16 @@
 package execrun_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/shlex"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/gur-shatz/go-run/internal/sumfile"
 	"github.com/gur-shatz/go-run/pkg/execrun"
 )
 
@@ -350,6 +353,67 @@ exec:
 				Exec:  []string{"./bin/app --port=8080"},
 			}
 			Expect(cfg.Validate()).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("Run", func() {
+		It("returns initial build errors by default", func() {
+			cfg := execrun.Config{
+				Watch: []string{"trigger.txt"},
+				Build: []string{"grep -q ok trigger.txt"},
+				Exec:  []string{"sleep 30"},
+			}
+			Expect(os.WriteFile(filepath.Join(tmpDir, "trigger.txt"), []byte("bad\n"), 0644)).To(Succeed())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			err := execrun.Run(ctx, cfg, execrun.Options{
+				RootDir:          tmpDir,
+				DisableHeartbeat: true,
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec failed"))
+		})
+
+		It("keeps watching after initial build failure when ContinueOnError is enabled", func() {
+			cfg := execrun.Config{
+				Watch: []string{"trigger.txt"},
+				Build: []string{"grep -q ok trigger.txt"},
+				Exec:  []string{"sleep 30"},
+			}
+			triggerPath := filepath.Join(tmpDir, "trigger.txt")
+			Expect(os.WriteFile(triggerPath, []byte("bad\n"), 0644)).To(Succeed())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fileChanges := make(chan time.Time, 10)
+			starts := make(chan int, 10)
+			runDone := make(chan error, 1)
+
+			go func() {
+				runDone <- execrun.Run(ctx, cfg, execrun.Options{
+					RootDir:          tmpDir,
+					ContinueOnError:  true,
+					DisableHeartbeat: true,
+					OnFilesChanged: func(at time.Time, _ sumfile.ChangeSet) {
+						fileChanges <- at
+					},
+					OnProcessStart: func(pid int) {
+						starts <- pid
+					},
+				})
+			}()
+
+			Consistently(runDone, 400*time.Millisecond).ShouldNot(Receive())
+			Expect(os.WriteFile(triggerPath, []byte("ok\n"), 0644)).To(Succeed())
+
+			Eventually(fileChanges, 5*time.Second).Should(Receive())
+			Eventually(starts, 5*time.Second).Should(Receive(BeNumerically(">", 0)))
+
+			cancel()
+			Eventually(runDone).Should(Receive(BeNil()))
 		})
 	})
 })

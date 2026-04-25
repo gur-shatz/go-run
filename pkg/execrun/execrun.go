@@ -53,8 +53,13 @@ type Options struct {
 	PollInterval time.Duration
 	Debounce     time.Duration
 	Verbose      bool
-	Stdout       io.Writer
-	Stderr       io.Writer
+	// ContinueOnError keeps the watcher/event loop running after an initial
+	// build or start failure so later file changes can trigger recovery.
+	ContinueOnError bool
+	// DisableHeartbeat suppresses periodic console dots.
+	DisableHeartbeat bool
+	Stdout           io.Writer
+	Stderr           io.Writer
 
 	// RootDir overrides the working directory (default: os.Getwd()).
 	// Commands are executed with this as the working directory.
@@ -731,27 +736,12 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		return runBuildOnly(ctx, r, rootDir, patterns, initialSums, sumPath, opts, l)
 	}
 
-	if len(cfg.Steps()) > 0 {
-		l.Status("Executing...")
-		dur, err := r.execSteps()
-		if err != nil {
-			return fmt.Errorf("exec failed: %w", err)
-		}
-		l.Success("Done in %s", scan.FormatDuration(dur))
-	}
-
-	if err := r.start(); err != nil {
-		return fmt.Errorf("initial start: %w", err)
-	}
-	l.Success("Started (pid %d).", r.pid())
-
 	// Heartbeat state
 	var healthy atomic.Bool
-	healthy.Store(true)
-	var execHealthy atomic.Bool
-	execHealthy.Store(true)
+	healthy.Store(false)
 
-	// Set up watcher
+	// Set up watcher before the initial execution so ContinueOnError can keep
+	// watching even if startup fails.
 	w := watcher.New(rootDir, patterns, opts.PollInterval, opts.Debounce, func(changes sumfile.ChangeSet) {
 		if opts.OnFilesChanged != nil {
 			opts.OnFilesChanged(time.Now(), changes)
@@ -767,11 +757,11 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			return
 		}
 		l.Success("Build done (%s).", scan.FormatDuration(dur))
-		healthy.Store(true)
 
 		l.Status("Executing...")
 		if err := r.stop(); err != nil {
 			l.Error("Stop failed: %v", err)
+			healthy.Store(false)
 			return
 		}
 		// Drain stale exit info
@@ -781,10 +771,11 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		}
 		if err := r.start(); err != nil {
 			l.Error("Start failed: %v", err)
+			healthy.Store(false)
 			return
 		}
 		l.Success("Started (pid %d).", r.pid())
-		execHealthy.Store(true)
+		healthy.Store(true)
 
 		// Update sum file
 		newSums, err := scan.ScanFiles(rootDir, patterns)
@@ -798,9 +789,43 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 
 	go w.Run(ctx)
 
+	if len(cfg.Steps()) > 0 {
+		l.Status("Executing...")
+		dur, err := r.execSteps()
+		if err != nil {
+			if !opts.ContinueOnError {
+				return fmt.Errorf("exec failed: %w", err)
+			}
+			l.Error("Initial build failed: %v", err)
+			l.Status("Watching for file changes...")
+		} else {
+			l.Success("Done in %s", scan.FormatDuration(dur))
+			healthy.Store(true)
+		}
+	}
+
+	if healthy.Load() || len(cfg.Steps()) == 0 {
+		if err := r.start(); err != nil {
+			if !opts.ContinueOnError {
+				return fmt.Errorf("initial start: %w", err)
+			}
+			healthy.Store(false)
+			l.Error("Initial start failed: %v", err)
+			l.Status("Watching for file changes...")
+		} else {
+			l.Success("Started (pid %d).", r.pid())
+			healthy.Store(true)
+		}
+	}
+
 	// Heartbeat ticker
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	var tick <-chan time.Time
+	var ticker *time.Ticker
+	if !opts.DisableHeartbeat {
+		ticker = time.NewTicker(10 * time.Second)
+		tick = ticker.C
+		defer ticker.Stop()
+	}
 
 	for {
 		select {
@@ -809,7 +834,6 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			return nil
 		case info := <-r.exited:
 			if info.ExitCode != 0 {
-				execHealthy.Store(false)
 				l.Error("Exited with code %d. Waiting for file changes...", info.ExitCode)
 			} else {
 				l.Status("Completed. Waiting for file changes...")
@@ -823,7 +847,6 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			} else {
 				l.Success("Build done (pid %d, %s).", r.pid(), scan.FormatDuration(dur))
 				healthy.Store(true)
-				execHealthy.Store(true)
 			}
 		case <-opts.TestTrigger:
 			l.Status("Tests triggered...")
@@ -842,11 +865,13 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 			l.Status("Starting process...")
 			if err := r.start(); err != nil {
 				l.Error("Start failed: %v", err)
+				healthy.Store(false)
 			} else {
 				l.Success("Started (pid %d).", r.pid())
+				healthy.Store(true)
 			}
-		case <-ticker.C:
-			l.Tick(healthy.Load(), execHealthy.Load())
+		case <-tick:
+			l.Tick(healthy.Load(), r.running())
 		}
 	}
 }
@@ -891,8 +916,13 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 
 	go w.Run(ctx)
 
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	var tick <-chan time.Time
+	var ticker *time.Ticker
+	if !opts.DisableHeartbeat {
+		ticker = time.NewTicker(10 * time.Second)
+		tick = ticker.C
+		defer ticker.Stop()
+	}
 
 	for {
 		select {
@@ -919,7 +949,7 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 				l.Success("Tests done in %s", scan.FormatDuration(dur))
 				healthy.Store(true)
 			}
-		case <-ticker.C:
+		case <-tick:
 			l.Tick(healthy.Load(), true)
 		}
 	}
