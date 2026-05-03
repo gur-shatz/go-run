@@ -40,6 +40,7 @@ targets:
       HELLO_GREETING: '{{ .HELLO_GREETING | default "None" }} extended'
     links:
       - name: HTTP
+        description: Hello Go service endpoint
         url: "http://localhost:{{ .HELLO_PORT }}"
 
   build-css:
@@ -49,6 +50,7 @@ targets:
     config: echo-server/execrun.yaml
     links:
       - name: Echo
+        description: Echo server endpoint
         url: "http://localhost:{{ .ECHO_PORT }}"
 
   ticker:
@@ -58,4 +60,5 @@ targets:
     config: backoffice-demo/execrun.yaml
     links:
       - name: HTTP
+        description: Backoffice demo service endpoint
         url: "http://localhost:{{ .DEMO_PORT }}"

@@ -15,9 +15,9 @@ import (
 
 // Config is the top-level runctl.yaml configuration.
 type Config struct {
-	Title       string                  `yaml:"title,omitempty"`
-	Description string                  `yaml:"description,omitempty"`
-	Vars        map[string]string       `yaml:"vars,omitempty"`
+	Title             string                  `yaml:"title,omitempty"`
+	Description       string                  `yaml:"description,omitempty"`
+	Vars              map[string]string       `yaml:"vars,omitempty"`
 	API               APIConfig               `yaml:"api"`
 	LogsDir           string                  `yaml:"logs_dir,omitempty"`             // directory for auto-generated log files
 	LogsRotateOnStart *bool                   `yaml:"logs_rotate_on_start,omitempty"` // rename existing log files to *.<timestamp>.log on startup (default: true)
@@ -46,10 +46,11 @@ type TargetConfig struct {
 
 // Link is a named URL or file path associated with a target.
 type Link struct {
-	Name        string `yaml:"name"              json:"name"`
-	URL         string `yaml:"url,omitempty"      json:"url,omitempty"`
-	File        string `yaml:"file,omitempty"     json:"file,omitempty"`
-	ResolvedURL string `yaml:"-"                  json:"resolved_url,omitempty"`
+	Name        string `yaml:"name"                  json:"name"`
+	Description string `yaml:"description,omitempty"   json:"description,omitempty"`
+	URL         string `yaml:"url,omitempty"          json:"url,omitempty"`
+	File        string `yaml:"file,omitempty"         json:"file,omitempty"`
+	ResolvedURL string `yaml:"-"                      json:"resolved_url,omitempty"`
 }
 
 // LogsConfig holds resolved log file paths for a target.

@@ -266,6 +266,7 @@ Multi-target orchestrator. Manage multiple execrun targets from a single `runctl
 ```bash
 runctl                    # Watch all enabled targets (API + watchers)
 runctl -ui                # API + web dashboard at http://localhost:9100
+runctl -ui -T "Local Dev" # API + web dashboard with custom title
 runctl -t api             # Watch only the "api" target
 runctl build              # Build all enabled targets and exit
 runctl test               # Run tests for all enabled targets and exit
@@ -290,6 +291,7 @@ runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 | -------------- | ------------- | -------------------------------------------------------- |
 | `-c, --config` | `runctl.yaml` | Config file path                                         |
 | `-t <name>`    |               | Target filter (repeatable). Applies to watch, build, test, sum |
+| `-T, --title`  |               | Override the web dashboard title                         |
 | `-ui`          | `false`       | Serve embedded web dashboard                             |
 | `-v`           | `false`       | Verbose output                                           |
 
@@ -319,6 +321,7 @@ targets:
       GREETING: '{{ env "GREETING" | default "Hello!" }}'
     links:
       - name: HTTP
+        description: Main API endpoint
         url: "http://localhost:{{ .API_PORT }}"
 
   frontend:
@@ -336,7 +339,11 @@ targets:
 | `targets.*.config`  | yes      | Path to the target's execrun YAML config                                  |
 | `targets.*.enabled` | no       | Whether to start on launch (default: `true`)                              |
 | `targets.*.vars`    | no       | Per-target template variables (override global vars)                      |
-| `targets.*.links`   | no       | Named URLs shown in the dashboard                                         |
+| `targets.*.links`   | no       | Named URLs or files shown in the dashboard                                |
+| `targets.*.links.*.name` | yes  | Link label                                                                |
+| `targets.*.links.*.description` | no | Optional link description shown on the component page                |
+| `targets.*.links.*.url` | no    | External URL. Mutually exclusive with `file`                               |
+| `targets.*.links.*.file` | no   | Local file to expose through the dashboard. Mutually exclusive with `url`  |
 
 The `config` path is relative to the `runctl.yaml` directory. The target's working directory is derived from the config path's directory.
 
@@ -351,10 +358,12 @@ The web UI provides four tabs:
 - **Tests** — last test duration/timestamp, test count, errors, and a re-run button
 - **Run** — target state, PID, uptime, restart count, custom links, and start/stop/restart buttons
 
-If `title` is set in `runctl.yaml`, the browser title becomes:
+Target names in the Build, Tests, and Run tabs link to a component page with the target's run state, build/test status, actions, links, logs, and backoffice entry point.
+
+If `title` is set in `runctl.yaml`, or overridden with `--title`/`-T`, the browser title becomes:
 
 ```text
-<title> <build-emoji><run-emoji><test-emoji>
+<build-emoji><run-emoji><test-emoji> <title>
 ```
 
 Each emoji is computed per dimension:

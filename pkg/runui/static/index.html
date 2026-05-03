@@ -92,7 +92,36 @@
     td, th { white-space: nowrap; }
     td.wrap { white-space: normal; }
     .item-title { font-weight: 700; }
+    .item-title a { text-decoration: none; }
+    .item-title a:hover { text-decoration: underline; }
     .item-desc { color: var(--pico-muted-color); font-size: 0.78rem; margin-top: 0.15rem; white-space: normal; opacity: 0.8; }
+    .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+    .detail-header h1 { margin-bottom: 0.25rem; }
+    .detail-back { font-size: 0.85rem; white-space: nowrap; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .detail-card {
+      border: 1px solid var(--pico-muted-border-color); border-radius: 8px; padding: 0.85rem 1rem;
+      background: color-mix(in srgb, var(--pico-background-color) 94%, var(--pico-muted-border-color));
+    }
+    .detail-card h3 { margin: 0 0 0.55rem; font-size: 0.9rem; color: var(--pico-muted-color); }
+    .detail-kv { display: grid; grid-template-columns: minmax(6rem, auto) 1fr; gap: 0.35rem 0.75rem; font-size: 0.85rem; }
+    .detail-kv dt { color: var(--pico-muted-color); }
+    .detail-kv dd { margin: 0; min-width: 0; white-space: normal; word-break: break-word; }
+    .detail-wide { grid-column: 1 / -1; }
+    .detail-links { display: flex; flex-direction: column; gap: 0.6rem; }
+    .detail-link {
+      display: block; width: 100%; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.75rem 0.9rem;
+      text-decoration: none; color: inherit; background: var(--pico-background-color);
+    }
+    .detail-link:hover { border-color: var(--pico-primary); text-decoration: none; }
+    .detail-link-title { display: block; font-weight: 700; color: var(--pico-primary); }
+    .detail-link-url { display: block; margin-top: 0.2rem; font-size: 0.78rem; color: var(--pico-muted-color); white-space: normal; word-break: break-word; opacity: 0.75; }
+    .detail-link-desc { display: block; margin-top: 0.35rem; font-size: 0.82rem; color: var(--pico-color); white-space: normal; word-break: break-word; }
+    .detail-log-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .detail-log-actions button, .detail-actions button {
+      padding: 0.25rem 0.55rem; font-size: 0.85rem; line-height: 1.2; margin: 0;
+    }
+    .detail-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
     .actions { white-space: nowrap; }
     .actions button {
       padding: 0.2rem 0.35rem; font-size: 1rem; margin-right: 0.1rem; line-height: 1; min-width: 0;
@@ -224,6 +253,10 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <div id="target-detail" class="tab-content">
+        <div id="target-detail-content"></div>
+      </div>
     </main>
 
     <!-- Log side panel -->
@@ -271,9 +304,25 @@
   const tabLinks = document.querySelectorAll('.topbar-tabs a');
   const tabContents = document.querySelectorAll('.tab-content');
 
+  let activeTargetName = '';
+  let lastOverviewTitle = 'runui';
+  let lastEmojiSuffix = '';
+  let latestTargets = [];
+
+  function setBrowserTitle(title) {
+    document.title = (lastEmojiSuffix ? lastEmojiSuffix + ' ' : '') + title;
+  }
+
   function switchTab(tabName) {
+    activeTargetName = '';
     tabLinks.forEach(a => a.classList.toggle('active', a.dataset.tab === tabName));
     tabContents.forEach(el => el.classList.toggle('active', el.id === 'tab-' + tabName));
+  }
+
+  function switchTarget(name) {
+    activeTargetName = name;
+    tabLinks.forEach(a => a.classList.remove('active'));
+    tabContents.forEach(el => el.classList.toggle('active', el.id === 'target-detail'));
   }
 
   tabLinks.forEach(a => {
@@ -285,9 +334,22 @@
     });
   });
 
-  // Restore tab from hash
-  const hash = window.location.hash.replace('#', '');
-  if (hash === 'summary' || hash === 'build' || hash === 'test' || hash === 'run') switchTab(hash);
+  function routeFromHash() {
+    const hash = window.location.hash.replace('#', '');
+    if (hash.indexOf('target/') === 0) {
+      switchTarget(decodeURIComponent(hash.slice('target/'.length)));
+      renderTargetDetail(latestTargets);
+      return;
+    }
+    if (hash === 'summary' || hash === 'build' || hash === 'test' || hash === 'run') {
+      switchTab(hash);
+      return;
+    }
+    switchTab('summary');
+  }
+
+  window.addEventListener('hashchange', routeFromHash);
+  routeFromHash();
 
   // Relative time formatting
   function relTime(isoStr) {
@@ -328,7 +390,8 @@
   function itemHeading(t) {
     const title = t.title || t.name;
     const desc = t.description || '';
-    return '<div class="item-title">' + escHtml(title) + '</div>' +
+    const href = '#target/' + encodeURIComponent(t.name);
+    return '<div class="item-title"><a href="' + href + '">' + escHtml(title) + '</a></div>' +
       (desc ? '<div class="item-desc">' + escHtml(desc) + '</div>' : '');
   }
 
@@ -394,6 +457,7 @@
 
   function applyPageMetadata(overview) {
     const title = overview.title || 'runui';
+    lastOverviewTitle = title;
     const description = overview.description || '';
     const targets = overview.targets || [];
     const phaseStates = PHASES.map(function(phase) {
@@ -403,8 +467,9 @@
     const test = phaseStates.find(function(p) { return p.phase.key === 'test'; }).state;
     const run = stageState(targets, 'run');
     const emojiSuffix = [build.emoji, run.emoji, test.emoji].join('');
+    lastEmojiSuffix = emojiSuffix;
 
-    document.title = title + ' ' + emojiSuffix;
+    if (!activeTargetName) setBrowserTitle(title);
     document.getElementById('topbar-title').textContent = title;
     document.getElementById('page-title').textContent = title;
 
@@ -437,14 +502,18 @@
     ]);
     tbody.innerHTML = rows.map(function(row) {
       const s = stageState(targets, row.key);
-      const failing = s.failing.length ? s.failing.join(', ') : '\u2014';
+      const failing = s.failing.length
+        ? s.failing.map(function(name) {
+          return '<a href="#target/' + encodeURIComponent(name) + '"><strong>' + escHtml(name) + '</strong></a>';
+        }).join(', ')
+        : '\u2014';
       return '<tr>' +
         '<td><strong>' + row.label + '</strong></td>' +
         '<td>' + badge(s.emoji + ' ' + s.label, s.cls) + '</td>' +
         '<td>' + s.healthy + '</td>' +
         '<td>' + s.pending + '</td>' +
         '<td>' + s.failed + '</td>' +
-        '<td class="wrap">' + (s.failing.length ? '<span class="summary-failing"><strong>' + escHtml(failing) + '</strong></span>' : '\u2014') + '</td>' +
+        '<td class="wrap">' + (s.failing.length ? '<span class="summary-failing">' + failing + '</span>' : '\u2014') + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -454,6 +523,89 @@
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+  }
+
+  function stageLabel(t) {
+    if (!t.current_stage) return '\u2014';
+    return t.current_stage.charAt(0).toUpperCase() + t.current_stage.slice(1);
+  }
+
+  function phaseDetailCard(t, phase) {
+    if (!t[phase.hasField]) {
+      return '<section class="detail-card"><h3>' + escHtml(phase.label) + '</h3><p class="empty-state">Not configured</p></section>';
+    }
+    const status = phaseStatus(t, phase.key);
+    const hasLogs = t.logs && t.logs[phase.key];
+    const logs = hasLogs
+      ? '<button onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'' + phase.key + '\')">Logs</button>'
+      : '';
+    return '<section class="detail-card">' +
+      '<h3>' + escHtml(phase.label) + '</h3>' +
+      '<dl class="detail-kv">' +
+      '<dt>Status</dt><dd>' + badge(status.text, status.cls) + '</dd>' +
+      '<dt>Duration</dt><dd>' + fmtDuration(phaseField(t, phase.key, 'duration_secs')) + '</dd>' +
+      '<dt>Last run</dt><dd>' + relTime(phaseField(t, phase.key, 'time')) + '</dd>' +
+      '<dt>Count</dt><dd>' + (phaseField(t, phase.key, 'count') || 0) + '</dd>' +
+      '<dt>Error</dt><dd>' + (phaseField(t, phase.key, 'error') ? '<span class="error-text">' + escHtml(phaseField(t, phase.key, 'error')) + '</span>' : '\u2014') + '</dd>' +
+      '</dl>' +
+      '<div class="detail-log-actions"><button onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'' + phase.action + '\')">' + escHtml(phase.actionTitle) + '</button>' + logs + '</div>' +
+      '</section>';
+  }
+
+  function renderTargetDetail(targets) {
+    const el = document.getElementById('target-detail-content');
+    if (!activeTargetName) return;
+    const t = targets.find(function(target) { return target.name === activeTargetName; });
+    if (!t) {
+      setBrowserTitle(activeTargetName + ' - ' + lastOverviewTitle);
+      el.innerHTML = '<div class="detail-header"><div><h1 class="page-title">' + escHtml(activeTargetName) + '</h1><p class="page-description">Target not found.</p></div><a class="detail-back" href="#summary">Back to summary</a></div>';
+      return;
+    }
+
+    const title = t.title || t.name;
+    setBrowserTitle(title + ' - ' + lastOverviewTitle);
+
+    const run = runStatus(t);
+    const links = (t.links || []).map(function(l) {
+      const href = l.resolved_url || l.url || '#';
+      const cls = t.state === 'running' ? 'detail-link' : 'detail-link link-disabled';
+      const desc = l.description ? '<span class="detail-link-desc">' + escHtml(l.description) + '</span>' : '';
+      return '<a href="' + escHtml(href) + '" target="_blank" class="' + cls + '"><span class="detail-link-title">' + escHtml(l.name) + '</span><span class="detail-link-url">' + escHtml(href) + '</span>' + desc + '</a>';
+    }).join('');
+    const runLogs = t.logs && t.logs.run
+      ? '<button onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'run\')">Logs</button>'
+      : '';
+    const backoffice = t.backoffice_ready && t.backoffice_status
+      ? '<button onclick="_runuiOpenBackoffice(\'' + escHtml(t.name) + '\')">Backoffice</button>'
+      : '';
+    const canStart = t.state !== 'running' && t.state !== 'starting';
+    const canStop = t.state === 'running' || t.state === 'starting';
+    const descriptionCard = t.description
+      ? '<section class="detail-card detail-wide"><h3>Description</h3><p class="page-description">' + escHtml(t.description) + '</p></section>'
+      : '';
+
+    el.innerHTML = '<div class="detail-header">' +
+      '<div><h1 class="page-title">' + escHtml(title) + '</h1>' +
+      '</div><a class="detail-back" href="#summary">Back to summary</a></div>' +
+      '<div class="detail-grid">' +
+      descriptionCard +
+      '<section class="detail-card"><h3>Run</h3><dl class="detail-kv">' +
+      '<dt>State</dt><dd>' + badge(run.text, run.cls) + '</dd>' +
+      '<dt>Stage</dt><dd>' + escHtml(stageLabel(t)) + '</dd>' +
+      '<dt>Enabled</dt><dd>' + (t.enabled ? 'Yes' : 'No') + '</dd>' +
+      '<dt>PID</dt><dd>' + (t.pid || '\u2014') + '</dd>' +
+      '<dt>Uptime</dt><dd>' + relTime(t.last_start_time) + '</dd>' +
+      '<dt>Restarts</dt><dd>' + t.restart_count + '</dd>' +
+      '</dl><div class="detail-actions">' +
+      '<button onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'start\')"' + (canStart ? '' : ' disabled') + '>Start</button>' +
+      '<button onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'stop\')"' + (canStop ? '' : ' disabled') + '>Stop</button>' +
+      '<button onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'restart\')"' + (t.state === 'running' ? '' : ' disabled') + '>Restart</button>' +
+      runLogs + backoffice +
+      '</div></section>' +
+      phaseDetailCard(t, PHASES[0]) +
+      phaseDetailCard(t, PHASES[1]) +
+      '<section class="detail-card detail-wide"><h3>Links</h3><div class="detail-links">' + (links || '\u2014') + '</div></section>' +
+      '</div>';
   }
 
   // Action helpers
@@ -1166,10 +1318,12 @@
       .then(overview => {
         const targets = Array.isArray(overview.targets) ? overview.targets : [];
         targets.sort((a, b) => a.name.localeCompare(b.name));
+        latestTargets = targets;
         applyPageMetadata(overview);
         renderSummaryTable(targets);
         PHASES.forEach(function(phase) { renderPhaseTable(targets, phase); });
         renderRunTable(targets);
+        renderTargetDetail(targets);
       })
       .catch(err => console.error('poll error:', err));
   }

@@ -41,6 +41,8 @@ targets:
     #   GREETING: '{{ env "GREETING" | default "Hello!" }}'
     # links:
     #   - name: "App"
+    #     description: "Main service endpoint"
     #     url: "http://localhost:8080"
     #   - name: "Config"
+    #     description: "Rendered configuration file"
     #     file: "./my-app/config.yaml"

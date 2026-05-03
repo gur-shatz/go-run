@@ -45,6 +45,7 @@ targets:
     enabled: true
     links:
       - name: "App"
+        description: "Main HTTP endpoint"
         url: "http://localhost:8080"
   worker:
     config: "worker/execrun.yaml"
@@ -61,6 +62,7 @@ targets:
 			Expect(cfg.Targets["my-app"].IsEnabled()).To(BeTrue())
 			Expect(cfg.Targets["my-app"].Links).To(HaveLen(1))
 			Expect(cfg.Targets["my-app"].Links[0].Name).To(Equal("App"))
+			Expect(cfg.Targets["my-app"].Links[0].Description).To(Equal("Main HTTP endpoint"))
 			Expect(cfg.Targets["worker"].IsEnabled()).To(BeFalse())
 		})
 
@@ -227,6 +229,7 @@ targets:
     config: "app/execrun.yaml"
     links:
       - name: "App"
+        description: "Local app"
         url: "http://localhost:8080"
 `
 			err := os.WriteFile(cfgPath, []byte(yaml), 0644)
@@ -235,6 +238,7 @@ targets:
 			cfg, err := runctl.LoadConfig(cfgPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Targets["app"].Links[0].URL).To(Equal("http://localhost:8080"))
+			Expect(cfg.Targets["app"].Links[0].Description).To(Equal("Local app"))
 			Expect(cfg.Targets["app"].Links[0].File).To(BeEmpty())
 		})
 

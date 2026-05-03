@@ -53,6 +53,8 @@ func run() error {
 	envFile := fs.String("e", "", "load environment variables from YAML file")
 	verbose := fs.Bool("v", false, "verbose output")
 	ui := fs.Bool("ui", false, "serve embedded web dashboard")
+	title := fs.String("title", "", "override UI title")
+	fs.StringVar(title, "T", "", "override UI title (shorthand)")
 
 	var targets stringSlice
 	fs.Var(&targets, "t", "target name filter (repeatable)")
@@ -69,6 +71,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  runctl                          Run with default config (runctl.yaml)\n")
 		fmt.Fprintf(os.Stderr, "  runctl -ui                      Run with web dashboard\n")
+		fmt.Fprintf(os.Stderr, "  runctl -ui -T \"Local Stack\"     Run dashboard with custom title\n")
 		fmt.Fprintf(os.Stderr, "  runctl -e vars.yaml             Load env vars from YAML file\n")
 		fmt.Fprintf(os.Stderr, "  runctl -c myconfig.yaml         Run with custom config\n")
 		fmt.Fprintf(os.Stderr, "  runctl -t api -t web            Watch only 'api' and 'web' targets\n")
@@ -127,6 +130,9 @@ func run() error {
 	cfg, err := runctl.LoadConfig(*configPath)
 	if err != nil {
 		return err
+	}
+	if *title != "" {
+		cfg.Title = *title
 	}
 
 	baseDir := filepath.Dir(*configPath)
