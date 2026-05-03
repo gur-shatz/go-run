@@ -3,10 +3,52 @@ package runctl
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
+
+// rotateLogFile renames a non-empty log file at path to "<base>.<suffix><ext>".
+// Returns nil if the file is missing or empty (nothing to rotate).
+func rotateLogFile(path, suffix string) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	rotated := fmt.Sprintf("%s.%s%s", base, suffix, ext)
+	return os.Rename(path, rotated)
+}
+
+// writeMarker appends a prominent timestamped separator block to the log file
+// at path. The block is composed and written in a single call so it stays
+// contiguous even if a process is concurrently appending to the same file.
+func writeMarker(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+	defer f.Close()
+
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	bar := strings.Repeat("=", 80)
+	block := fmt.Sprintf("\n%s\n======== MARKER %s ========\n%s\n\n", bar, ts, bar)
+	if _, err := f.WriteString(block); err != nil {
+		return fmt.Errorf("write marker: %w", err)
+	}
+	return nil
+}
 
 // tailFile reads the last n lines from a file. Returns the lines and any error.
 func tailFile(path string, n int) ([]string, error) {

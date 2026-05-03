@@ -171,10 +171,10 @@ func (this *Watcher) Run(ctx context.Context) {
 
 		case <-refreshTicker.C:
 			if err := this.buildFileList(); err != nil {
-				this.log.Verbose("refresh buildFileList failed: %v", err)
+				this.log.Warn("refresh buildFileList failed: %v", err)
 				continue
 			}
-			this.log.Verbose("Refreshed file list: %d files, %d directories", len(this.trackedFiles), len(this.trackedDirs))
+			// this.log.Verbose("Refreshed file list: %d files, %d directories,", len(this.trackedFiles), len(this.trackedDirs))
 			this.dirty = true
 		}
 	}

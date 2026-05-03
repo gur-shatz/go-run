@@ -27,6 +27,7 @@ func (this *Controller) Routes() chi.Router {
 	r.Post("/targets/{name}/enable", this.handleEnableTarget)
 	r.Post("/targets/{name}/disable", this.handleDisableTarget)
 	r.Get("/targets/{name}/logs", this.handleGetLogs)
+	r.Post("/targets/{name}/logs/marker", this.handleInsertLogMarker)
 	r.HandleFunc("/targets/{name}/backoffice/*", this.handleBackofficeProxy)
 	r.Get("/file", this.handleServeFile)
 
@@ -232,6 +233,52 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		"lines": result,
 		"file":  path,
 	})
+}
+
+func (this *Controller) handleInsertLogMarker(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	this.mu.RLock()
+	t, ok := this.targets[name]
+	this.mu.RUnlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	stage := r.URL.Query().Get("stage")
+	if stage == "" {
+		stage = "run"
+	}
+	if stage != "build" && stage != "test" && stage != "run" {
+		writeError(w, http.StatusBadRequest, "stage must be build, test, or run")
+		return
+	}
+
+	if t.tcfg.Logs == nil {
+		writeError(w, http.StatusBadRequest, "no logs configured for this target")
+		return
+	}
+
+	var path string
+	switch stage {
+	case "build":
+		path = t.tcfg.Logs.Build
+	case "test":
+		path = t.tcfg.Logs.Test
+	case "run":
+		path = t.tcfg.Logs.Run
+	}
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "no "+stage+" log configured for this target")
+		return
+	}
+
+	if err := writeMarker(path); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (this *Controller) handleServeFile(w http.ResponseWriter, r *http.Request) {

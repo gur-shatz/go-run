@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Controller manages multiple targets and exposes an HTTP API.
@@ -47,6 +48,23 @@ func New(cfg Config, baseDir string, verbose bool) (*Controller, error) {
 		baseDir: absBase,
 		verbose: verbose,
 		targets: make(map[string]*target, len(cfg.Targets)),
+	}
+
+	if cfg.RotatesLogsOnStart() {
+		suffix := time.Now().Format("20060102-150405")
+		for name, tcfg := range cfg.Targets {
+			if tcfg.Logs == nil {
+				continue
+			}
+			for _, p := range []string{tcfg.Logs.Build, tcfg.Logs.Test, tcfg.Logs.Run} {
+				if p == "" {
+					continue
+				}
+				if err := rotateLogFile(p, suffix); err != nil {
+					return nil, fmt.Errorf("rotate log %s for target %q: %w", p, name, err)
+				}
+			}
+		}
 	}
 
 	for name, tcfg := range cfg.Targets {

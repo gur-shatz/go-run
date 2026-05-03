@@ -509,7 +509,7 @@ func (this *runner) pollBackoffice(ctx context.Context, sockPath string) {
 		case <-ctx.Done():
 			return
 		case <-timeout:
-			this.log.Verbose("Backoffice poll timed out for %s", sockPath)
+			// this.log.Verbose("Backoffice poll timed out for %s", sockPath)
 			return
 		case <-ticker.C:
 			conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)

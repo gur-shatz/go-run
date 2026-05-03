@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+
 func main() {
 	interval := 2
 	if s := os.Getenv("TICK_INTERVAL"); s != "" {

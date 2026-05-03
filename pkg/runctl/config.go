@@ -18,9 +18,10 @@ type Config struct {
 	Title       string                  `yaml:"title,omitempty"`
 	Description string                  `yaml:"description,omitempty"`
 	Vars        map[string]string       `yaml:"vars,omitempty"`
-	API         APIConfig               `yaml:"api"`
-	LogsDir     string                  `yaml:"logs_dir,omitempty"` // directory for auto-generated log files
-	Targets     map[string]TargetConfig `yaml:"targets"`
+	API               APIConfig               `yaml:"api"`
+	LogsDir           string                  `yaml:"logs_dir,omitempty"`             // directory for auto-generated log files
+	LogsRotateOnStart *bool                   `yaml:"logs_rotate_on_start,omitempty"` // rename existing log files to *.<timestamp>.log on startup (default: true)
+	Targets           map[string]TargetConfig `yaml:"targets"`
 
 	// ResolvedVars holds all resolved template variables (vars section + env).
 	// Populated by LoadConfig, not from YAML.
@@ -66,6 +67,15 @@ func (this TargetConfig) IsEnabled() bool {
 		return true
 	}
 	return *this.Enabled
+}
+
+// RotatesLogsOnStart returns whether existing log files should be renamed to a
+// timestamped backup when runctl starts (default: true).
+func (this Config) RotatesLogsOnStart() bool {
+	if this.LogsRotateOnStart == nil {
+		return true
+	}
+	return *this.LogsRotateOnStart
 }
 
 // LoadConfig reads and parses a runctl.yaml file.

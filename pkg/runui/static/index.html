@@ -231,6 +231,7 @@
       <div class="drawer-header">
         <h4 id="drawer-title">Logs</h4>
         <div class="drawer-actions">
+          <button id="btn-marker" title="Append a timestamped marker to the log" onclick="_runuiInsertMarker()">Marker</button>
           <button id="btn-tail" class="btn-tail active" onclick="_runuiToggleTail()">Tail: ON</button>
           <button id="btn-open-tab" style="display:none;" onclick="_runuiOpenBoNewTab()">Open in new tab</button>
           <button onclick="_runuiCloseDrawer()">Close</button>
@@ -487,18 +488,21 @@
     const vs = document.getElementById('vscroll-status');
     const bo = document.getElementById('bo-content');
     const tailBtn = document.getElementById('btn-tail');
+    const markerBtn = document.getElementById('btn-marker');
     const openTabBtn = document.getElementById('btn-open-tab');
     if (mode === 'backoffice') {
       vp.style.display = 'none';
       vs.style.display = 'none';
       bo.style.display = 'block';
       tailBtn.style.display = 'none';
+      markerBtn.style.display = 'none';
       openTabBtn.style.display = '';
     } else {
       vp.style.display = '';
       vs.style.display = '';
       bo.style.display = 'none';
       tailBtn.style.display = '';
+      markerBtn.style.display = '';
       openTabBtn.style.display = 'none';
     }
   }
@@ -888,7 +892,7 @@
     // Build HTML for rendered lines
     let html = '';
     for (let i = rf; i <= rl; i++) {
-      const text = vscrollState.cache.has(i) ? escHtml(vscrollState.cache.get(i)) : '';
+      const text = vscrollState.cache.has(i) ? ansiToHtml(vscrollState.cache.get(i)) : '';
       html += '<div class="vscroll-line">' + text + '</div>';
     }
     content.innerHTML = html;
@@ -936,9 +940,119 @@
       .catch(() => {});
   }
 
+  function insertMarker() {
+    if (!drawerTarget || !drawerStage) return;
+    const btn = document.getElementById('btn-marker');
+    btn.disabled = true;
+    fetch('/api/targets/' + encodeURIComponent(drawerTarget) + '/logs/marker?stage=' + drawerStage, { method: 'POST' })
+      .then(r => r.json())
+      .then(() => {
+        if (vscrollState) {
+          vscrollState.followTail = autoTail;
+          vscrollPoll();
+        }
+      })
+      .catch(err => console.error('marker error:', err))
+      .finally(() => { btn.disabled = false; });
+  }
+
+  // Parse a subset of ANSI SGR escape sequences (16-color foreground/background,
+  // bold, dim, reset) into HTML, escaping all other characters. Non-SGR CSI
+  // sequences are stripped. Sequences spanning lines are not supported — each
+  // log line is parsed independently.
+  const ANSI_FG = {
+    30: '#000000', 31: '#cd3131', 32: '#0dbc79', 33: '#e5e510',
+    34: '#2472c8', 35: '#bc3fbc', 36: '#11a8cd', 37: '#e5e5e5',
+    90: '#666666', 91: '#f14c4c', 92: '#23d18b', 93: '#f5f543',
+    94: '#3b8eea', 95: '#d670d6', 96: '#29b8db', 97: '#ffffff'
+  };
+  const ANSI_BG = {
+    40: '#000000', 41: '#cd3131', 42: '#0dbc79', 43: '#e5e510',
+    44: '#2472c8', 45: '#bc3fbc', 46: '#11a8cd', 47: '#e5e5e5',
+    100: '#666666', 101: '#f14c4c', 102: '#23d18b', 103: '#f5f543',
+    104: '#3b8eea', 105: '#d670d6', 106: '#29b8db', 107: '#ffffff'
+  };
+
+  function ansiToHtml(input) {
+    if (!input) return '';
+    let curFg = '', curBg = '', bold = false, dim = false;
+    let spanOpen = false;
+    let out = '';
+    let buf = '';
+
+    function escapeChunk(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function flushBuf() {
+      if (buf) { out += escapeChunk(buf); buf = ''; }
+    }
+    function styleStr() {
+      const parts = [];
+      if (curFg) parts.push('color:' + curFg);
+      if (curBg) parts.push('background:' + curBg);
+      if (bold) parts.push('font-weight:bold');
+      if (dim) parts.push('opacity:0.6');
+      return parts.join(';');
+    }
+    function closeSpan() {
+      flushBuf();
+      if (spanOpen) { out += '</span>'; spanOpen = false; }
+    }
+    function openSpan() {
+      const s = styleStr();
+      if (s) { out += '<span style="' + s + '">'; spanOpen = true; }
+    }
+    function applyCodes(codes) {
+      closeSpan();
+      if (codes.length === 0) codes = [0];
+      for (let k = 0; k < codes.length; k++) {
+        const c = codes[k];
+        if (c === 0) { curFg = ''; curBg = ''; bold = false; dim = false; }
+        else if (c === 1) bold = true;
+        else if (c === 2) dim = true;
+        else if (c === 22) { bold = false; dim = false; }
+        else if (c >= 30 && c <= 37) curFg = ANSI_FG[c];
+        else if (c === 39) curFg = '';
+        else if (c >= 40 && c <= 47) curBg = ANSI_BG[c];
+        else if (c === 49) curBg = '';
+        else if (c >= 90 && c <= 97) curFg = ANSI_FG[c];
+        else if (c >= 100 && c <= 107) curBg = ANSI_BG[c];
+      }
+      openSpan();
+    }
+
+    let i = 0;
+    while (i < input.length) {
+      if (input.charCodeAt(i) === 0x1b && input[i + 1] === '[') {
+        let j = i + 2;
+        let params = '';
+        while (j < input.length) {
+          const cc = input.charCodeAt(j);
+          if (cc >= 0x30 && cc <= 0x3f) { params += input[j]; j++; }
+          else break;
+        }
+        if (j < input.length) {
+          if (input[j] === 'm') {
+            const codes = params.length
+              ? params.split(';').map(s => parseInt(s, 10) || 0)
+              : [0];
+            applyCodes(codes);
+          }
+          i = j + 1;
+          continue;
+        }
+      }
+      buf += input[i];
+      i++;
+    }
+    closeSpan();
+    return out;
+  }
+
   window._runuiOpenDrawer = openDrawer;
   window._runuiCloseDrawer = closeDrawer;
   window._runuiToggleTail = toggleTail;
+  window._runuiInsertMarker = insertMarker;
   window._runuiOpenBackoffice = openBackofficeDrawer;
   window._runuiOpenBoNewTab = openBoNewTab;
 
