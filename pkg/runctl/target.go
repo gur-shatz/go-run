@@ -280,6 +280,23 @@ func openLogFile(path string, fallback io.Writer, closers *[]io.Closer) (io.Writ
 	return f, nil
 }
 
+func (this *target) appendRunLogMarker(msg string) error {
+	if this.tcfg.Logs == nil || this.tcfg.Logs.Run == "" {
+		return nil
+	}
+	f, err := os.OpenFile(this.tcfg.Logs.Run, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open log %s: %w", this.tcfg.Logs.Run, err)
+	}
+	defer f.Close()
+
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	if _, err := fmt.Fprintf(f, "======== %s : %s\n", ts, msg); err != nil {
+		return fmt.Errorf("write log %s: %w", this.tcfg.Logs.Run, err)
+	}
+	return nil
+}
+
 func phaseSnapshot(t *time.Time, d *float64, result, err string, count int) PhaseStatus {
 	return PhaseStatus{
 		Time:     t,

@@ -415,5 +415,44 @@ exec:
 			cancel()
 			Eventually(runDone).Should(Receive(BeNil()))
 		})
+
+		It("writes child start failures to the run log", func() {
+			cfg := execrun.Config{
+				Watch: []string{"trigger.txt"},
+				Exec:  []string{"./missing-binary"},
+			}
+			Expect(os.WriteFile(filepath.Join(tmpDir, "trigger.txt"), []byte("ok\n"), 0644)).To(Succeed())
+
+			logPath := filepath.Join(tmpDir, "run.log")
+			runLog, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer runLog.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			runDone := make(chan error, 1)
+			go func() {
+				runDone <- execrun.Run(ctx, cfg, execrun.Options{
+					RootDir:          tmpDir,
+					ContinueOnError:  true,
+					DisableHeartbeat: true,
+					Stdout:           runLog,
+					Stderr:           runLog,
+				})
+			}()
+
+			Eventually(func() string {
+				data, _ := os.ReadFile(logPath)
+				return string(data)
+			}, 5*time.Second).Should(ContainSubstring("Start failed:"))
+			Eventually(func() string {
+				data, _ := os.ReadFile(logPath)
+				return string(data)
+			}, 5*time.Second).Should(ContainSubstring("missing-binary"))
+
+			cancel()
+			Eventually(runDone).Should(Receive(BeNil()))
+		})
 	})
 })

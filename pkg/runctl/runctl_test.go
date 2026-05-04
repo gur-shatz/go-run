@@ -355,6 +355,34 @@ targets:
 			Expect(ctrl).NotTo(BeNil())
 		})
 
+		It("writes corrupt execrun config startup failures to the target run log", func() {
+			dir := GinkgoT().TempDir()
+			Expect(os.MkdirAll(filepath.Join(dir, "app"), 0755)).To(Succeed())
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+			yaml := `
+logs_dir: logs
+targets:
+  app:
+    config: app/execrun.yaml
+`
+			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(dir, "app", "execrun.yaml"), []byte("watch:\n  - \"*.go\"\nexec:\n  - [broken\n"), 0644)).To(Succeed())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			ctrl, err := runctl.New(*cfg, dir, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			ctrl.StartTargets()
+
+			logPath := filepath.Join(dir, "logs", "app.run.log")
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(ContainSubstring("[runctl] Warning: failed to start app"))
+			Expect(string(data)).To(ContainSubstring("load config"))
+			Expect(string(data)).To(ContainSubstring("parse config"))
+		})
+
 		It("returns status for all targets", func() {
 			cfg := runctl.Config{
 				API: runctl.APIConfig{Port: 9100},

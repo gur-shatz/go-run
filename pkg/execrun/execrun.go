@@ -423,6 +423,7 @@ func (this *runner) start() error {
 	this.stopping = false
 	cmd, err := this.buildCmdNoCtx(this.cfg.RunCmd())
 	if err != nil {
+		this.logTo(this.stdout, "Start failed: %s", err)
 		return fmt.Errorf("start: %w", err)
 	}
 	this.cmd = cmd
@@ -433,6 +434,7 @@ func (this *runner) start() error {
 	// Set up backoffice UDS for the child process
 	sockDir, err := os.MkdirTemp("", "gorun-bo-*")
 	if err != nil {
+		this.logTo(this.stdout, "Start failed: create backoffice temp dir: %s", err)
 		return fmt.Errorf("start: create backoffice temp dir: %w", err)
 	}
 	sockPath := filepath.Join(sockDir, "bo.sock")
@@ -442,6 +444,7 @@ func (this *runner) start() error {
 
 	if err := this.cmd.Start(); err != nil {
 		os.RemoveAll(sockDir)
+		this.logTo(this.stdout, "Start failed: %s", err)
 		return fmt.Errorf("start: %w", err)
 	}
 

@@ -93,7 +93,7 @@ func (this *Controller) StartTargets() {
 	for name, t := range this.targets {
 		if t.enabled {
 			if err := t.Start(); err != nil {
-				fmt.Fprintf(os.Stderr, "[runctl] Warning: failed to start %s: %v\n", name, err)
+				this.logStartFailure(name, t, err)
 			}
 		}
 	}
@@ -118,10 +118,18 @@ func (this *Controller) StartTargetsFiltered(names []string) {
 	for name, t := range this.targets {
 		if filter[name] {
 			if err := t.Start(); err != nil {
-				fmt.Fprintf(os.Stderr, "[runctl] Warning: failed to start %s: %v\n", name, err)
+				this.logStartFailure(name, t, err)
 			}
 		}
 	}
+}
+
+func (this *Controller) logStartFailure(name string, t *target, err error) {
+	msg := fmt.Sprintf("[runctl] Warning: failed to start %s: %v", name, err)
+	if logErr := t.appendRunLogMarker(msg); logErr != nil {
+		fmt.Fprintf(os.Stderr, "[runctl] Warning: failed to write %s run log: %v\n", name, logErr)
+	}
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 // StopTargets gracefully stops all targets (SIGTERM → 5s → SIGKILL).
