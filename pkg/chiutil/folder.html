@@ -585,11 +585,29 @@
             try {
                 const res = await fetch(path + '?preview=true');
                 const elapsed = Math.round(performance.now() - start);
+                const contentType = (res.headers.get('Content-Type') || '').toLowerCase();
                 const text = await res.text();
 
                 statusEl.textContent = res.status;
                 statusEl.classList.add(res.ok ? 'ok' : 'error');
                 timeEl.textContent = `${elapsed}ms`;
+
+                // HTML responses (typically the confirm-and-submit form for
+                // a POST endpoint registered via PostFunc with an Action)
+                // get rendered in an isolated iframe so their CSS/JS can't
+                // interact with the harness page.
+                if (contentType.includes('text/html')) {
+                    currentResponse = text;
+                    const iframe = document.createElement('iframe');
+                    iframe.className = 'viewer-iframe';
+                    iframe.style.width = '100%';
+                    iframe.style.height = '100%';
+                    iframe.style.border = '0';
+                    iframe.srcdoc = text;
+                    body.innerHTML = '';
+                    body.appendChild(iframe);
+                    return;
+                }
 
                 let formatted = text;
                 try {
@@ -762,10 +780,14 @@
                     return;
                 }
 
-                if (method === 'GET') {
+                if (method === 'GET' || method === 'POST') {
                     // Mark active
                     entriesEl.querySelectorAll('.entry').forEach(el => el.classList.remove('active'));
                     entry.classList.add('active');
+                    // Whether the entry is GET or POST, we GET the URL to load
+                    // it into the right-hand viewer. POST endpoints registered
+                    // via PostFunc with an Action serve their HTML form on
+                    // GET, so the user sees the form here and submits via POST.
                     loadEndpoint(path, method);
                 }
             });

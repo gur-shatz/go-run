@@ -470,16 +470,31 @@ func (this *RouteFolder) GetDesc(path, description string, handler http.HandlerF
 	this.router.Get(path, handler)
 }
 
-// Post registers a POST route and adds it to the index.
-func (this *RouteFolder) Post(path string, handler http.HandlerFunc) {
-	this.addEntry("POST", path, "")
-	this.router.Post(path, handler)
+// PostArgs configures a POST route registered via PostFunc. Handler is the
+// real POST endpoint; Action (optional) is rendered on GET so a browser
+// click on the entry — which is always GET — lands on a confirm-and-submit
+// page that POSTs back to the same path.
+type PostArgs struct {
+	Path        string
+	Description string
+	Handler     http.HandlerFunc
+
+	// Action, when non-nil, is registered as a GET on Path. Use Form or
+	// JsonForm to construct one. Leave nil for routes that are intended
+	// to be called only from CLI / programmatic clients.
+	Action Action
 }
 
-// PostDesc registers a POST route with a description.
-func (this *RouteFolder) PostDesc(path, description string, handler http.HandlerFunc) {
-	this.addEntry("POST", path, description)
-	this.router.Post(path, handler)
+// PostFunc registers a POST route and adds it to the index. If
+// args.Action is non-nil, it is also registered as the GET on the same
+// path so the harness's click-to-open behaviour shows a confirmation
+// form that submits via POST.
+func (this *RouteFolder) PostFunc(args PostArgs) {
+	this.addEntry("POST", args.Path, args.Description)
+	this.router.Post(args.Path, args.Handler)
+	if args.Action != nil {
+		this.router.Get(args.Path, args.Action.ServeHTML)
+	}
 }
 
 // Put registers a PUT route and adds it to the index.
