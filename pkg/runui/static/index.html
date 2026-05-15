@@ -160,10 +160,10 @@
       overflow-y: auto; overflow-x: hidden;
     }
     .vscroll-line {
-      height: 20px; line-height: 20px; padding: 0 0.75rem;
-      white-space: pre; overflow: hidden; text-overflow: ellipsis;
+      min-height: 20px; line-height: 20px; padding: 0 0.75rem;
+      white-space: pre-wrap; overflow-wrap: anywhere;
     }
-    .vscroll-line:hover { background: rgba(255,255,255,0.05); white-space: pre-wrap; word-break: break-all; height: auto; min-height: 20px; }
+    .vscroll-line:hover { background: rgba(255,255,255,0.05); }
     .vscroll-status {
       position: absolute; bottom: 8px; right: 20px; background: rgba(0,0,0,0.7);
       color: #aaa; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; z-index: 10;
@@ -634,6 +634,46 @@
   let autoTail = true;
   let scrollAbortCtrl = null;
 
+  function vscrollOffsetForLine(index) {
+    if (!vscrollState) return 0;
+    const clamped = Math.max(0, Math.min(index, vscrollState.totalLines));
+    let offset = clamped * LINE_HEIGHT;
+    for (const [line, height] of vscrollState.lineHeights) {
+      if (line < clamped) offset += height - LINE_HEIGHT;
+    }
+    return offset;
+  }
+
+  function vscrollTotalHeight() {
+    return vscrollOffsetForLine(vscrollState ? vscrollState.totalLines : 0);
+  }
+
+  function vscrollLineForOffset(offset) {
+    if (!vscrollState || vscrollState.totalLines === 0) return 0;
+    let lo = 0;
+    let hi = vscrollState.totalLines;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (vscrollOffsetForLine(mid + 1) <= offset) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return Math.min(lo, vscrollState.totalLines - 1);
+  }
+
+  function vscrollDispose() {
+    if (!vscrollState) return;
+    clearInterval(vscrollState.pollTimer);
+    if (vscrollState.resizeObserver) vscrollState.resizeObserver.disconnect();
+    if (scrollAbortCtrl) {
+      scrollAbortCtrl.abort();
+      scrollAbortCtrl = null;
+    }
+    vscrollState = null;
+  }
+
   function setDrawerMode(mode) {
     drawerMode = mode;
     const vp = document.getElementById('vscroll-viewport');
@@ -683,10 +723,7 @@
     document.getElementById('drawer-title').textContent = name + ' \u2014 backoffice';
     document.getElementById('log-drawer').classList.add('active');
     setDrawerMode('backoffice');
-    if (vscrollState) {
-      clearInterval(vscrollState.pollTimer);
-      vscrollState = null;
-    }
+    vscrollDispose();
     stopBoPoll();
     boErrorCount = 0;
     fetchAndRenderBackoffice(name);
@@ -783,10 +820,7 @@
 
   function closeDrawer() {
     document.getElementById('log-drawer').classList.remove('active');
-    if (vscrollState) {
-      clearInterval(vscrollState.pollTimer);
-      vscrollState = null;
-    }
+    vscrollDispose();
     stopBoPoll();
     drawerTarget = '';
     drawerStage = '';
@@ -832,11 +866,12 @@
     bottomPad.style.height = '0px';
     status.textContent = 'Loading...';
 
-    if (vscrollState) clearInterval(vscrollState.pollTimer);
+    vscrollDispose();
 
     vscrollState = {
       totalLines: 0,
       cache: new Map(),
+      lineHeights: new Map(),
       renderedFirst: 0,
       renderedLast: -1,
       fetching: false,
@@ -844,6 +879,7 @@
       pollTimer: null,
       lastFetchRange: null,
       rendering: false,
+      resizeObserver: null,
     };
 
     // Remove old scroll listener via AbortController, add new one
@@ -860,11 +896,31 @@
       }
     }, { signal: ac.signal });
 
+    if (window.ResizeObserver) {
+      let resizeRaf = null;
+      vscrollState.resizeObserver = new ResizeObserver(function() {
+        if (!vscrollState || vscrollState.rendering) return;
+        if (!resizeRaf) {
+          resizeRaf = requestAnimationFrame(function() {
+            resizeRaf = null;
+            if (!vscrollState) return;
+            const savedScrollTop = viewport.scrollTop;
+            vscrollState.lineHeights.clear();
+            vscrollUpdateHeight();
+            viewport.scrollTop = vscrollState.followTail ? viewport.scrollHeight : savedScrollTop;
+            vscrollOnScroll();
+          });
+        }
+      });
+      vscrollState.resizeObserver.observe(viewport);
+    }
+
     // Initial fetch — get totalLines first
     const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage + '&offset=0&limit=0';
     fetch(url)
       .then(r => r.json())
       .then(data => {
+        if (!vscrollState) return;
         if (data.error) {
           status.textContent = 'Error: ' + data.error;
           return;
@@ -894,11 +950,9 @@
     if (!vscrollState) return;
     const topPad = document.getElementById('vscroll-top-pad');
     const bottomPad = document.getElementById('vscroll-bottom-pad');
-    // All height math based purely on line counts, never DOM measurement
-    const totalH = vscrollState.totalLines * LINE_HEIGHT;
+    const totalH = vscrollTotalHeight();
     const topH = parseInt(topPad.style.height) || 0;
-    const renderedCount = vscrollState.renderedLast - vscrollState.renderedFirst + 1;
-    const contentH = Math.max(0, renderedCount) * LINE_HEIGHT;
+    const contentH = vscrollOffsetForLine(vscrollState.renderedLast + 1) - vscrollOffsetForLine(vscrollState.renderedFirst);
     bottomPad.style.height = Math.max(0, totalH - topH - contentH) + BOTTOM_PAD_EXTRA + 'px';
   }
 
@@ -907,7 +961,7 @@
     const viewport = document.getElementById('vscroll-viewport');
     const viewH = viewport.clientHeight;
     const scrollTop = viewport.scrollTop;
-    const totalH = vscrollState.totalLines * LINE_HEIGHT;
+    const totalH = vscrollTotalHeight();
 
     // Detect if at bottom (only follow if autoTail is on)
     if (autoTail) {
@@ -916,8 +970,8 @@
       vscrollState.followTail = false;
     }
 
-    const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
-    const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+    const firstVisible = vscrollLineForOffset(scrollTop);
+    const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
 
     const fetchFirst = Math.max(0, firstVisible - FETCH_BUFFER);
     const fetchLast = Math.min(vscrollState.totalLines - 1, lastVisible + FETCH_BUFFER);
@@ -956,8 +1010,8 @@
       const viewport = document.getElementById('vscroll-viewport');
       const viewH = viewport.clientHeight;
       const scrollTop = viewport.scrollTop;
-      const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
-      const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+      const firstVisible = vscrollLineForOffset(scrollTop);
+      const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
       vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
       return;
     }
@@ -1006,8 +1060,8 @@
         const viewport = document.getElementById('vscroll-viewport');
         const viewH = viewport.clientHeight;
         const scrollTop = viewport.scrollTop;
-        const firstVisible = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT));
-        const lastVisible = Math.min(vscrollState.totalLines - 1, Math.ceil((scrollTop + viewH) / LINE_HEIGHT));
+        const firstVisible = vscrollLineForOffset(scrollTop);
+        const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
         vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
       })
       .catch(() => {
@@ -1038,8 +1092,10 @@
     // Guard: prevent scroll events triggered by DOM changes from re-entering
     vscrollState.rendering = true;
     const savedScrollTop = viewport.scrollTop;
+    const anchorLine = Math.max(rf, Math.min(firstVisible, rl));
+    const anchorOffsetBefore = vscrollOffsetForLine(anchorLine);
 
-    topPad.style.height = (rf * LINE_HEIGHT) + 'px';
+    topPad.style.height = vscrollOffsetForLine(rf) + 'px';
 
     // Build HTML for rendered lines
     let html = '';
@@ -1049,15 +1105,22 @@
     }
     content.innerHTML = html;
 
-    const renderedCount = rl - rf + 1;
-    bottomPad.style.height = Math.max(0, (vscrollState.totalLines - rf - renderedCount) * LINE_HEIGHT) + BOTTOM_PAD_EXTRA + 'px';
+    const lineEls = content.querySelectorAll('.vscroll-line');
+    for (let i = 0; i < lineEls.length; i++) {
+      vscrollState.lineHeights.set(rf + i, Math.max(LINE_HEIGHT, lineEls[i].offsetHeight));
+    }
+
+    const contentH = vscrollOffsetForLine(rl + 1) - vscrollOffsetForLine(rf);
+    bottomPad.style.height = Math.max(0, vscrollTotalHeight() - vscrollOffsetForLine(rf) - contentH) + BOTTOM_PAD_EXTRA + 'px';
 
     vscrollState.renderedFirst = rf;
     vscrollState.renderedLast = rl;
 
-    // Restore scroll position if DOM changes shifted it
-    if (!vscrollState.followTail && viewport.scrollTop !== savedScrollTop) {
-      viewport.scrollTop = savedScrollTop;
+    if (vscrollState.followTail) {
+      viewport.scrollTop = viewport.scrollHeight;
+    } else {
+      // Keep the first visible line anchored if wrapping changed measured heights.
+      viewport.scrollTop = savedScrollTop + (vscrollOffsetForLine(anchorLine) - anchorOffsetBefore);
     }
 
     vscrollState.rendering = false;

@@ -5,6 +5,7 @@ package chiutil
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -90,6 +91,7 @@ type objectsFolder[T any] struct {
 	paramName      string
 	mapper         ObjectMapper[T]
 	instanceRoutes []*RouteEntry
+	flatJSON       bool
 }
 
 // Title sets the folder title displayed in the index.
@@ -101,6 +103,18 @@ func (this *objectsFolder[T]) Title(title string) *objectsFolder[T] {
 // Description sets the folder description displayed in the index.
 func (this *objectsFolder[T]) Description(desc string) *objectsFolder[T] {
 	this.folder.description = desc
+	return this
+}
+
+// FlatJSON adds /{id}.json endpoints that encode items directly and makes
+// list JSON entries point at those flat item documents.
+func (this *objectsFolder[T]) FlatJSON() *objectsFolder[T] {
+	if this.flatJSON {
+		return this
+	}
+	this.flatJSON = true
+
+	this.folder.router.Get("/{"+this.paramName+"}.json", this.serveFlatItemJSON)
 	return this
 }
 
@@ -202,12 +216,19 @@ func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Reque
 		if name == "" {
 			name = item.ID
 		}
+		path := item.ID + "/"
+		isFolder := true
+		if this.flatJSON {
+			path = url.PathEscape(item.ID) + ".json"
+			isFolder = false
+		}
+
 		entries = append(entries, &RouteEntry{
 			Name:        name,
 			Method:      "GET",
-			Path:        item.ID + "/",
+			Path:        path,
 			Description: item.Description,
-			IsFolder:    true,
+			IsFolder:    isFolder,
 		})
 	}
 
@@ -225,6 +246,19 @@ func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Reque
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
+}
+
+// serveFlatItemJSON serves the item itself at /{id}.json.
+func (this *objectsFolder[T]) serveFlatItemJSON(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, this.paramName)
+	item, found := this.mapper.GetItem(id)
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
 }
 
 // serveItemJSON serves the routes available for a specific item.

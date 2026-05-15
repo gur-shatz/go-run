@@ -70,7 +70,7 @@ var _ = Describe("ObjectMapper", func() {
 		mapper *TestAccountMapper
 	)
 
-	BeforeEach(func() {
+	setupFolder := func(flatJSON bool) {
 		router = chi.NewRouter()
 		mapper = &TestAccountMapper{}
 
@@ -80,9 +80,16 @@ var _ = Describe("ObjectMapper", func() {
 
 		// Create folder and register mapper
 		folder := chiutil.NewRouteFolder(router, "/backoffice")
-		chiutil.ObjectsFolder(folder, "accounts", mapper).
+		objectsFolder := chiutil.ObjectsFolder(folder, "accounts", mapper).
 			Title("Accounts").
 			Description("Test accounts")
+		if flatJSON {
+			objectsFolder.FlatJSON()
+		}
+	}
+
+	BeforeEach(func() {
+		setupFolder(false)
 	})
 
 	Describe("Listing", func() {
@@ -142,6 +149,59 @@ var _ = Describe("ObjectMapper", func() {
 
 		It("should return 404 for non-existent item", func() {
 			req := httptest.NewRequest("GET", "/backoffice/accounts/non-existent/details", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("Flat JSON", func() {
+		BeforeEach(func() {
+			setupFolder(true)
+		})
+
+		It("should list items as flat JSON documents", func() {
+			req := httptest.NewRequest("GET", "/backoffice/accounts/index.json", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var index chiutil.FolderIndex
+			err := json.Unmarshal(w.Body.Bytes(), &index)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(index.Entries).To(HaveLen(2))
+
+			var acc1Entry *chiutil.RouteEntry
+			for _, e := range index.Entries {
+				if e.Name == "acc-1" {
+					acc1Entry = e
+					break
+				}
+			}
+			Expect(acc1Entry).NotTo(BeNil())
+			Expect(acc1Entry.Path).To(Equal("acc-1.json"))
+			Expect(acc1Entry.IsFolder).To(BeFalse())
+		})
+
+		It("should serve an item as JSON", func() {
+			req := httptest.NewRequest("GET", "/backoffice/accounts/acc-1.json", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Header().Get("Content-Type")).To(Equal("application/json"))
+
+			var result TestAccount
+			err := json.Unmarshal(w.Body.Bytes(), &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ID).To(Equal("acc-1"))
+			Expect(result.Name).To(Equal("Acme Corp"))
+		})
+
+		It("should return 404 for non-existent flat JSON item", func() {
+			req := httptest.NewRequest("GET", "/backoffice/accounts/non-existent.json", nil)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
