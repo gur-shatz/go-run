@@ -23,10 +23,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	// Register services with backoffice
-	dbSvc := backoffice.CreateServiceStatus("database", true)
-	cacheSvc := backoffice.CreateServiceStatus("cache", false)
-
 	// Set up backoffice with custom endpoints.
 	// If not running under go-run, ListenAndServeBackground is a no-op.
 	bo := backoffice.New()
@@ -59,22 +55,6 @@ func main() {
 	bo.ListenAndServeBackground(ctx)
 	bo.ListenAndServeTCPBackground(ctx, ":9090")
 	fmt.Println("backoffice-demo: backoffice TCP on :9090 (user: admin)")
-
-	// Simulate startup and intermittent cache failure
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		dbSvc.SetStatus(backoffice.OK, map[string]string{"version": "0.1.0", "port": port})
-		cacheSvc.SetStatus(backoffice.OK, nil)
-		fmt.Println("backoffice-demo: services marked OK")
-
-		time.Sleep(5 * time.Second)
-		cacheSvc.SetStatus(backoffice.Down, map[string]string{"error": "connection refused"})
-		fmt.Println("backoffice-demo: cache DOWN")
-
-		time.Sleep(3 * time.Second)
-		cacheSvc.SetStatus(backoffice.OK, nil)
-		fmt.Println("backoffice-demo: cache recovered")
-	}()
 
 	// Main HTTP server
 	mux := http.NewServeMux()

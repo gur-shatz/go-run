@@ -14,7 +14,6 @@ import (
 
 	"github.com/gur-shatz/go-run/internal/configutil"
 	"github.com/gur-shatz/go-run/internal/sumfile"
-	"github.com/gur-shatz/go-run/pkg/backoffice"
 	boclient "github.com/gur-shatz/go-run/pkg/backoffice/client"
 	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
@@ -81,8 +80,7 @@ type TargetStatus struct {
 	Links []Link      `json:"links,omitempty"`
 	Logs  *LogsConfig `json:"logs,omitempty"`
 
-	BackofficeReady  bool                   `json:"backoffice_ready"`
-	BackofficeStatus *backoffice.StatusInfo `json:"backoffice_status,omitempty"`
+	BackofficeReady bool `json:"backoffice_ready"`
 }
 
 // target wraps a target config and manages its lifecycle.
@@ -620,18 +618,6 @@ func (this *target) Status() TargetStatus {
 		Links:              links,
 		Logs:               this.tcfg.Logs,
 		BackofficeReady:    this.backofficeReady,
-	}
-
-	// Best-effort fetch of backoffice status
-	if this.backofficeClient != nil {
-		boClient := this.backofficeClient
-		this.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		if info, err := boClient.Status(ctx); err == nil {
-			ts.BackofficeStatus = info
-		}
-		this.mu.Lock()
 	}
 
 	return ts

@@ -2,13 +2,9 @@ package client
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
-
-	"github.com/gur-shatz/go-run/pkg/backoffice"
 )
 
 // Client is a parent-side HTTP client that connects to a child's
@@ -36,32 +32,9 @@ func New(sockPath string) *Client {
 	}
 }
 
-// Status fetches the /status endpoint from the child's backoffice.
-func (this *Client) Status(ctx context.Context) (*backoffice.StatusInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://backoffice/status", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := this.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("backoffice status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("backoffice status: HTTP %d", resp.StatusCode)
-	}
-
-	var info backoffice.StatusInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("backoffice status decode: %w", err)
-	}
-	return &info, nil
-}
-
 // Alive returns true if the backoffice is reachable.
 func (this *Client) Alive(ctx context.Context) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://backoffice/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://backoffice/index.json", nil)
 	if err != nil {
 		return false
 	}

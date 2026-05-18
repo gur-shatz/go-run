@@ -10,9 +10,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"runtime"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,262 +31,7 @@ const (
 	AuthBoth                      // protect both
 )
 
-// ServiceLevel represents the severity level of a service.
-type ServiceLevel int
-
-const (
-	OK                ServiceLevel = 0
-	RunningWithErrors ServiceLevel = 1
-	Degraded          ServiceLevel = 2
-	Down              ServiceLevel = 3
-)
-
-var serviceLevelNames = map[ServiceLevel]string{
-	OK:                "OK",
-	RunningWithErrors: "RUNNING_WITH_ERRORS",
-	Degraded:          "DEGRADED",
-	Down:              "DOWN",
-}
-
-var serviceLevelByName = map[string]ServiceLevel{
-	"OK":                  OK,
-	"RUNNING_WITH_ERRORS": RunningWithErrors,
-	"DEGRADED":            Degraded,
-	"DOWN":                Down,
-}
-
-func (this ServiceLevel) String() string {
-	if name, ok := serviceLevelNames[this]; ok {
-		return name
-	}
-	return fmt.Sprintf("ServiceLevel(%d)", int(this))
-}
-
-func (this ServiceLevel) MarshalJSON() ([]byte, error) {
-	if name, ok := serviceLevelNames[this]; ok {
-		return json.Marshal(name)
-	}
-	return nil, fmt.Errorf("unknown ServiceLevel: %d", int(this))
-}
-
-func (this *ServiceLevel) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
-		return err
-	}
-	if level, ok := serviceLevelByName[s]; ok {
-		*this = level
-		return nil
-	}
-	return fmt.Errorf("unknown ServiceLevel: %q", s)
-}
-
-// HistoryEntry records a level change for a service.
-type HistoryEntry struct {
-	Timestamp time.Time    `json:"timestamp"`
-	Level     ServiceLevel `json:"level"`
-	Data      any          `json:"data,omitempty"`
-}
-
-// ServiceStatusInfo is the per-service status in the JSON response.
-type ServiceStatusInfo struct {
-	Name        string         `json:"name"`
-	Level       ServiceLevel   `json:"level"`
-	Critical    bool           `json:"critical"`
-	TimeInState string         `json:"time_in_state"`
-	Data        any            `json:"data,omitempty"`
-	History     []HistoryEntry `json:"history"`
-	UptimePct   float64        `json:"uptime_pct"`
-}
-
-// StatusInfo is the JSON-serializable status returned by GET /status.
-type StatusInfo struct {
-	GlobalLevel ServiceLevel        `json:"global_level"`
-	CausedBy    string              `json:"caused_by"`
-	Services    []ServiceStatusInfo `json:"services"`
-}
-
 var startTime = time.Now()
-
-// singleton state
-var (
-	mu       sync.RWMutex
-	services = map[string]*serviceState{}
-	// timeNow is used for testing; defaults to time.Now
-	timeNow = time.Now
-)
-
-const maxHistory = 10
-
-type serviceState struct {
-	name       string
-	critical   bool
-	level      ServiceLevel
-	data       any
-	lastChange time.Time
-	history    []HistoryEntry
-	created    time.Time
-	errorTime  time.Duration // accumulated Degraded/Down time
-	lastTick   time.Time     // last time errorTime was updated
-}
-
-// ServiceHandle is a handle returned by CreateServiceStatus for updating a service's status.
-type ServiceHandle struct {
-	name string
-}
-
-// SetStatus updates the service's level and data.
-func (this *ServiceHandle) SetStatus(level ServiceLevel, data any) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	svc, ok := services[this.name]
-	if !ok {
-		return
-	}
-	setServiceStatus(svc, level, data)
-}
-
-func setServiceStatus(svc *serviceState, level ServiceLevel, data any) {
-	now := timeNow()
-
-	// Accumulate error time if old level was Degraded or Down
-	if svc.level >= Degraded {
-		svc.errorTime += now.Sub(svc.lastTick)
-	}
-
-	// If level changed, append to history
-	if level != svc.level {
-		entry := HistoryEntry{
-			Timestamp: now,
-			Level:     level,
-			Data:      data,
-		}
-		svc.history = append(svc.history, entry)
-		if len(svc.history) > maxHistory {
-			svc.history = svc.history[len(svc.history)-maxHistory:]
-		}
-		svc.lastChange = now
-	}
-
-	svc.level = level
-	svc.data = data
-	svc.lastTick = now
-}
-
-// CreateServiceStatus registers a new service. Starts at OK.
-// critical=true means it can push global level to any severity.
-// critical=false caps its contribution to global at RunningWithErrors.
-func CreateServiceStatus(name string, critical bool) *ServiceHandle {
-	mu.Lock()
-	defer mu.Unlock()
-
-	now := timeNow()
-	svc := &serviceState{
-		name:       name,
-		critical:   critical,
-		level:      OK,
-		lastChange: now,
-		created:    now,
-		lastTick:   now,
-		history:    []HistoryEntry{{Timestamp: now, Level: OK}},
-	}
-	services[name] = svc
-
-	return &ServiceHandle{name: name}
-}
-
-// GetStatus returns a snapshot of the current status.
-func GetStatus() StatusInfo {
-	mu.RLock()
-	defer mu.RUnlock()
-
-	now := timeNow()
-
-	// Sort service names for deterministic output
-	names := make([]string, 0, len(services))
-	for name := range services {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	svcInfos := make([]ServiceStatusInfo, 0, len(services))
-	globalLevel := OK
-	causedBy := ""
-
-	for _, name := range names {
-		svc := services[name]
-
-		// Compute uptime
-		totalTime := now.Sub(svc.created)
-		errorTime := svc.errorTime
-		if svc.level >= Degraded {
-			errorTime += now.Sub(svc.lastTick)
-		}
-		var uptimePct float64
-		if totalTime > 0 {
-			uptimePct = 100.0 * (1.0 - float64(errorTime)/float64(totalTime))
-			if uptimePct < 0 {
-				uptimePct = 0
-			}
-		} else {
-			uptimePct = 100.0
-		}
-
-		// Time in state
-		timeInState := now.Sub(svc.lastChange).Round(time.Second).String()
-
-		// Copy history
-		history := make([]HistoryEntry, len(svc.history))
-		copy(history, svc.history)
-
-		svcInfos = append(svcInfos, ServiceStatusInfo{
-			Name:        svc.name,
-			Level:       svc.level,
-			Critical:    svc.critical,
-			TimeInState: timeInState,
-			Data:        svc.data,
-			History:     history,
-			UptimePct:   uptimePct,
-		})
-
-		// Compute contribution to global level
-		contribution := svc.level
-		if !svc.critical && contribution > RunningWithErrors {
-			contribution = RunningWithErrors
-		}
-		if contribution > globalLevel {
-			globalLevel = contribution
-			causedBy = name
-		}
-	}
-
-	return StatusInfo{
-		GlobalLevel: globalLevel,
-		CausedBy:    causedBy,
-		Services:    svcInfos,
-	}
-}
-
-// ResetStateForTest resets the singleton state. Used in tests.
-func ResetStateForTest() {
-	mu.Lock()
-	services = map[string]*serviceState{}
-	timeNow = time.Now
-	mu.Unlock()
-}
-
-// SetTimeNowForTest overrides the time function. Used in tests.
-func SetTimeNowForTest(fn func() time.Time) {
-	mu.Lock()
-	timeNow = fn
-	mu.Unlock()
-}
-
-func handleStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(GetStatus())
-}
 
 // sensitiveKeys are substrings that mark an env var as sensitive.
 var sensitiveKeys = []string{"SECRET", "PASSWORD", "TOKEN", "KEY", "CREDENTIAL"}
@@ -357,7 +100,7 @@ type Backoffice struct {
 }
 
 // New creates a new Backoffice instance with built-in routes
-// (status, env, info, debug/pprof) already registered.
+// (env, info, debug/pprof) already registered.
 func New() *Backoffice {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -365,7 +108,6 @@ func New() *Backoffice {
 	folder.ServiceName("Backoffice")
 
 	// Built-in routes
-	folder.GetDesc("/status", "Health / readiness status", handleStatus)
 	folder.GetDesc("/env", "Environment variables (sensitive values masked)", handleEnv)
 	folder.GetDesc("/info", "Process and runtime information", handleInfo)
 
