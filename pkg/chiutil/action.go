@@ -26,12 +26,18 @@ var (
 	actionJsonFormTpl = template.Must(template.New("jsonform").Parse(actionJsonFormHTML))
 )
 
+const (
+	actionViewerHeader = "X-Chiutil-Viewer"
+	actionViewerIframe = "iframe"
+)
+
 // formAction renders one labelled text input per field and submits as a
 // standard application/x-www-form-urlencoded POST. The Go handler reads
 // each value via r.FormValue(field).
 type formAction struct {
-	Text   string
-	Fields []string
+	Text       string
+	Fields     []string
+	ViewerMode string
 }
 
 // Form returns an Action that renders a small HTML page with a heading
@@ -41,11 +47,14 @@ type formAction struct {
 func Form(text string, fields []string) Action {
 	cp := make([]string, len(fields))
 	copy(cp, fields)
-	return &formAction{Text: text, Fields: cp}
+	return &formAction{Text: text, Fields: cp, ViewerMode: actionViewerIframe}
 }
 
 func (this *formAction) ServeHTML(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if this.ViewerMode != "" {
+		w.Header().Set(actionViewerHeader, this.ViewerMode)
+	}
 	data := struct {
 		Text    string
 		Fields  []formField
@@ -95,6 +104,7 @@ func JsonForm(text, defaultBody string) Action {
 
 func (this *jsonFormAction) ServeHTML(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set(actionViewerHeader, actionViewerIframe)
 	data := struct {
 		Text        string
 		DefaultBody string
