@@ -27,6 +27,11 @@ type RouteEntry struct {
 	Description string `json:"description,omitempty"`
 	IsFolder    bool   `json:"isFolder,omitempty"`
 	IsExternal  bool   `json:"isExternal,omitempty"`
+
+	// subfolder, when non-nil, lets serveJSON pull a live description from
+	// the child folder if no explicit one was set on the entry. This handles
+	// the common builder order: parent.Folder("x").Description("...").
+	subfolder *RouteFolder
 }
 
 // FolderIndex is the JSON structure served at index.json.
@@ -112,14 +117,15 @@ func (this *RouteFolder) ServiceName(name string) *RouteFolder {
 // Folder creates a nested RouteFolder and adds it to the index.
 func (this *RouteFolder) Folder(path string) *RouteFolder {
 	name := strings.Trim(path, "/")
-	this.entries = append(this.entries, &RouteEntry{
-		Name:     name,
-		Method:   "GET",
-		Path:     name + "/",
-		IsFolder: true,
-	})
 	child := NewRouteFolderOn(this.router, "/"+name)
 	child.serviceName = this.serviceName // Propagate service name to child
+	this.entries = append(this.entries, &RouteEntry{
+		Name:      name,
+		Method:    "GET",
+		Path:      name + "/",
+		IsFolder:  true,
+		subfolder: child,
+	})
 	return child
 }
 
@@ -199,10 +205,11 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 
 	// Add folder entry to parent's index
 	this.entries = append(this.entries, &RouteEntry{
-		Name:     cleanName,
-		Method:   "GET",
-		Path:     cleanName + "/",
-		IsFolder: true,
+		Name:      cleanName,
+		Method:    "GET",
+		Path:      cleanName + "/",
+		IsFolder:  true,
+		subfolder: listingFolder,
 	})
 
 	return wildcard
@@ -422,10 +429,11 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 	// Mount and add to parent index
 	this.router.Mount("/"+cleanName, folder.router)
 	this.entries = append(this.entries, &RouteEntry{
-		Name:     cleanName,
-		Method:   "GET",
-		Path:     cleanName + "/",
-		IsFolder: true,
+		Name:      cleanName,
+		Method:    "GET",
+		Path:      cleanName + "/",
+		IsFolder:  true,
+		subfolder: folder,
 	})
 
 	return folder
@@ -672,10 +680,28 @@ func (this *RouteFolder) serveJSON(w http.ResponseWriter, _ *http.Request) {
 		Title:       this.title,
 		Description: this.description,
 		Path:        this.basePath,
-		Entries:     this.entries,
+		Entries:     resolveEntries(this.entries),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
+}
+
+// resolveEntries returns a copy of entries with each sub-folder entry's
+// description filled in from the child folder if the entry itself has none.
+// This lets descriptions set after .Folder() (the typical builder order)
+// surface in the parent's index.
+func resolveEntries(entries []*RouteEntry) []*RouteEntry {
+	out := make([]*RouteEntry, len(entries))
+	for i, e := range entries {
+		if e.subfolder != nil && e.Description == "" && e.subfolder.description != "" {
+			copy := *e
+			copy.Description = e.subfolder.description
+			out[i] = &copy
+		} else {
+			out[i] = e
+		}
+	}
+	return out
 }
 
 func normalizePath(path string) string {

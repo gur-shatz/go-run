@@ -38,4 +38,22 @@ var _ = Describe("RouteFolder", func() {
 		Expect(index.Entries[0].Name).To(Equal("status"))
 		Expect(index.Entries[0].Description).To(Equal("Status page"))
 	})
+
+	It("shows a sub-folder's description on the parent index", func() {
+		router := chi.NewRouter()
+		parent := chiutil.NewRouteFolder(router, "/backoffice")
+		parent.Folder("accounts").Description("Customer accounts")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.Entries).To(HaveLen(1))
+		Expect(index.Entries[0].Name).To(Equal("accounts"))
+		Expect(index.Entries[0].IsFolder).To(BeTrue())
+		Expect(index.Entries[0].Description).To(Equal("Customer accounts"))
+	})
 })
