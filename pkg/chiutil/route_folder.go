@@ -470,6 +470,18 @@ func (this *RouteFolder) GetDesc(path, description string, handler http.HandlerF
 	this.router.Get(path, handler)
 }
 
+// GetHandler registers a GET route backed by an http.Handler and adds it to the index.
+func (this *RouteFolder) GetHandler(path string, handler http.Handler) {
+	this.addEntry("GET", path, "")
+	this.router.Get(path, handler.ServeHTTP)
+}
+
+// GetHandlerDesc registers a GET route backed by an http.Handler with a description.
+func (this *RouteFolder) GetHandlerDesc(path, description string, handler http.Handler) {
+	this.addEntry("GET", path, description)
+	this.router.Get(path, handler.ServeHTTP)
+}
+
 // PostArgs configures a POST route registered via PostFunc. Handler is the
 // real POST endpoint; Action (optional) is rendered on GET so a browser
 // click on the entry — which is always GET — lands on a confirm-and-submit
@@ -599,7 +611,6 @@ func (this *RouteFolder) MountDesc(path, description string, handler http.Handle
 	this.router.Mount(path, handler)
 }
 
-
 // Static serves static files from the given directory.
 func (this *RouteFolder) Static(path, dir string) {
 	name := strings.Trim(path, "/")
@@ -650,4 +661,3 @@ func normalizePath(path string) string {
 	}
 	return path
 }
-

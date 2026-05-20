@@ -10,23 +10,26 @@ HTML.
 
 ## Intended API
 
-The core type is a renderer that implements `http.Handler`:
+The core type is `Handler`, which implements `http.Handler`.
+`Renderer()` returns a new `*Handler`; the constructor is named for the fluent
+call site because Go does not allow `type Renderer` and `func Renderer` in the
+same package.
 
 ```go
-type Renderer struct {
+type Handler struct {
 	// internal render configuration
 }
 
-func Renderer() *Renderer
-func Render(value any) *Renderer
-func Loader[T any](loader func(*http.Request) (T, error)) *Renderer
+func Renderer() *Handler
+func Render(value any) *Handler
+func Loader[T any](loader func(*http.Request) (T, error)) *Handler
 
-func (r *Renderer) WithObject(value any) *Renderer
-func (r *Renderer) WithLoader(loader func(*http.Request) (any, error)) *Renderer
-func (r *Renderer) WithTitle(title string) *Renderer
-func (r *Renderer) WithColumns(columns ...string) *Renderer
-func (r *Renderer) WithEmptyText(text string) *Renderer
-func (r *Renderer) ServeHTTP(w http.ResponseWriter, req *http.Request)
+func (h *Handler) WithObject(value any) *Handler
+func (h *Handler) WithLoader(loader func(*http.Request) (any, error)) *Handler
+func (h *Handler) WithTitle(title string) *Handler
+func (h *Handler) WithColumns(columns ...string) *Handler
+func (h *Handler) WithEmptyText(text string) *Handler
+func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 ```
 
 `Render` is for already available values:
@@ -134,6 +137,8 @@ Initial behavior should stay intentionally small:
 - `time.Time` renders as a readable timestamp.
 - `fmt.Stringer` values render through `String()`.
 - Output is escaped by default.
+- `htmlview:"Label"` changes a field label.
+- `htmlview:"-"` hides a field from default and column-selected rendering.
 
 `WithColumns` selects and orders fields for struct and slice rendering:
 
@@ -152,4 +157,3 @@ The result should be a regular HTML table with only those fields, in that order.
 - Do not use JSON/YAML as an intermediate rendering format.
 - Do not render raw HTML by default.
 - Do not add broad styling/configuration APIs until real handlers need them.
-
