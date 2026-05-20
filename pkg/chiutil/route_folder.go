@@ -509,6 +509,33 @@ func (this *RouteFolder) PostFunc(args PostArgs) {
 	}
 }
 
+// Endpoint registers a semantic operation endpoint backed by a single
+// http.Handler value and adds that operation to the folder index.
+//
+// The method argument is the operation's real method and the method shown in
+// the backoffice index. For example, a protobuf RPC operation should pass
+// "POST" because POST is the method used by programmatic clients.
+//
+// In addition to registering that real method, Endpoint also registers GET on
+// the same path and routes it to the same handler. This is deliberate: folder
+// index links are navigated with GET by browsers, while richer endpoint
+// handlers often know how to render their own human-readable documentation or
+// confirmation page for GET. The handler therefore owns both surfaces:
+//
+//   - METHOD path: the actual operation used by clients.
+//   - GET path: the browser/backoffice representation of that operation.
+//
+// Use Endpoint when one handler object understands the operation method and its
+// GET representation. If GET should be rendered by a separate Action, keep using
+// PostFunc so the split remains explicit at the call site.
+func (this *RouteFolder) Endpoint(method, path, description string, handler http.Handler) {
+	this.addEntry(method, path, description)
+	this.router.Method(method, path, handler)
+	if method != http.MethodGet {
+		this.router.Get(path, handler.ServeHTTP)
+	}
+}
+
 // Put registers a PUT route and adds it to the index.
 func (this *RouteFolder) Put(path string, handler http.HandlerFunc) {
 	this.addEntry("PUT", path, "")
