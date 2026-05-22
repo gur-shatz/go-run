@@ -45,7 +45,11 @@ example-supervisor-fixture:
 	@printf '%s\n' '$(SUPERVISOR_VERSION)' > $(SUPERVISOR_FIXTURE)/hello/versions/required.txt
 	@rm -rf bin/.fixture-stage && mkdir -p bin/.fixture-stage/bin
 	cd examples/supervisor/hello && go build -o ../../../bin/.fixture-stage/bin/hello .
-	tar -C bin/.fixture-stage -czf $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz bin/hello
+	# Vendor-shipped files that ride along inside the tarball: a baseline
+	# defaults.yml and any *.tmpl the supervisor will render on launch.
+	cp examples/supervisor/hello/defaults.yml bin/.fixture-stage/defaults.yml
+	cp examples/supervisor/hello/greeting.txt.tmpl bin/.fixture-stage/greeting.txt.tmpl
+	tar -C bin/.fixture-stage -czf $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz bin/hello defaults.yml greeting.txt.tmpl
 	@rm -rf bin/.fixture-stage
 	@echo "fixture ready: $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz"
 

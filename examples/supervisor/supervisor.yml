@@ -18,6 +18,14 @@ supervisor:
   metric_labels:
     source: example-supervisor
 
+# Template context for every component's *.tmpl files. Overrides keys from
+# the version's defaults.yml. The hello example ships defaults.yml with
+# GREETING="Hello (vendor default)"; the line below overrides it so the
+# rendered greeting.txt — and the /greet endpoint — reflect the customer
+# value instead.
+vars:
+  GREETING: "Hi from the customer's supervisor.yml"
+
 # file:// remote — points at the ./fixture directory next to this file.
 # `make example-supervisor` builds the hello component and writes
 # fixture/hello/{versions/required.txt,images/v1_<os>_<arch>.tar.gz}
@@ -34,14 +42,19 @@ remote:
   signature_public_key_path: "" # empty: skip Ed25519 verify (dev / trusted local FS only)
 
 # Every component declares its port — that's the well-known HTTP endpoint the
-# child binds. The supervisor reflects it as ${MONITOR_PORT} / OP_MONITOR_PORT,
-# and surfaces it (plus the URL paths below) in /state so the control plane
-# can compose http://127.0.0.1:<port><path>.
+# child binds. The supervisor surfaces it (plus the URL paths below) in /state
+# so the control plane can compose http://127.0.0.1:<port><path>.
+#
+# `command` is plain argv (shlex-split). The supervisor sets the child's
+# working directory to the version dir, so `./bin/hello` resolves to the
+# binary inside the tarball. The five launch facts flow as OP_* env vars
+# (OP_MONITOR_PORT, OP_VERSION, OP_VERSION_DIR, OP_STATE_DIR, OP_KILL_SOCK);
+# hello reads OP_MONITOR_PORT if --port isn't passed.
 components:
   - name: hello
     description: "A simple HTTP server"
     port: 18090
-    command: "${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"
+    command: "./bin/hello --port=18090"
     env:
       LOG_LEVEL: info
     # urls block is optional — these are the defaults the supervisor expects.

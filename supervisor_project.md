@@ -136,7 +136,7 @@ supervisorConfig: # rendered into a ConfigMap, mounted at /etc/go-run/config.yml
     signature_public_key_path: /etc/go-run/update.pub
   components:
     - name: x
-      command: "${VERSION_DIR}/bin/x --monitor=:${MONITOR_PORT} --kill=${KILL_SOCK}"
+      command: "./bin/x"   # cwd=version dir; OP_MONITOR_PORT etc. via env
 
 signaturePublicKey: | # rendered into a ConfigMap (public key, not a Secret)
   -----BEGIN PUBLIC KEY-----
@@ -175,7 +175,7 @@ Pod-level concerns:
 
 ### Monitoring port
 
-Each component exposes an HTTP server on a port the supervisor allocates and passes via env (`OP_MONITOR_PORT`) and template variable (`${MONITOR_PORT}`). The child is expected to serve at least:
+Each component declares a port in its config; the supervisor exports it as `OP_MONITOR_PORT` in the child's environment. The child is expected to serve at least:
 
 - `GET /healthz`: 200 OK if the process considers itself alive.
 - `GET /readyz`: 200 OK if ready to accept work.
@@ -206,7 +206,7 @@ Each component holds three small text files. `stable.txt` and `current.txt` each
 - `current.txt`: the version the supervisor is currently running.
 - `rejects.txt`: versions that were rejected, and should not be re-downloaded.
 
-Each version is a folder for that component with the version name. The folder is created once the archive has been fully extracted and is never modified after that. The three text files name versions; the version folder is where the bits live. The three files are the source of truth; `state.json` is a derived journal that can be rebuilt by scanning them.
+Each version is a folder for that component with the version name. The folder is created once the archive has been fully extracted. Vendor-shipped contents (the binary, any `*.tmpl` files, an optional `defaults.yml`) are never modified after extraction. The supervisor is allowed to write **rendered template outputs** (see §"Template rendering") and their `.bak` backups into the same folder; nothing else gets written there. The three text files (`stable.txt`, `current.txt`, `rejects.txt`) name versions; the version folder is where the bits live. The three files are the source of truth; `state.json` is a derived journal that can be rebuilt by scanning them.
 
 All three files are updated by `WriteFile → fsync → Rename` to make the swap atomic. The supervisor is the only writer.
 
@@ -221,7 +221,8 @@ stateDiagram
     Current --> Stable: cumulative uptime ≥ stability_time
     Current --> Rejected: bad-version criterion met
     Stable --> Replaced: a newer version promoted past it
-    Rejected --> [*]: in rejects.txt<br>force override possible
+    Rejected --> Current: stable fallback swapped in<br>OR reject_expiry elapsed<br>OR force override
+    Rejected --> Rejected: no stable, retry under backoff
     Replaced --> [*]: folder GC'd per retention
 ```
 
@@ -261,17 +262,60 @@ A crash before step 4 leaves `current.txt` unchanged and the partially extracted
 
 On startup the supervisor lists `versions/*` and identifies any folder whose name is not in `stable.txt`, `current.txt`, or `rejects.txt`. The newest `version_folder_retention` orphans (default 2) are kept in case a manual rollback is wanted. The rest are deleted.
 
-#### VERSION_DIR templating
+#### Launch environment
 
-The launch command and its arguments are templates (Go `text/template`). Available variables:
+The `command:` field is parsed verbatim as a shell-style argv (via shlex). There is **no** `${VAR}` substitution in the command — values that vary per launch flow through environment variables instead.
 
-- `${VERSION}`: current version string.
-- `${VERSION_DIR}`: absolute path to the version folder.
-- `${STATE_DIR}`: absolute path to the component's state directory.
-- `${MONITOR_PORT}`: assigned monitoring port.
-- `${KILL_SOCK}`: kill-switch socket path.
+Before exec the supervisor:
 
-Templates are expanded at launch (post-promote), not at config-load time. The same variables are also injected as environment variables prefixed `OP_` (for example `OP_VERSION_DIR`) for components that prefer env over args.
+- Sets the child's working directory to the version dir. A relative `command: "./bin/hello"` therefore resolves to the binary inside the tarball. Absolute paths still work; bare names (no slash) fall through to `PATH` lookup, matching shell semantics. The child is *not* chrooted — global paths like `/var/log` remain reachable.
+- Exports the five launch facts as `OP_`-prefixed environment variables:
+
+  | Env | Meaning |
+  | --- | --- |
+  | `OP_VERSION` | current version string |
+  | `OP_VERSION_DIR` | absolute path of the version folder (also the cwd) |
+  | `OP_STATE_DIR` | absolute path of the component's state directory |
+  | `OP_MONITOR_PORT` | configured monitoring port |
+  | `OP_KILL_SOCK` | absolute path of the kill-switch UDS |
+
+A child that wants the port from env reads `OP_MONITOR_PORT`; a child that wants it on argv hardcodes the same number (the customer already chose it in `port:`) or pulls it from a top-level `vars:` block via Go template at config-load.
+
+The same five values are also available as top-level keys (`.VERSION`, `.VERSION_DIR`, …) inside `*.tmpl` files at render time — see §"Template rendering".
+
+#### Template rendering (deployment-time config)
+
+The shell-style command template above is for argv only. The vendor can also ship arbitrary configuration files as templates inside the tarball, and the supervisor renders them at launch time.
+
+Any file in the extracted version dir whose name ends in `.tmpl` is treated as a template. At every launch the supervisor:
+
+1. Builds a template context by merging four layers (precedence high → low):
+   - **env vars** (only via `{{ env "FOO" }}` references inside templates);
+   - **supervisor.yml `vars:` block** — customer-controlled, flat global map;
+   - **`defaults.yml`** at the root of the version dir — vendor-shipped baseline;
+   - **launch variables** as top-level keys (`VERSION`, `VERSION_DIR`, `STATE_DIR`, `MONITOR_PORT`, `KILL_SOCK`).
+2. Walks the version dir alphabetically. For each `<x>.tmpl`:
+   - Renders the body using Go `text/template` with the same engine the rest of go-run uses (delimiters `{{ }}` and `[[ ]]`, funcs `default` / `required` / `env` / `add`).
+   - If `<x>` already exists from a previous render, it is renamed to `<x>.bak` (single-level backup, replacing any prior `.bak`).
+   - Writes `<x>` via `atomicWrite` with the same file mode as the source `.tmpl` (preserves executability).
+3. First render error short-circuits the launch and counts as an `exec_failure`.
+
+Cadence is **passive**: templates are re-rendered every launch, so a `vars:` edit picks up on the next child restart. There is no fsnotify watch in v0.
+
+`defaults.yml` is optional. A tarball with no `defaults.yml` renders against only `vars:` + launch vars + env.
+
+Example layout for a hello component:
+
+```
+versions/v1/
+  defaults.yml             # vendor-shipped: { GREETING: "Hello (vendor default)" }
+  greeting.txt.tmpl        # vendor-shipped: {{ .GREETING }}
+  greeting.txt             # supervisor-rendered
+  greeting.txt.bak         # previous render
+  bin/hello                # vendor-shipped binary, reads ./greeting.txt (cwd=this dir)
+```
+
+The child finds its rendered files in its working directory (which equals `OP_VERSION_DIR`).
 
 ## Handling crashes
 
@@ -295,25 +339,42 @@ Counter scope:
 
 ### Outcome of rejection
 
-1. Append the version to `rejects.txt`.
-2. If `stable.txt` names a different version, atomically swap `current.txt` to it and relaunch. Counters reset.
-3. If no different stable exists, the component is **halted**. The supervisor does not retry the rejected version. Own-state reports `halted, awaiting supervisor` so monitoring can page. Recovery requires either a new remote version that is not in `rejects.txt`, or a `forced_versions.txt` entry.
+1. Append the version to `rejects.txt` with the rejection timestamp.
+2. If `stable.txt` names a different version, atomically swap `current.txt` to it and relaunch. Counters reset, backoff resets.
+3. If no different stable exists, **the supervisor keeps relaunching the rejected version under backoff** (no halt). Counters are reset so the next exit doesn't immediately re-demote, but the backoff stays growing so spacing between attempts widens up to its cap. The state appears as `running_rejected` (statekit `fail`) when the child is up, or `restarting` (warn) between attempts; the reason text names the specific reason there was no fallback ("no stable known yet" / "stable.txt names the same version").
+
+The principle: an autonomous rejection deserves an autonomous retry path. The supervisor never paints itself into a corner where it stops trying — operator intervention is *available* (force overrides) but not *required*.
+
+### Reject expiry
+
+Every entry in `rejects.txt` carries the timestamp of the rejection. The `reject_expiry` config knob (no default — opt-in) caps how long an entry stays active. After `reject_expiry` elapses, the supervisor stops treating the version as rejected and is willing to re-install it if the remote still asks for it. If the version is genuinely still bad it'll be re-rejected on the next bad-version cycle, with a fresh timestamp.
+
+This pairs with the no-stable retry: a transient environmental issue that caused the original rejection self-clears once the patch window has passed, with no operator action.
 
 ### Restart backoff
 
-Exponential with jitter, `min(base * 2^n, cap) + rand(0, base)`. Defaults: `base` 1s, `cap` 60s. The backoff counter resets to zero once the child has run continuously for at least `stability_time`. Backoff is the supervisor's behaviour for restarts that fall short of the bad-version criterion and for the "no stable, but must keep trying" case where the stable itself keeps crashing.
+Exponential with jitter, `min(base * 2^n, cap) + rand(0, base)`. Defaults: `base` 1s, `cap` 60s. The backoff resets to zero once the child runs continuously for at least `stability_time` (the same stability event that wipes the crash counters). It also resets on a demote that successfully swaps to a different stable. It does **not** reset on a no-stable demote — that's the case where keeping the spacing growing is exactly what we want.
 
 ## Own State
 
 The supervisor exposes its own HTTP server (`supervisor.bind_address`, default `127.0.0.1:9090`):
 
 - `GET /healthz`: supervisor is alive.
-- `GET /state`: JSON with per-component `{ stable, current, child_pid, uptime, fast_crashes, exec_failures, status }` plus supervisor-wide `{ last_poll_at, last_poll_error, force_overrides }`.
-- `GET /metrics`: Prometheus exposition.
+- `GET /state`: statekit YAML document. Aggregates the supervisor's local per-component view (`<name>.supervisorstate`) with scraped child entries (`<name>` mirrored from the child, `<name>.up` from the liveness probe). All entries carry `scraped_from: <component>` so a fleet aggregator can group them.
+- `GET /metrics`: Prometheus exposition (supervisor counters + scraped child metrics).
+- `GET /summary`: flat, grep-friendly YAML overview of each managed component.
+- `GET /components/{name}/info`: supervisor-side bookkeeping for one component (version triple, pid, counters, port, monitor URL paths).
+- `GET /components/{name}/state`: statekit document filtered to entries tagged `scraped_from: <name>`.
+- `POST /components/{name}/reject?version=X`: append `X` to that component's `rejects.txt` (used by a control plane to force a demote).
 
-Per-component statuses: `running`, `restarting`, `installing`, `halted_rejected_no_stable`, `halted_required_rejected`, `forced`, `forced_no_stable`.
+**Status vocabulary is statekit's**: `pass` / `warn` / `fail` / `down`. There is no parallel "supervisor enum". The granular situation ("running rejected", "pinned to stable after rejecting v3", "preparing v2", "child exited, restarting in N") lives in the reason text on each statekit leaf.
 
-`state.json` (statekit-owned) is a journal of transitions. It is derivable from the three text files and is not the source of truth.
+The supervisor's `<name>.supervisorstate` is an AggregateState with two leaves:
+
+- `uptime` (important): the lifecycle — `pass` when the child is running cleanly, `warn` when pinned to stable as a fallback or restarting/installing, `fail` when running a still-rejected version. Carries the per-state metrics (`runcount`, `uptime_seconds`, `fast_crashes`, `exec_failures`).
+- `update` (informational): the update flow — `pass` after a successful remote poll, `fail` on poll/prepare error (capped at warn in the aggregate because failures here mean "we couldn't reach the vendor", not "the workload is broken").
+
+`state.json` (statekit-owned, optional) would be a journal of transitions on disk; presently statekit's history is in-memory only and reset on supervisor restart.
 
 ## Force version, Force stable
 
@@ -343,11 +404,18 @@ YAML, loaded at startup.
 state_dir: /var/lib/go-run
 
 stability_time: 5m
-crash_window: 10s
+crash_window: 1m
 crash_threshold: 3
 exec_fail_threshold: 2
 kill_grace_period: 5s
 version_folder_retention: 2
+reject_expiry: 0           # 0 = rejections never auto-clear; e.g. 24h to opt in
+
+# Customer-controlled template context for every component's *.tmpl files.
+# Overrides keys from each version's defaults.yml. See §"Template rendering".
+vars:
+  GREETING: "Hello, customer"
+  UPSTREAM_URL: "https://upstream.internal"
 
 supervisor:
   bind_address: 127.0.0.1:9090
@@ -361,7 +429,7 @@ remote: # defaults shared across components
 
 components:
   - name: x
-    command: "${VERSION_DIR}/bin/x --monitor=:${MONITOR_PORT} --kill=${KILL_SOCK}"
+    command: "./bin/x"   # cwd=version dir; OP_MONITOR_PORT etc. via env
     env:
       LOG_LEVEL: info
     remote: {} # optional per-component override of the block above
@@ -386,5 +454,10 @@ components:
 ## Open Questions
 
 - **Secrets management**: see Todo in §"Secrets, Variables and Code".
-- **Promotion clock**: cumulative uptime (proposed) versus wall-clock since first install. Cumulative is more robust to flaky restarts that are not fatal, at the cost of slower promotion under instability.
-- **Health-check failures as rejection input**: today only process exits feed `fast_crashes`. Should consecutive `/healthz` failures within `crash_window` also count? Lean: yes, with a higher threshold (e.g. 6 consecutive failures over 30s) because health checks can flap for reasons unrelated to the version.
+- **Health-check failures as rejection input**: today only process exits feed `fast_crashes`. The supervisor's scraper does liveness-probe `/healthz` and surfaces failures as the `<name>.up` state, but `/healthz` failures do not contribute to the bad-version criterion. Should consecutive failures within `crash_window` also count? Lean: yes, with a higher threshold (e.g. 6 consecutive failures over 30s) because health checks can flap for reasons unrelated to the version.
+
+### Resolved
+
+- **Promotion clock**: implemented as cumulative uptime. The child has to be alive continuously for `stability_time` for promotion to fire; a restart resets the accumulation. Cumulative-across-restarts was rejected as a deferred refinement.
+- **No-stable rejection**: original spec halted; the implementation keeps retrying with bounded backoff. See §"Outcome of rejection".
+- **Reject permanence**: original spec was indefinite; the implementation supports `reject_expiry` for autonomous clearing (off by default). See §"Reject expiry".

@@ -208,4 +208,88 @@ var _ = Describe("Config", func() {
 			Expect(err).To(MatchError(ContainSubstring("read config")))
 		})
 	})
+
+	Describe("LoadConfig: template expansion", func() {
+		var path string
+
+		writeYAML := func(body string) {
+			dir := GinkgoT().TempDir()
+			path = filepath.Join(dir, "supervisor.yml")
+			Expect(os.WriteFile(path, []byte(body), 0644)).To(Succeed())
+		}
+
+		It("resolves vars referencing each other (iterative)", func() {
+			writeYAML(`
+state_dir: ./state
+vars:
+  REGION: us-east
+  UPSTREAM: '{{ .REGION }}.example.com'
+remote:
+  base_url: https://x
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Vars["UPSTREAM"]).To(Equal("us-east.example.com"))
+		})
+
+		It("resolves vars from environment via {{ env }}", func() {
+			os.Setenv("SUP_TEST_ENV", "from-env")
+			DeferCleanup(func() { os.Unsetenv("SUP_TEST_ENV") })
+
+			writeYAML(`
+state_dir: ./state
+vars:
+  WHO: '{{ env "SUP_TEST_ENV" }}'
+remote:
+  base_url: https://x
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Vars["WHO"]).To(Equal("from-env"))
+		})
+
+		It("expands templates in component fields (port computed from a var)", func() {
+			// [[ ]] is the unquoted-friendly delimiter — runctl uses it for
+			// exactly this case so the substituted int survives YAML round-trip.
+			writeYAML(`
+state_dir: ./state
+vars:
+  BASE_PORT: 18000
+remote:
+  base_url: https://x
+components:
+  - name: hello
+    port: [[ add .BASE_PORT 90 | int ]]
+    command: "${VERSION_DIR}/bin/hello"
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Components[0].Port).To(Equal(18090))
+		})
+
+		It("leaves ${VAR} command syntax untouched (those expand at launch)", func() {
+			writeYAML(`
+state_dir: ./state
+remote:
+  base_url: https://x
+components:
+  - name: hello
+    port: 18090
+    command: "${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Components[0].Command).To(Equal("${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"))
+		})
+
+		It("returns an error for an undefined template variable", func() {
+			writeYAML(`
+state_dir: ./state
+remote:
+  base_url: '{{ required "MISSING is required" .MISSING }}'
+`)
+			_, err := supervisor.LoadConfig(path)
+			Expect(err).To(MatchError(ContainSubstring("MISSING is required")))
+		})
+	})
 })

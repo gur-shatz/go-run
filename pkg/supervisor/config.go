@@ -3,12 +3,13 @@ package supervisor
 import (
 	_ "embed"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/gur-shatz/go-run/pkg/config"
 )
 
 //go:embed supervisor.default.yaml
@@ -41,6 +42,13 @@ type Config struct {
 	// on the next bad-version cycle. Zero disables expiry (rejections
 	// stay active forever within this host).
 	RejectExpiry time.Duration `yaml:"reject_expiry"`
+
+	// Vars is the customer-controlled template context. Every key here
+	// becomes a top-level variable in the rendering pass applied to each
+	// component's *.tmpl files (alongside the component's own
+	// defaults.yml, the five launch variables, and env). Precedence on
+	// key collisions: env > Vars > defaults.yml > launch vars.
+	Vars map[string]any `yaml:"vars,omitempty"`
 
 	Supervisor SupervisorConfig `yaml:"supervisor"`
 	Remote     RemoteConfig     `yaml:"remote"`
@@ -102,18 +110,43 @@ type URLsConfig struct {
 }
 
 // LoadConfig reads and validates a supervisor YAML file, applying defaults.
-// Relative file:// URLs in any remote block are resolved against the
+//
+// The file is run through the shared template engine (pkg/config) before
+// being unmarshalled, so every field — including the `vars:` block, ports,
+// URLs, durations — can use Go template expressions with the {{ }} and
+// [[ ]] delimiters and the standard func set (default / required / env /
+// add / int). The vars: block is resolved iteratively (vars can reference
+// other vars or env). Templates inside YAML are fully resolved by the
+// time the unmarshal sees the bytes — no {{ }} reaches the rendered
+// `.tmpl` files at launch time. The ${VAR} command-template syntax in
+// components.command is NOT touched here (those expand at launch via
+// pkg/supervisor/template.go).
+//
+// Relative file:// URLs in any remote block are then resolved against the
 // directory holding the config file so the example can ship a relative
 // fixture path.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	processed, resolvedVars, err := config.ProcessFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, fmt.Errorf("process config %s: %w", path, err)
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Unmarshal(processed, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+
+	// pkg/config strips the `vars:` block from the processed bytes (it
+	// uses `vars:` purely as template-time scoping). We want the resolved
+	// values to also live on Config.Vars so the per-component template
+	// renderer (pkg/supervisor/render.go) can use them.
+	if len(resolvedVars) > 0 {
+		if cfg.Vars == nil {
+			cfg.Vars = make(map[string]any, len(resolvedVars))
+		}
+		for k, v := range resolvedVars {
+			cfg.Vars[k] = v
+		}
 	}
 
 	absConfigDir, err := filepath.Abs(filepath.Dir(path))

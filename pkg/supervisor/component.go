@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/google/shlex"
 
 	"github.com/gur-shatz/go-run/internal/log"
 )
@@ -44,6 +47,10 @@ type Component struct {
 	stabilityTime   time.Duration
 	pollingInterval time.Duration
 	rejectExpiry    time.Duration
+
+	// supervisorVars is the shared template context applied to every
+	// component's *.tmpl files at launch time. Read-only after construction.
+	supervisorVars map[string]any
 
 	// Forced overrides snapshot accessor — read each Updater tick.
 	getForced func() ForcedOverride
@@ -85,6 +92,7 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 		stabilityTime:   top.StabilityTime,
 		pollingInterval: cfg.Remote.PollingInterval,
 		rejectExpiry:    top.RejectExpiry,
+		supervisorVars:  top.Vars,
 		getForced:       getForced,
 		switchCh:        make(chan string, 1),
 		counters:        NewCounters(top.CrashWindow, top.CrashThreshold, top.ExecFailThreshold),
@@ -165,14 +173,15 @@ func (this *Component) runUpdater(ctx context.Context) {
 	}
 }
 
-// reconcileTarget runs one update cycle: compute the (possibly empty) desired
-// version, fetch and verify it if needed, then commit the swap. The
-// orchestrator side stays slim — the heavy work delegates to PrepareVersion
-// and SwitchToVersion.
+// reconcileTarget runs one update cycle: compute the desired version, run
+// the full prepare pipeline (download + verify + extract + render), and
+// commit the swap. A failure at any step in PrepareVersion fails the
+// update — the update sub-state goes to fail/warn and SwitchToVersion
+// never fires.
 //
-// At startup, even when computeDesiredVersion returns empty (current already
-// satisfies the policy), we still nudge the lifecycle out of its
-// "waiting-for-first-switch" select via signalSwitch on the current version.
+// Render runs every cycle (even when target equals current), so a
+// supervisor.yml `vars:` edit propagates to on-disk rendered files on the
+// next poll tick; the child consumes them at its next restart.
 func (this *Component) reconcileTarget(ctx context.Context) {
 	target, err := this.computeDesiredVersion(ctx)
 	if err != nil {
@@ -180,33 +189,30 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 		return
 	}
 	if target == "" {
-		// No change needed. Kick the lifecycle in case it's still waiting for
-		// its first switch signal (no-op if it's already running).
+		// Halt-like state (forced-no-stable / required-rejected-no-fallback).
+		// Lifecycle stays where it is. Kick its select in case it's still
+		// waiting for first switch.
 		if current, _ := this.paths.ReadCurrent(); current != "" {
 			this.signalSwitch(current)
 		}
 		return
 	}
 
-	if !versionExtracted(this.paths.VersionDir(target)) {
-		this.markWarn("preparing " + target)
-		if this.bundle != nil {
-			this.bundle.observeUpdateWarn(this.cfg.Name, "preparing "+target)
-		}
-		if err := this.PrepareVersion(ctx, target); err != nil {
-			if errors.Is(err, ErrVersionRejected) {
-				// Unreachable: computeDesiredVersion filters rejected targets.
-				return
-			}
-			if this.bundle != nil {
-				this.bundle.observeUpdateError(this.cfg.Name, err)
-			}
-			this.logger.Warn("[%s] prepare %s failed: %v", this.cfg.Name, target, err)
+	if err := this.PrepareVersion(ctx, target); err != nil {
+		if errors.Is(err, ErrVersionRejected) {
+			// Unreachable in normal flow: computeDesiredVersion filters
+			// rejected targets. Keep the guard so future logic shifts can't
+			// produce a confusing prepare loop.
 			return
 		}
 		if this.bundle != nil {
-			this.bundle.observeUpdateOK(this.cfg.Name, "prepared "+target)
+			this.bundle.observeUpdateError(this.cfg.Name, err)
 		}
+		this.logger.Warn("[%s] prepare %s failed: %v", this.cfg.Name, target, err)
+		return
+	}
+	if this.bundle != nil {
+		this.bundle.observeUpdateOK(this.cfg.Name, "prepared "+target)
 	}
 
 	if err := this.SwitchToVersion(ctx, target); err != nil {
@@ -216,21 +222,23 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 	}
 }
 
-// computeDesiredVersion returns a NON-empty version string only when a real
-// version change is needed. Empty means "nothing to do" — the lifecycle keeps
-// running whatever is currently launched (or stays in its waiting state if
-// nothing has been launched yet).
+// computeDesiredVersion returns the version the supervisor should be running
+// — possibly the same one it's already on. The reconcile loop then runs
+// PrepareVersion (which re-renders templates every tick) and
+// SwitchToVersion (a no-op when target equals current).
+//
+// Empty means "no actionable target" — halt-like states only:
+//   - `* = stable` forced but no stable.txt,
+//   - remote required is rejected and not on disk to retry,
+//   - remote poll failed and there's nothing local to fall back on.
 //
 // The decision is intentionally first-principles:
 //
 //  1. Resolve the target (forced override beats remote; remote beats nothing).
-//  2. If target == current, return empty. Rejection status doesn't matter
-//     here — if remote keeps recommending the version we're already on, that's
-//     a no-op whether or not it's on rejects.txt.
-//  3. Otherwise, the target is different from current. Only switch if it
-//     isn't in rejects.txt. A rejected target is silently held off — the
-//     lifecycle keeps running current (which may itself be rejected, in which
-//     case it self-recovers if it ever reaches stability_time).
+//  2. If the target is in rejects.txt AND differs from current, the
+//     supervisor refuses to switch onto it — return empty (lifecycle keeps
+//     current going).
+//  3. Otherwise return the target.
 //
 // Side effects on the update sub-state: poll success/failure are pushed to
 // observeUpdateOK / observeUpdateError so the YAML reader always knows
@@ -265,29 +273,60 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 		target = remoteVersion
 	}
 
-	// 2. Already on it — nothing to do, irrespective of rejection.
-	if target == current {
-		return "", nil
-	}
-
-	// 3. Target differs. Refuse to switch onto a rejected version; the
-	// lifecycle keeps current going. (No fallback-to-stable hop here: if a
-	// stable is available and not the rejected one, demote already swapped
-	// current to it; if there isn't one, we keep retrying current with
-	// backoff and recover when stability_time is reached.)
-	if rejected, _ := this.paths.IsActivelyRejected(target, time.Now(), this.rejectExpiry); rejected {
-		if this.bundle != nil {
-			this.bundle.observeUpdateWarn(this.cfg.Name, "target "+target+" is rejected; holding current")
+	// Target differs from current AND is rejected: refuse to switch onto
+	// it. (No fallback-to-stable hop here: if a stable is available and
+	// not the rejected one, demote already swapped current to it; if
+	// there isn't one, we keep retrying current with backoff and recover
+	// when stability_time is reached.)
+	if target != current {
+		if rejected, _ := this.paths.IsActivelyRejected(target, time.Now(), this.rejectExpiry); rejected {
+			if this.bundle != nil {
+				this.bundle.observeUpdateWarn(this.cfg.Name, "target "+target+" is rejected; holding current")
+			}
+			return "", nil
 		}
-		return "", nil
 	}
 	return target, nil
 }
 
-// PrepareVersion downloads, verifies, and extracts version into versions/<v>/
-// without modifying current.txt. Idempotent.
+// PrepareVersion is the four-step install pipeline:
+//
+//  1. download archive,
+//  2. verify signature,
+//  3. extract into versions/<v>/,
+//  4. render every *.tmpl against (supervisor vars + defaults.yml + launch
+//     vars + env), with validation by file extension.
+//
+// Steps 1–3 are idempotent against an already-extracted version dir (they
+// become a no-op). Step 4 always runs, so a vars-block edit reaches the
+// on-disk rendered files on the next reconcile tick. Any step failing
+// returns an error; the caller (reconcileTarget) treats that as an update
+// failure and the version never makes it to current.txt.
 func (this *Component) PrepareVersion(ctx context.Context, version string) error {
-	return this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version)
+	if !versionExtracted(this.paths.VersionDir(version)) {
+		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version); err != nil {
+			return err
+		}
+	}
+	return this.renderTemplates(version)
+}
+
+// renderTemplates is the per-version template-render step extracted so it
+// can be called both from PrepareVersion (canonical path) and from focused
+// tests. Not exported — the public entry point is PrepareVersion.
+func (this *Component) renderTemplates(version string) error {
+	versionDir := this.paths.VersionDir(version)
+	if !versionExtracted(versionDir) {
+		return fmt.Errorf("version dir %s is missing", versionDir)
+	}
+	launchVars := LaunchVars{
+		Version:     version,
+		VersionDir:  versionDir,
+		StateDir:    this.paths.Root,
+		MonitorPort: this.cfg.Port,
+		KillSock:    this.paths.KillSock(),
+	}
+	return renderVersionTemplates(versionDir, this.supervisorVars, launchVars)
 }
 
 // SwitchToVersion commits the named version to current.txt and signals the
@@ -454,9 +493,19 @@ type childExit struct {
 	err error
 }
 
-// LaunchChild prepares the launch vars, expands the command template, opens
-// the kill socket, and starts the child with Setpgid. Returns
-// ExecFailure-eligible errors if the child cannot be started.
+// LaunchChild parses the command, sets the child's working directory to the
+// version dir, opens the kill socket, and starts the child with Setpgid.
+// Returns ExecFailure-eligible errors if the child cannot be started.
+//
+// Notes:
+//   - The command is plain shell-style argv (parsed via shlex). There is no
+//     ${VAR} expansion. The five launch facts (VERSION, VERSION_DIR,
+//     STATE_DIR, MONITOR_PORT, KILL_SOCK) are passed as OP_*-prefixed
+//     environment variables; the child reads them from env.
+//   - cmd.Dir is set to the version dir, so a relative argv[0] like
+//     "./bin/hello" resolves naturally. For absolute argv[0], cmd.Dir
+//     still applies (the child runs with cwd = version dir, with global
+//     paths like /var/log still reachable — not chrooted).
 func (this *Component) LaunchChild(_ context.Context, version string) (*runningChild, error) {
 	versionDir := this.paths.VersionDir(version)
 	if !versionExtracted(versionDir) {
@@ -472,9 +521,19 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		KillSock:    this.paths.KillSock(),
 	}
 
-	argv, err := ExpandCommand(this.cfg.Command, vars)
+	argv, err := shlex.Split(this.cfg.Command)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("split command: %w", err)
+	}
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+	// Relative argv[0] is resolved against the version dir so that
+	// `./bin/hello` (or `bin/hello`) finds the on-disk binary even though
+	// the supervisor's own cwd is elsewhere. Bare names without a slash
+	// fall through to PATH lookup, matching shell semantics.
+	if !filepath.IsAbs(argv[0]) && strings.ContainsAny(argv[0], "/\\") {
+		argv[0] = filepath.Join(versionDir, argv[0])
 	}
 
 	ks, err := ListenKillSocket(vars.KillSock, func() {
@@ -485,6 +544,7 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = versionDir
 	cmd.Stdout = newPrefixedWriter(this.cfg.Name, os.Stdout)
 	cmd.Stderr = newPrefixedWriter(this.cfg.Name, os.Stderr)
 	cmd.Env = this.buildEnv(vars)

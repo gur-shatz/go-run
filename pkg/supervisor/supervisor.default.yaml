@@ -27,7 +27,11 @@ remote:
 # Each component below is required to have:
 #   - name:    unique identifier
 #   - port:    well-known TCP port the child binds for its HTTP surface
-#   - command: launch template, with ${VERSION_DIR}/${MONITOR_PORT}/${KILL_SOCK} expansion
+#   - command: plain argv (shlex-split). The supervisor sets the child's
+#              working directory to the version dir, so "./bin/x" resolves
+#              to the binary inside the tarball. The five launch facts flow
+#              as OP_* env vars: OP_VERSION, OP_VERSION_DIR, OP_STATE_DIR,
+#              OP_MONITOR_PORT, OP_KILL_SOCK.
 # Optionally:
 #   - urls:    {healthz,readyz,state,metrics} path overrides (default: /healthz etc.)
 #   - env:     extra environment variables passed to the child

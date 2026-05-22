@@ -95,7 +95,7 @@ var _ = Describe("Component lifecycle", func() {
 		return supervisor.ComponentConfig{
 			Name:    "api",
 			Port:    freeTCPPort(),
-			Command: "/bin/sh ${VERSION_DIR}/run.sh",
+			Command: "/bin/sh ./run.sh",
 			Remote: supervisor.RemoteConfig{
 				BaseURL:         server.URL,
 				Target:          "required.txt",
