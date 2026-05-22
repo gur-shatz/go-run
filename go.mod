@@ -12,9 +12,8 @@ require (
 	github.com/onsi/gomega v1.39.1
 	golang.org/x/term v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
+	github.com/gur-shatz/statekit v0.0.7
 )
-
-require github.com/gur-shatz/statekit v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
@@ -37,4 +36,3 @@ require (
 	golang.org/x/tools v0.41.0 // indirect
 )
 
-replace github.com/gur-shatz/statekit => ../statekit
