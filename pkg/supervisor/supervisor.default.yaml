@@ -1,0 +1,35 @@
+state_dir: /var/lib/go-run
+
+stability_time: 5m
+crash_window: 1m
+crash_threshold: 3
+exec_fail_threshold: 2
+kill_grace_period: 5s
+version_folder_retention: 2
+
+# reject_expiry: how long an autonomously-recorded rejection stays active.
+# After this duration the supervisor will re-attempt the version if the
+# remote still asks for it; a genuinely-bad version earns a fresh
+# rejection. Omit (or set to 0) to disable autonomous clearing — rejections
+# then stay active forever within this host.
+# reject_expiry: 24h
+
+supervisor:
+  bind_address: 127.0.0.1:9090
+
+remote:
+  base_url: https://updates.example.com
+  target: required.txt
+  polling_interval: 1m
+  secret: ""
+  signature_public_key_path: /etc/go-run/update.pub
+
+# Each component below is required to have:
+#   - name:    unique identifier
+#   - port:    well-known TCP port the child binds for its HTTP surface
+#   - command: launch template, with ${VERSION_DIR}/${MONITOR_PORT}/${KILL_SOCK} expansion
+# Optionally:
+#   - urls:    {healthz,readyz,state,metrics} path overrides (default: /healthz etc.)
+#   - env:     extra environment variables passed to the child
+#   - remote:  per-component override of the top-level remote block
+components: []

@@ -1,0 +1,52 @@
+state_dir: ./state
+
+stability_time: 300s
+crash_window: 30s
+crash_threshold: 3
+exec_fail_threshold: 2
+kill_grace_period: 2s
+version_folder_retention: 2
+# Short for the demo: a rejected version is re-attempted after 2 minutes.
+# Production: hours or days, matched to your vendor's typical patch cadence.
+reject_expiry: 2m
+
+supervisor:
+  bind_address: 127.0.0.1:9090
+  # Const labels stamped on every metric this supervisor emits and on the
+  # label_path of every state document. A fleet aggregator (or Prometheus
+  # join) uses them to disambiguate multiple supervisors.
+  metric_labels:
+    source: example-supervisor
+
+# file:// remote — points at the ./fixture directory next to this file.
+# `make example-supervisor` builds the hello component and writes
+# fixture/hello/{versions/required.txt,images/v1_<os>_<arch>.tar.gz}
+# before launching the supervisor. No origin process, no signature key.
+#
+# To switch to the HTTP origin variant:
+#   1. Run `make example-supervisor-origin` in another terminal.
+#   2. Change base_url to http://127.0.0.1:18080
+#   3. Set signature_public_key_path: ./origin/keys/update.pub
+remote:
+  base_url: file://./fixture
+  target: required.txt
+  polling_interval: 5s
+  signature_public_key_path: "" # empty: skip Ed25519 verify (dev / trusted local FS only)
+
+# Every component declares its port — that's the well-known HTTP endpoint the
+# child binds. The supervisor reflects it as ${MONITOR_PORT} / OP_MONITOR_PORT,
+# and surfaces it (plus the URL paths below) in /state so the control plane
+# can compose http://127.0.0.1:<port><path>.
+components:
+  - name: hello
+    description: "A simple HTTP server"
+    port: 18090
+    command: "${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"
+    env:
+      LOG_LEVEL: info
+    # urls block is optional — these are the defaults the supervisor expects.
+    urls:
+      healthz: /healthz
+      readyz: /readyz
+      state: /state
+      metrics: /metrics
