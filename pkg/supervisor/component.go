@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,8 @@ type Component struct {
 	stabilityTime   time.Duration
 	pollingInterval time.Duration
 	rejectExpiry    time.Duration
+	logMaxSize      int64
+	logMaxFiles     int
 
 	// supervisorVars is the shared template context applied to every
 	// component's *.tmpl files at launch time. Read-only after construction.
@@ -92,6 +95,8 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 		stabilityTime:   top.StabilityTime,
 		pollingInterval: cfg.Remote.PollingInterval,
 		rejectExpiry:    top.RejectExpiry,
+		logMaxSize:      top.LogMaxSize,
+		logMaxFiles:     top.LogMaxFiles,
 		supervisorVars:  top.Vars,
 		getForced:       getForced,
 		switchCh:        make(chan string, 1),
@@ -325,6 +330,7 @@ func (this *Component) renderTemplates(version string) error {
 		StateDir:    this.paths.Root,
 		MonitorPort: this.cfg.Port,
 		KillSock:    this.paths.KillSock(),
+		LogDir:      this.paths.LogsDir(version),
 	}
 	return renderVersionTemplates(versionDir, this.supervisorVars, launchVars)
 }
@@ -486,6 +492,12 @@ type runningChild struct {
 	killSocket *KillSocket
 	exitCh     chan childExit
 	launchedAt time.Time
+
+	// Rotating log files the supervisor writes the child's stdout / stderr
+	// into. Closed when the child exits. Nil-safe so tests / nil bundles
+	// don't crash if log opening was skipped.
+	stdoutLog *rotatingFile
+	stderrLog *rotatingFile
 }
 
 type childExit struct {
@@ -513,12 +525,14 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	}
 
 	port := this.cfg.Port
+	logDir := this.paths.LogsDir(version)
 	vars := LaunchVars{
 		Version:     version,
 		VersionDir:  versionDir,
 		StateDir:    this.paths.Root,
 		MonitorPort: port,
 		KillSock:    this.paths.KillSock(),
+		LogDir:      logDir,
 	}
 
 	argv, err := shlex.Split(this.cfg.Command)
@@ -543,15 +557,33 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		return nil, err
 	}
 
+	// Open per-version rotating log files. The child also gets the dir
+	// via OP_LOG_DIR so its own application logs can live alongside.
+	stdoutLog, err := openRotatingFile(filepath.Join(logDir, "stdout.log"), this.logMaxSize, this.logMaxFiles)
+	if err != nil {
+		_ = ks.Close()
+		return nil, fmt.Errorf("open stdout log: %w", err)
+	}
+	stderrLog, err := openRotatingFile(filepath.Join(logDir, "stderr.log"), this.logMaxSize, this.logMaxFiles)
+	if err != nil {
+		_ = stdoutLog.Close()
+		_ = ks.Close()
+		return nil, fmt.Errorf("open stderr log: %w", err)
+	}
+
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = versionDir
-	cmd.Stdout = newPrefixedWriter(this.cfg.Name, os.Stdout)
-	cmd.Stderr = newPrefixedWriter(this.cfg.Name, os.Stderr)
+	// MultiWriter: kubectl-logs-style supervisor stdout AND the per-version
+	// on-disk copy. Both stay populated for the lifetime of the child.
+	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stdout), stdoutLog)
+	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stderr), stderrLog)
 	cmd.Env = this.buildEnv(vars)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	this.logger.Status("[%s] launching %s port=%d", this.cfg.Name, version, port)
+	this.logger.Status("[%s] launching %s port=%d (logs=%s)", this.cfg.Name, version, port, logDir)
 	if err := cmd.Start(); err != nil {
+		_ = stdoutLog.Close()
+		_ = stderrLog.Close()
 		_ = ks.Close()
 		return nil, err
 	}
@@ -562,9 +594,21 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		killSocket: ks,
 		exitCh:     make(chan childExit, 1),
 		launchedAt: time.Now(),
+		stdoutLog:  stdoutLog,
+		stderrLog:  stderrLog,
 	}
 	go func() {
 		err := cmd.Wait()
+		// cmd.Wait() returned, so stdout/stderr pipes are drained — safe to
+		// close the rotating log files. Errors here are best-effort: a closed
+		// log file at most loses the very last byte and is independent of the
+		// supervisor's ability to react to the exit itself.
+		if rc.stdoutLog != nil {
+			_ = rc.stdoutLog.Close()
+		}
+		if rc.stderrLog != nil {
+			_ = rc.stderrLog.Close()
+		}
 		rc.exitCh <- childExit{at: time.Now(), err: err}
 	}()
 	return rc, nil

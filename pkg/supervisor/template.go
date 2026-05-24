@@ -2,7 +2,7 @@ package supervisor
 
 import "fmt"
 
-// LaunchVars holds the five launch facts the supervisor exposes to children.
+// LaunchVars holds the launch facts the supervisor exposes to children.
 // They are exported as OP_*-prefixed environment variables (see EnvSlice)
 // and as top-level keys in the *.tmpl render context (see LaunchVars.asMap
 // in render.go).
@@ -16,6 +16,10 @@ type LaunchVars struct {
 	StateDir    string
 	MonitorPort int
 	KillSock    string
+	// LogDir is the per-version log directory the supervisor manages on the
+	// child's behalf. The supervisor writes stdout.log + stderr.log here;
+	// the child may write any other files it wants in this directory.
+	LogDir string
 }
 
 // EnvSlice returns the OP_* environment variables a child can read.
@@ -27,5 +31,6 @@ func EnvSlice(vars LaunchVars) []string {
 		"OP_STATE_DIR=" + vars.StateDir,
 		fmt.Sprintf("OP_MONITOR_PORT=%d", vars.MonitorPort),
 		"OP_KILL_SOCK=" + vars.KillSock,
+		"OP_LOG_DIR=" + vars.LogDir,
 	}
 }

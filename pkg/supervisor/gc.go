@@ -76,6 +76,14 @@ func CleanOrphanVersions(paths ComponentPaths, retain int) (gcResult, error) {
 		if err := os.RemoveAll(full); err != nil {
 			return res, fmt.Errorf("remove %s: %w", full, err)
 		}
+		// Drop the matching log directory alongside the version. Logs live
+		// outside the version dir so they survive ad-hoc inspection of the
+		// extracted tree, but once the version itself is gone there is no
+		// useful audit trail left to preserve.
+		logDir := paths.LogsDir(o.name)
+		if err := os.RemoveAll(logDir); err != nil {
+			return res, fmt.Errorf("remove %s: %w", logDir, err)
+		}
 		res.Deleted = append(res.Deleted, o.name)
 	}
 	return res, nil

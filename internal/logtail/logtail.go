@@ -1,4 +1,7 @@
-package runctl
+// Package logtail provides log-file utilities shared between runctl and the
+// supervisor: timestamped rotation, marker writing, and efficient tail /
+// paginated reads of large files.
+package logtail
 
 import (
 	"bufio"
@@ -12,9 +15,9 @@ import (
 	"time"
 )
 
-// rotateLogFile renames a non-empty log file at path to "<base>.<suffix><ext>".
+// RotateLogFile renames a non-empty log file at path to "<base>.<suffix><ext>".
 // Returns nil if the file is missing or empty (nothing to rotate).
-func rotateLogFile(path, suffix string) error {
+func RotateLogFile(path, suffix string) error {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -31,10 +34,10 @@ func rotateLogFile(path, suffix string) error {
 	return os.Rename(path, rotated)
 }
 
-// writeMarker appends a prominent timestamped separator block to the log file
+// WriteMarker appends a prominent timestamped separator block to the log file
 // at path. The block is composed and written in a single call so it stays
 // contiguous even if a process is concurrently appending to the same file.
-func writeMarker(path string) error {
+func WriteMarker(path string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
@@ -50,8 +53,8 @@ func writeMarker(path string) error {
 	return nil
 }
 
-// tailFile reads the last n lines from a file. Returns the lines and any error.
-func tailFile(path string, n int) ([]string, error) {
+// TailFile reads the last n lines from a file. Returns the lines and any error.
+func TailFile(path string, n int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
@@ -67,16 +70,16 @@ func tailFile(path string, n int) ([]string, error) {
 		return nil, nil
 	}
 
-	// For small files, just read all lines
+	// For small files, just read all lines.
 	if stat.Size() < 1024*1024 { // < 1MB
-		return readAllLines(f, n)
+		return ReadAllLines(f, n)
 	}
 
-	// For large files, seek from end
-	return seekTail(f, stat.Size(), n)
+	return SeekTail(f, stat.Size(), n)
 }
 
-func readAllLines(r io.Reader, n int) ([]string, error) {
+// ReadAllLines reads up to n lines from r (most recent ones if there are more).
+func ReadAllLines(r io.Reader, n int) ([]string, error) {
 	scanner := bufio.NewScanner(r)
 	var lines []string
 	for scanner.Scan() {
@@ -91,10 +94,10 @@ func readAllLines(r io.Reader, n int) ([]string, error) {
 	return lines, nil
 }
 
-// readLineRange reads lines from offset to offset+limit from a file.
+// ReadLineRange reads lines from offset to offset+limit from a file.
 // If limit is 0, no lines are returned (useful for getting just totalLines).
 // Returns the lines, total line count in the file, and any error.
-func readLineRange(path string, offset, limit int) ([]string, int, error) {
+func ReadLineRange(path string, offset, limit int) ([]string, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open log file: %w", err)
@@ -118,7 +121,10 @@ func readLineRange(path string, offset, limit int) ([]string, int, error) {
 	return lines, lineNum, nil
 }
 
-func seekTail(f *os.File, size int64, n int) ([]string, error) {
+// SeekTail returns the last n lines of an open file by reading a chunk from
+// the end. Used by TailFile for large files; exposed for callers that have
+// already opened the file.
+func SeekTail(f *os.File, size int64, n int) ([]string, error) {
 	chunkSize := min(int64(256*1024), size)
 
 	buf := make([]byte, chunkSize)
@@ -128,7 +134,7 @@ func seekTail(f *os.File, size int64, n int) ([]string, error) {
 		return nil, err
 	}
 
-	// Count newlines from end to find the start of the last n lines
+	// Count newlines from end to find the start of the last n lines.
 	count := 0
 	pos := len(buf) - 1
 	for pos >= 0 {
@@ -145,7 +151,6 @@ func seekTail(f *os.File, size int64, n int) ([]string, error) {
 		pos = 0
 	}
 
-	// Split the relevant portion into lines
 	chunk := buf[pos:]
 	chunk = bytes.TrimRight(chunk, "\n")
 	var lines []string

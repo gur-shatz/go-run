@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/gur-shatz/go-run/internal/logtail"
 )
 
 // Controller manages multiple targets and exposes an HTTP API.
@@ -60,7 +62,7 @@ func New(cfg Config, baseDir string, verbose bool) (*Controller, error) {
 				if p == "" {
 					continue
 				}
-				if err := rotateLogFile(p, suffix); err != nil {
+				if err := logtail.RotateLogFile(p, suffix); err != nil {
 					return nil, fmt.Errorf("rotate log %s for target %q: %w", p, name, err)
 				}
 			}

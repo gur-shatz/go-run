@@ -116,7 +116,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	this.scraper = sc
 
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.bundle, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, logger)
 
 	return this, nil
 }

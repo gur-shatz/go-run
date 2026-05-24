@@ -43,6 +43,13 @@ type Config struct {
 	// stay active forever within this host).
 	RejectExpiry time.Duration `yaml:"reject_expiry"`
 
+	// LogMaxSize / LogMaxFiles control rotation of the per-version
+	// stdout.log and stderr.log files the supervisor captures. Default
+	// 10 MiB per file, 5 history generations. Set LogMaxFiles to 0 to
+	// disable history (rotation truncates instead of preserving).
+	LogMaxSize  int64 `yaml:"log_max_size"`
+	LogMaxFiles int   `yaml:"log_max_files"`
+
 	// Vars is the customer-controlled template context. Every key here
 	// becomes a top-level variable in the rendering pass applied to each
 	// component's *.tmpl files (alongside the component's own
@@ -215,6 +222,17 @@ func (this *Config) ApplyDefaults() {
 	// RejectExpiry has NO default — unset means "no autonomous clearing,
 	// rejections stay active forever". Operators who want auto-clearing
 	// set an explicit duration (e.g. reject_expiry: 1h).
+	if this.LogMaxSize == 0 {
+		this.LogMaxSize = 10 * 1024 * 1024 // 10 MiB per active file.
+	}
+	// LogMaxFiles defaults to 5 history generations. We can't distinguish
+	// "explicit 0" from "unset" with int; operators who want history off
+	// pass a negative number, which we map to 0 in the rotatingFile.
+	if this.LogMaxFiles == 0 {
+		this.LogMaxFiles = 5
+	} else if this.LogMaxFiles < 0 {
+		this.LogMaxFiles = 0
+	}
 	if this.Supervisor.BindAddress == "" {
 		this.Supervisor.BindAddress = "127.0.0.1:9090"
 	}

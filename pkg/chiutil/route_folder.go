@@ -272,6 +272,24 @@ func (this *WildcardEntries) Title(title string) *WildcardEntries {
 	return this
 }
 
+// MarkInstanceExternal flags the per-instance route entry at the given path as
+// an external link so the index UI renders it as "open in new tab". The route
+// itself must already be registered in the WildcardFolder callback (so it has
+// an associated handler); this only changes how the entry is presented.
+//
+// No-op when no captured entry matches.
+func (this *WildcardEntries) MarkInstanceExternal(path string) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	clean := strings.TrimPrefix(path, "/")
+	for _, e := range this.instanceRoutes {
+		if e.Name == clean {
+			e.IsExternal = true
+			return
+		}
+	}
+}
+
 // Description sets the folder description.
 func (this *WildcardEntries) Description(desc string) *WildcardEntries {
 	this.folder.description = desc

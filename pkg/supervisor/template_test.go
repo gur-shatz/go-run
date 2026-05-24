@@ -14,6 +14,7 @@ var _ = Describe("LaunchVars / EnvSlice", func() {
 		StateDir:    "/var/lib/go-run/api",
 		MonitorPort: 38271,
 		KillSock:    "/var/lib/go-run/api/kill.sock",
+		LogDir:      "/var/lib/go-run/logs/api/1.4.2",
 	}
 
 	Describe("EnvSlice", func() {
@@ -25,6 +26,7 @@ var _ = Describe("LaunchVars / EnvSlice", func() {
 				"OP_STATE_DIR=/var/lib/go-run/api",
 				"OP_MONITOR_PORT=38271",
 				"OP_KILL_SOCK=/var/lib/go-run/api/kill.sock",
+				"OP_LOG_DIR=/var/lib/go-run/logs/api/1.4.2",
 			))
 		})
 	})

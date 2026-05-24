@@ -203,9 +203,9 @@ func rotateBackup(target string) error {
 	return nil
 }
 
-// asMap exposes the five launch vars as a string map suitable for merging
-// into the template context. Defined here (not on LaunchVars itself) to
-// keep template.go focused on command-line ${VAR} expansion.
+// asMap exposes the launch vars as a string map suitable for merging into
+// the template context. Defined here (not on LaunchVars itself) so the
+// rest of the package can keep template.go narrow.
 func (this LaunchVars) asMap() map[string]string {
 	return map[string]string{
 		"VERSION":      this.Version,
@@ -213,5 +213,6 @@ func (this LaunchVars) asMap() map[string]string {
 		"STATE_DIR":    this.StateDir,
 		"MONITOR_PORT": fmt.Sprintf("%d", this.MonitorPort),
 		"KILL_SOCK":    this.KillSock,
+		"LOG_DIR":      this.LogDir,
 	}
 }

@@ -1,10 +1,12 @@
-package runctl
+package logtail_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gur-shatz/go-run/internal/logtail"
 )
 
 func TestWriteMarker(t *testing.T) {
@@ -14,8 +16,8 @@ func TestWriteMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeMarker(path); err != nil {
-		t.Fatalf("writeMarker: %v", err)
+	if err := logtail.WriteMarker(path); err != nil {
+		t.Fatalf("WriteMarker: %v", err)
 	}
 
 	data, err := os.ReadFile(path)
@@ -43,8 +45,8 @@ func TestWriteMarkerCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fresh.log")
 
-	if err := writeMarker(path); err != nil {
-		t.Fatalf("writeMarker: %v", err)
+	if err := logtail.WriteMarker(path); err != nil {
+		t.Fatalf("WriteMarker: %v", err)
 	}
 
 	data, err := os.ReadFile(path)
@@ -63,7 +65,7 @@ func TestRotateLogFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := rotateLogFile(path, "20260101-000000"); err != nil {
+	if err := logtail.RotateLogFile(path, "20260101-000000"); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
@@ -83,7 +85,7 @@ func TestRotateLogFile(t *testing.T) {
 func TestRotateLogFileSkipsMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "absent.log")
-	if err := rotateLogFile(path, "20260101-000000"); err != nil {
+	if err := logtail.RotateLogFile(path, "20260101-000000"); err != nil {
 		t.Errorf("missing file should be a no-op, got: %v", err)
 	}
 }
@@ -94,7 +96,7 @@ func TestRotateLogFileSkipsEmpty(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := rotateLogFile(path, "20260101-000000"); err != nil {
+	if err := logtail.RotateLogFile(path, "20260101-000000"); err != nil {
 		t.Fatalf("rotate empty: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {

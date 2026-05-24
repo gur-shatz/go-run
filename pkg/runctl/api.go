@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/gur-shatz/go-run/internal/logtail"
 )
 
 // Routes returns a chi.Router with all API routes mounted.
@@ -197,7 +199,7 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		lines, totalLines, err := readLineRange(path, offset, limit)
+		lines, totalLines, err := logtail.ReadLineRange(path, offset, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -223,7 +225,7 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := tailFile(path, lines)
+	result, err := logtail.TailFile(path, lines)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -274,7 +276,7 @@ func (this *Controller) handleInsertLogMarker(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := writeMarker(path); err != nil {
+	if err := logtail.WriteMarker(path); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

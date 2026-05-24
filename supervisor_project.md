@@ -269,7 +269,7 @@ The `command:` field is parsed verbatim as a shell-style argv (via shlex). There
 Before exec the supervisor:
 
 - Sets the child's working directory to the version dir. A relative `command: "./bin/hello"` therefore resolves to the binary inside the tarball. Absolute paths still work; bare names (no slash) fall through to `PATH` lookup, matching shell semantics. The child is *not* chrooted — global paths like `/var/log` remain reachable.
-- Exports the five launch facts as `OP_`-prefixed environment variables:
+- Exports the six launch facts as `OP_`-prefixed environment variables:
 
   | Env | Meaning |
   | --- | --- |
@@ -278,10 +278,11 @@ Before exec the supervisor:
   | `OP_STATE_DIR` | absolute path of the component's state directory |
   | `OP_MONITOR_PORT` | configured monitoring port |
   | `OP_KILL_SOCK` | absolute path of the kill-switch UDS |
+  | `OP_LOG_DIR` | absolute path of the per-version log directory (see §"Logs") |
 
 A child that wants the port from env reads `OP_MONITOR_PORT`; a child that wants it on argv hardcodes the same number (the customer already chose it in `port:`) or pulls it from a top-level `vars:` block via Go template at config-load.
 
-The same five values are also available as top-level keys (`.VERSION`, `.VERSION_DIR`, …) inside `*.tmpl` files at render time — see §"Template rendering".
+The same six values are also available as top-level keys (`.VERSION`, `.VERSION_DIR`, …, `.LOG_DIR`) inside `*.tmpl` files at render time — see §"Template rendering".
 
 #### Template rendering (deployment-time config)
 
@@ -316,6 +317,37 @@ versions/v1/
 ```
 
 The child finds its rendered files in its working directory (which equals `OP_VERSION_DIR`).
+
+#### Logs
+
+The supervisor manages two log concerns per child, both rooted at the same per-version directory:
+
+```
+state_dir/logs/<component>/<version>/
+  stdout.log           # supervisor-captured stdout (rotating)
+  stdout.log.1         # rotated history (newest → oldest)
+  stdout.log.2
+  …
+  stderr.log           # supervisor-captured stderr (rotating)
+  stderr.log.1
+  …
+  <child-files>        # whatever the child writes via OP_LOG_DIR
+```
+
+- **stdout / stderr** are the supervisor's responsibility. Every launch the supervisor opens a rotating writer for each stream and MultiWriters it alongside the existing prefixed stdout/stderr so `kubectl-logs`-style tailing continues to work. Rotation cap is `log_max_size` per active file (default 10 MiB), keeping `log_max_files` history generations (default 5, named `<base>.1`, `<base>.2`, …; set negative to disable history). Active log files are closed when the child exits.
+- **App log dir** is the child's responsibility. The supervisor exports `OP_LOG_DIR` pointing at the same per-version directory. A child that wants to write `app.log`, `audit.json`, or anything else lands files alongside `stdout.log` / `stderr.log` and benefits from the same lifecycle (browseable over HTTP, GC'd with the version).
+
+The logs directory lives outside the version dir so a user can keep a forensic trail even after the matching extracted tarball is GC'd. The version-GC pass (§"Orphan folder cleanup") removes the matching `logs/<component>/<version>/` whenever it removes `versions/<version>/`.
+
+HTTP routes for inspection live at `/logs/<name>/...`. Each component gets its own `chiutil.StaticFilesFolder` mounted at construction, with `fsRoot` captured by closure so each handler is dedicated to one component. The folder serves directory listings as the standard browseable HTML index (or `index.json` for programmatic consumers) and streams files via `http.ServeFile`, which honours `Range` headers. `?download=true` forces a `Content-Disposition: attachment`. Files over `chiutil.MaxStaticFileSize` (1 MiB) refuse inline preview but can still be downloaded.
+
+| Route | Response |
+| --- | --- |
+| `GET /logs/<name>/` | browseable HTML listing of available versions |
+| `GET /logs/<name>/index.json` | JSON listing of available versions |
+| `GET /logs/<name>/<version>/` | HTML / JSON listing of files for this version |
+| `GET /logs/<name>/<version>/<file>` | raw file bytes (`text/plain`); supports HTTP `Range` |
+| `GET /logs/<name>/<version>/<file>?download=true` | force `Content-Disposition: attachment` |
 
 ## Handling crashes
 
@@ -410,6 +442,10 @@ exec_fail_threshold: 2
 kill_grace_period: 5s
 version_folder_retention: 2
 reject_expiry: 0           # 0 = rejections never auto-clear; e.g. 24h to opt in
+
+# Per-version stdout.log / stderr.log rotation (see §"Logs").
+log_max_size: 10485760     # 10 MiB before rotating to <base>.1
+log_max_files: 5           # history generations to keep (negative = no history)
 
 # Customer-controlled template context for every component's *.tmpl files.
 # Overrides keys from each version's defaults.yml. See §"Template rendering".

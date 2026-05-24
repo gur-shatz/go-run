@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -55,7 +56,7 @@ type supervisorSummary struct {
 	Components []componentSummaryEntry `yaml:"components"`
 }
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, bundle *statekitBundle, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -131,15 +132,47 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, bundle *statekit
 				w.WriteHeader(http.StatusNoContent)
 			})
 		}
+
+		// /current_version_logs: shortcut into the per-component log tree
+		// scoped to whatever current.txt names right now. 302s on every
+		// request so the link always tracks the live current — operators
+		// don't have to know the version string to land on its logs.
+		r.Get("/current_version_logs", func(w http.ResponseWriter, r *http.Request) {
+			name := chi.URLParam(r, "name")
+			current, err := paths.Component(name).ReadCurrent()
+			if err != nil || current == "" {
+				http.Error(w, "no current version on disk yet for "+name, http.StatusNotFound)
+				return
+			}
+			http.Redirect(w, r, "/logs/"+name+"/"+current+"/", http.StatusFound)
+		})
 	}).Title("Components").Description("Per-component info + scraped state view.")
 
-	for _, c := range sp.Snapshot().Components {
+	// Render the shortcut as an external link so the index UI opens it in a
+	// new tab — operators tailing logs usually want the source page (the
+	// component dashboard) to stay put.
+	components.MarkInstanceExternal("current_version_logs")
 
+	// Per-component log trees, each mounted as its own browseable static
+	// folder. fsRoot is captured at construction so each handler "knows"
+	// which component it serves without per-request URL-param lookup. The
+	// directory is pre-created so the index UI doesn't 404 before the
+	// child has launched for the first time.
+	logsRoot := root.Folder("logs").
+		Title("Component logs").
+		Description("Per-component stdout / stderr + child-written application logs, browseable as static files.")
+	for _, c := range sp.Snapshot().Components {
 		desc := "Component " + c.Name
 		if c.Description != "" {
 			desc = c.Description
 		}
 		components.Add(c.Name, desc)
+
+		fsRoot := paths.LogsForComponent(c.Name)
+		_ = os.MkdirAll(fsRoot, 0o755)
+		logsRoot.StaticFilesFolder(c.Name, fsRoot).
+			Title("Logs for " + c.Name).
+			Description("state_dir/logs/" + c.Name + "/")
 	}
 
 	return &httpServer{
