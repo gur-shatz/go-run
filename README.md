@@ -290,6 +290,7 @@ runctl -t api -t web sum  # Write .sum files for "api" and "web" only
 | Flag           | Default       | Description                                              |
 | -------------- | ------------- | -------------------------------------------------------- |
 | `-c, --config` | `runctl.yaml` | Config file path                                         |
+| `-e <file>`    |               | Load fallback environment variables from a YAML file     |
 | `-t <name>`    |               | Target filter (repeatable). Applies to watch, build, test, sum |
 | `-T, --title`  |               | Override the web dashboard title                         |
 | `-ui`          | `false`       | Serve embedded web dashboard                             |
@@ -348,6 +349,31 @@ targets:
 The `config` path is relative to the `runctl.yaml` directory. The target's working directory is derived from the config path's directory.
 
 Resolved vars from `runctl.yaml` (both global and per-target) are automatically passed down to child execrun configs via `config.WithVars()`. Per-target vars override global vars of the same key. Child configs can reference parent vars with template syntax (e.g., `{{ .API_PORT | default "8080" }}`) and add their own `vars:` section.
+
+### Fallback Variables File (`-e`)
+
+Use `-e <file>` to load fallback environment variables before `runctl.yaml` is parsed:
+
+```bash
+runctl -e vars.yaml
+```
+
+The file is a flat YAML map of environment variable names to values:
+
+```yaml
+BASE_PORT: 28000
+DATA_DIR: /tmp/runctl-data
+HELLO_GREETING: Hello from vars.yaml
+```
+
+Values from `-e` are only applied when the variable is not already present in the process environment. Existing shell/system environment variables win over the fallback file.
+
+```bash
+BASE_PORT=9000 runctl -e vars.yaml
+# BASE_PORT remains 9000, even if vars.yaml contains BASE_PORT: 28000
+```
+
+`runctl.yaml` can then read these values with `{{ env "NAME" }}`. Resolved `vars:` from `runctl.yaml`, including per-target vars, are later exported into the process environment for child processes; per-target vars override global vars of the same key.
 
 ### Web Dashboard (`-ui`)
 
