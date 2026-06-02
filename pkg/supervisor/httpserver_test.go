@@ -1,13 +1,16 @@
 package supervisor
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -43,7 +46,7 @@ var _ = Describe("backoffice version", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		build := BuildInfo{Version: "v1.2.3", Commit: "abc1234", Branch: "master", Date: "2026-06-02T09:00:00Z"}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, build, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, build, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -73,7 +76,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -107,7 +110,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -128,7 +131,7 @@ var _ = Describe("component proxy", func() {
 		cfg := Config{StateDir: dir}
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -193,6 +196,132 @@ var _ = Describe("component proxy", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+	})
+})
+
+var _ = Describe("login gate", func() {
+	// newAuthedServer wires a supervisor HTTP server with the login gate
+	// enabled for user "op" / pass "s3cret".
+	newAuthedServer := func() *httptest.Server {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", Hint: "demo login: op / s3cret"}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, log.New("[t]", false))
+		return httptest.NewServer(hs.server.Handler)
+	}
+
+	// noRedirect returns a client that surfaces redirects instead of following.
+	noRedirect := func(srv *httptest.Server) *http.Client {
+		client := srv.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		return client
+	}
+
+	It("redirects an unauthenticated request to the login form", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		resp, err := noRedirect(srv).Get(srv.URL + "/backoffice/version")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		Expect(resp.Header.Get("Location")).To(HavePrefix("/login"))
+		Expect(resp.Header.Get("Location")).To(ContainSubstring("next=%2Fbackoffice%2Fversion"))
+	})
+
+	It("serves a login form that shows the hint", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		code, body := getBody(srv.Client(), srv.URL+"/login")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("<form"))
+		Expect(body).To(ContainSubstring("demo login: op / s3cret"))
+	})
+
+	It("re-renders the form with an error on wrong credentials", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		resp, err := noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"nope"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(readBody(resp)).To(ContainSubstring("Incorrect username or password"))
+	})
+
+	It("mints a session cookie on success and grants access", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+		jar, err := cookiejar.New(nil)
+		Expect(err).NotTo(HaveOccurred())
+		client := &http.Client{Jar: jar}
+
+		// Posting good credentials redirects to ?next and the follow lands 200.
+		resp, err := client.PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}, "next": {"/backoffice/version"}})
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.Request.URL.Path).To(Equal("/backoffice/version"))
+
+		// The cookie now carries a fresh request through on its own.
+		code, _ := getBody(client, srv.URL+"/backoffice/version")
+		Expect(code).To(Equal(http.StatusOK))
+	})
+
+	It("gates the healthz probe too", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		resp, err := noRedirect(srv).Get(srv.URL + "/backoffice/healthz")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	It("rejects a cookie whose timestamp is too old", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		// A signature the server would accept, but minted 13h ago — past the
+		// 12h max age. Same credentials => same deterministic signature.
+		stale := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret"}).
+			mint(time.Now().Add(-13 * time.Hour))
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		req.AddCookie(&http.Cookie{Name: authCookieName, Value: stale})
+
+		resp, err := noRedirect(srv).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	It("rejects a cookie with a tampered signature", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		forged := fmt.Sprintf("%d.deadbeef", time.Now().Unix())
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		req.AddCookie(&http.Cookie{Name: authCookieName, Value: forged})
+
+		resp, err := noRedirect(srv).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	It("logs out by clearing the session cookie", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		resp, err := noRedirect(srv).Get(srv.URL + "/logout")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		Expect(resp.Header.Get("Set-Cookie")).To(ContainSubstring(authCookieName + "=;"))
 	})
 })
 

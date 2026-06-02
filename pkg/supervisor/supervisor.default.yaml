@@ -22,6 +22,17 @@ log_max_files: 5
 
 supervisor:
   bind_address: 127.0.0.1:9090
+  # basic_auth: optional login gate on the supervisor's HTTP server. When
+  # enabled, every route redirects unauthenticated visitors to a plain /login
+  # form — including the /backoffice/healthz probe, so point any
+  # liveness/readiness probe at the component port or expect a redirect. A
+  # correct login sets a signed session cookie valid for 12h. username and
+  # password are required.
+  # basic_auth:
+  #   enabled: true
+  #   username: admin
+  #   password: changeme   # template with env to avoid hard-coding a secret
+  #   hint: "demo login: admin / changeme"  # shown under the form; demos only
 
 updates:
   enabled: true

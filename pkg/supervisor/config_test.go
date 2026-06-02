@@ -217,6 +217,20 @@ var _ = Describe("Config", func() {
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(Succeed())
 		})
+
+		It("rejects basic auth enabled without a username or password", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op"}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("username and password are required")))
+		})
+
+		It("accepts basic auth with both credentials", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret"}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
 	})
 
 	Describe("LoadConfig", func() {

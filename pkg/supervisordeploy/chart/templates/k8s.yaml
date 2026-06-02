@@ -1,0 +1,189 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.app }}-backoffice
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.app }}
+spec:
+  selector:
+    app: {{ .Values.app }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: backoffice
+{{- range .Values.routes }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Values.app }}-{{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app: {{ $.Values.app }}
+spec:
+  selector:
+    app: {{ $.Values.app }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .port }}
+{{- end }}
+{{- if .Values.access.allowedCIDRs }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .Values.app }}-ip-allowlist
+  namespace: {{ .Values.namespace }}
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- range .Values.access.allowedCIDRs }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- if .Values.access.trustedProxyCIDRs }}
+    ipStrategy:
+      excludedIPs:
+        {{- range .Values.access.trustedProxyCIDRs }}
+        - {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.app }}-backoffice
+  namespace: {{ .Values.namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    {{- if .Values.access.allowedCIDRs }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Values.namespace }}-{{ .Values.app }}-ip-allowlist@kubernetescrd
+    {{- end }}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - {{ .Values.domains.backoffice }}
+      secretName: {{ .Values.app }}-backoffice-tls
+  rules:
+    - host: {{ .Values.domains.backoffice }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.app }}-backoffice
+                port:
+                  number: 80
+{{- range .Values.routes }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $.Values.app }}-{{ .name }}
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    {{- if $.Values.access.allowedCIDRs }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $.Values.namespace }}-{{ $.Values.app }}-ip-allowlist@kubernetescrd
+    {{- end }}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - {{ .host }}
+      secretName: {{ $.Values.app }}-{{ .name }}-tls
+  rules:
+    - host: {{ .host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.app }}-{{ .name }}
+                port:
+                  number: 80
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.app }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.app }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Values.app }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      initContainers:
+        - name: prepare-global-storage
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "mkdir -p {{ .Values.global.mountPath }}/supervisor {{ .Values.global.mountPath }}/origin {{ .Values.global.mountPath }}/safeapi && chown -R 65532:65532 {{ .Values.global.mountPath }} && chmod -R g+rwX {{ .Values.global.mountPath }}"
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+          volumeMounts:
+            - name: global-storage
+              mountPath: {{ .Values.global.mountPath }}
+      containers:
+        - name: {{ .Values.app }}
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - -c
+            - {{ .Values.global.mountPath }}/supervisor/supervisor.yml
+            - -v
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: backoffice
+              containerPort: {{ .Values.ports.backoffice }}
+            - name: public
+              containerPort: {{ .Values.ports.public }}
+          readinessProbe:
+            httpGet:
+              path: /backoffice/healthz
+              port: backoffice
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /backoffice/healthz
+              port: backoffice
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: global-storage
+              mountPath: {{ .Values.global.mountPath }}
+      volumes:
+        - name: global-storage
+          hostPath:
+            path: {{ .Values.global.hostPath }}
+            type: DirectoryOrCreate
