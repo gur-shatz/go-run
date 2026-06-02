@@ -71,7 +71,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 
 	// The bare root stays a thin index whose only job is to point operators
 	// at /backoffice. The control surface itself is a subfolder.
-	bo := chiutil.NewRouteFolder(router, "/backoffice").
+	bo := chiutil.NewRouteFolder(router, backofficePrefix).
 		ServiceName("Backoffice").
 		Title("Supervisor").
 		Description("Vendor-controlled supervisor. Control surface lives under /backoffice.")
@@ -155,7 +155,14 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 				http.Error(w, "no current version on disk yet for "+name, http.StatusNotFound)
 				return
 			}
-			http.Redirect(w, r, backofficePrefix+"/logs/"+name+"/"+current+"/", http.StatusFound)
+			// Relative redirect: "../../" climbs from components/<name>/ back to
+			// the backoffice root, then descends into the logs tree. Setting
+			// Location directly (rather than http.Redirect, which would resolve
+			// it to an absolute path) keeps it correct behind a path-stripping
+			// reverse proxy, where an absolute /backoffice/... would drop the
+			// proxy prefix and miss.
+			w.Header().Set("Location", "../../logs/"+name+"/"+current+"/")
+			w.WriteHeader(http.StatusFound)
 		})
 	}).Title("Components").Description("Per-component info + scraped state view.")
 
