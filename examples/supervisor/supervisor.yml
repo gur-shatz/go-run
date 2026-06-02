@@ -55,6 +55,9 @@ components:
     description: "A simple HTTP server"
     port: 18090
     command: "./bin/hello --port=18090"
+    # Markdown shown on the component's portal page (/components/hello/).
+    # Relative to this file. Read at request time, so edits show up live.
+    readme: ./readme/hello.md
     env:
       LOG_LEVEL: info
     # urls block is optional — these are the defaults the supervisor expects.

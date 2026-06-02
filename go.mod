@@ -7,13 +7,15 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-playground/validator/v10 v10.28.0
+	github.com/gur-shatz/statekit v0.0.7
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
 	golang.org/x/term v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
-	github.com/gur-shatz/statekit v0.0.7
 )
+
+require github.com/yuin/goldmark v1.8.2
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
@@ -35,4 +37,3 @@ require (
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 )
-

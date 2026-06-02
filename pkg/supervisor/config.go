@@ -95,12 +95,18 @@ type RemoteConfig struct {
 // child to serve (healthz, readyz, state, metrics). Unset fields fall back
 // to their conventional values.
 type ComponentConfig struct {
-	Name    string            `yaml:"name"`
-	Description string 		  `yaml:"description,omitempty"`
-	Port    int               `yaml:"port"`
-	Command string            `yaml:"command"`
-	Env     map[string]string `yaml:"env,omitempty"`
-	URLs    URLsConfig        `yaml:"urls,omitempty"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description,omitempty"`
+	Port        int               `yaml:"port"`
+	Command     string            `yaml:"command"`
+	Env         map[string]string `yaml:"env,omitempty"`
+	URLs        URLsConfig        `yaml:"urls,omitempty"`
+
+	// Readme is an optional path to a Markdown file describing this component,
+	// shown on the component's portal page. Relative paths resolve against the
+	// directory holding supervisor.yml. The file is read at request time, so
+	// operator edits show up without a supervisor restart.
+	Readme string `yaml:"readme,omitempty"`
 
 	// Remote overrides the top-level remote block for this component. Zero-valued
 	// fields fall back to the top-level remote.
@@ -163,6 +169,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Remote.BaseURL = resolveFileURL(cfg.Remote.BaseURL, absConfigDir)
 	for i := range cfg.Components {
 		cfg.Components[i].Remote.BaseURL = resolveFileURL(cfg.Components[i].Remote.BaseURL, absConfigDir)
+		cfg.Components[i].Readme = resolveLocalPath(cfg.Components[i].Readme, absConfigDir)
 	}
 
 	cfg.ApplyDefaults()
@@ -172,6 +179,20 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// resolveLocalPath turns a relative filesystem path into an absolute one
+// rooted at configDir. Empty and already-absolute paths are returned
+// unchanged. Used for operator-supplied assets (e.g. component readme files)
+// referenced relative to supervisor.yml.
+func resolveLocalPath(raw, configDir string) string {
+	if raw == "" || filepath.IsAbs(raw) {
+		return raw
+	}
+	if abs, err := filepath.Abs(filepath.Join(configDir, raw)); err == nil {
+		return abs
+	}
+	return raw
 }
 
 // resolveFileURL rewrites a relative file:// URL into file:///<abs path>

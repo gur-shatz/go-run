@@ -3,7 +3,10 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"time"
 
@@ -62,12 +65,18 @@ type supervisorSummary struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
-
 	// keep the root router free for supervisor specific routes.
+
+	// Portal: the user-facing home page (component cards) at "/" and a
+	// per-component page at "/components/<name>/".
+	newPortal(sp, componentCfgs, logger).mount(router)
+
+	// /proxy/<component>/* reverse-proxies to the component's own port.
+	mountComponentProxy(router, sp, logger)
 
 	// The bare root stays a thin index whose only job is to point operators
 	// at /backoffice. The control surface itself is a subfolder.
@@ -198,6 +207,53 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 		server: &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 5 * time.Second},
 		logger: logger,
 	}
+}
+
+// mountComponentProxy wires /proxy/<component>/* on the root router to the
+// component's own HTTP port. The port is the supervisor's first-class handle
+// on a component: each one binds a well-known port in the shared pod network,
+// so the supervisor reverse-proxies to 127.0.0.1:<port>.
+//
+// The /proxy/<component> prefix is stripped before forwarding, so the child
+// receives requests rooted at "/". chiutil-based children rebuild the prefix
+// from the browser URL (and X-Forwarded-Prefix is set for any that read it),
+// so their links and redirects stay correct under the proxy.
+func mountComponentProxy(router chi.Router, sp stateProvider, logger *log.Logger) {
+	forward := func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		snap, ok := sp.ComponentSnapshot(name)
+		if !ok {
+			http.Error(w, "no such component: "+name, http.StatusNotFound)
+			return
+		}
+		if snap.Port <= 0 {
+			http.Error(w, "component "+name+" has no port", http.StatusServiceUnavailable)
+			return
+		}
+
+		target := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", snap.Port)}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+			logger.Warn("proxy %s -> %s failed: %v", name, target.Host, err)
+			http.Error(w, "component "+name+" unreachable: "+err.Error(), http.StatusBadGateway)
+		}
+
+		// Strip the /proxy/<name> mount prefix: the child is rooted at "/".
+		r.URL.Path = "/" + chi.URLParam(r, "*")
+		r.URL.RawPath = ""
+		r.Header.Set("X-Forwarded-Prefix", "/proxy/"+name)
+		proxy.ServeHTTP(w, r)
+	}
+
+	// All methods (GET, POST, websockets, ...) forward to the child.
+	router.Handle("/proxy/{name}/*", http.HandlerFunc(forward))
+
+	// Bare /proxy/<name> -> /proxy/<name>/ so the child's relative links
+	// resolve. Relative Location keeps it correct behind an outer proxy.
+	router.Get("/proxy/{name}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", chi.URLParam(r, "name")+"/")
+		w.WriteHeader(http.StatusMovedPermanently)
+	})
 }
 
 // componentStateDocument builds a statekit StateDisplayDocument scoped to the

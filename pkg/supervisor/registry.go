@@ -185,6 +185,15 @@ func (this *statekitBundle) markDown(name, reason string) {
 	}
 }
 
+// runCountFor returns how many times the supervisor has launched this
+// component since it started (0 if the component isn't known).
+func (this *statekitBundle) runCountFor(name string) int64 {
+	if c, ok := this.perComponentRunCount[name]; ok {
+		return int64(c.Get())
+	}
+	return 0
+}
+
 // lifecycleSnapshot returns the current snapshot of the lifecycle leaf, used
 // by Component.Snapshot() to surface the statekit status in /info and
 // /summary. Returns the zero Snapshot if the component isn't known.

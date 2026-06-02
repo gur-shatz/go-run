@@ -1,0 +1,186 @@
+{{define "styles"}}
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #9aa3b2; --accent: #5b9dff; --accent-2: #3b82f6;
+    --pass: #34d399; --warn: #fbbf24; --fail: #f87171; --down: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 28px;
+  }
+  header.top h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: -0.2px; }
+  header.top .sub { color: var(--muted); font-size: 13px; }
+  .topnav a { color: var(--muted); font-size: 13px; margin-left: 16px; }
+  .topnav a:hover { color: var(--text); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 18px 14px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  .card:hover { border-color: #3a4150; transform: translateY(-1px); }
+  .card h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .card h2 a { color: var(--text); }
+  .card .desc { color: var(--muted); font-size: 13.5px; min-height: 1.2em; }
+  .card .meta { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .card .statline { display: flex; gap: 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .card .statline b { color: var(--text); font-weight: 600; }
+  .card .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 8px; flex-wrap: wrap; }
+
+  /* health stat grid (component page) */
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px;
+    margin: 4px 0 24px;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+  }
+  .stat .k { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat .v { font-size: 18px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat .v.warn { color: var(--warn); } .stat .v.fail { color: var(--fail); }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    padding: 2px 9px; border-radius: 999px; font-weight: 600; text-transform: capitalize;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--down); }
+  .badge.pass { color: var(--pass); } .badge.pass::before { background: var(--pass); }
+  .badge.warn { color: var(--warn); } .badge.warn::before { background: var(--warn); }
+  .badge.fail { color: var(--fail); } .badge.fail::before { background: var(--fail); }
+  .badge.down { color: var(--down); } .badge.down::before { background: var(--down); }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+  .btn {
+    display: inline-block; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  }
+  .btn:hover { text-decoration: none; border-color: #3a4150; background: #232732; }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .btn.primary:hover { background: #2f74e0; }
+
+  .empty { color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; padding: 32px; text-align: center; }
+
+  /* component page */
+  .back { color: var(--muted); font-size: 13px; }
+  .chead { display: flex; align-items: center; gap: 14px; margin: 14px 0 6px; flex-wrap: wrap; }
+  .chead h1 { margin: 0; font-size: 24px; }
+  .cmeta { color: var(--muted); font-size: 13px; margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .readme {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 8px 28px 24px;
+  }
+  .readme h1, .readme h2, .readme h3 { line-height: 1.25; }
+  .readme h1 { font-size: 22px; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .readme h2 { font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .readme code { background: var(--panel-2); padding: .15em .4em; border-radius: 5px; font-size: 13px; }
+  .readme pre { background: var(--panel-2); padding: 14px; border-radius: 8px; overflow: auto; }
+  .readme pre code { background: none; padding: 0; }
+  .readme table { border-collapse: collapse; }
+  .readme th, .readme td { border: 1px solid var(--border); padding: 6px 10px; }
+  .readme blockquote { border-left: 3px solid var(--border); margin: 0; padding-left: 14px; color: var(--muted); }
+  .note { color: var(--muted); font-size: 13.5px; padding: 18px 0; }
+</style>
+{{end}}
+
+{{define "home"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>{{template "styles" .}}</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div>
+        <h1>{{.Title}}</h1>
+        {{if .StartedAt}}<div class="sub">running since {{.StartedAt}}</div>{{end}}
+      </div>
+      <nav class="topnav">
+        <a href="{{.RootRel}}backoffice/">Backoffice &rarr;</a>
+      </nav>
+    </header>
+
+    {{if .Components}}
+    <div class="grid">
+      {{range .Components}}
+      <div class="card">
+        <div class="row">
+          <h2><a href="{{$.RootRel}}components/{{.Name}}/">{{.Name}}</a></h2>
+          <span class="badge {{.Status}}">{{.Status}}</span>
+        </div>
+        <div class="desc">{{.Description}}</div>
+        <div class="meta">
+          {{if .Current}}version {{.Current}}{{else}}no version yet{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
+        </div>
+        <div class="statline">
+          <span>up <b>{{.Uptime}}</b></span>
+          <span><b>{{.RunCount}}</b> runs</span>
+          <span>upgraded <b>{{.LastUpgrade}}</b></span>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="{{$.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
+          <a class="btn" href="{{$.RootRel}}components/{{.Name}}/">Details</a>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="empty">No components configured.</div>
+    {{end}}
+  </div>
+</body>
+</html>{{end}}
+
+{{define "component"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Name}} &middot; Supervisor</title>{{template "styles" .}}</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="{{.RootRel}}">&larr; All components</a>
+    <div class="chead">
+      <h1>{{.Name}}</h1>
+      <span class="badge {{.Status}}">{{.Status}}</span>
+    </div>
+    {{if .Description}}<div class="cmeta">{{.Description}}</div>{{end}}
+    <div class="cmeta">
+      {{if .Current}}current {{.Current}}{{else}}no version yet{{end}}{{if .Stable}} &middot; stable {{.Stable}}{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">Uptime</div><div class="v">{{.Uptime}}</div></div>
+      <div class="stat"><div class="k">Runs</div><div class="v">{{.RunCount}}</div></div>
+      <div class="stat"><div class="k">Last upgrade</div><div class="v">{{.LastUpgrade}}</div></div>
+      {{if .Running}}<div class="stat"><div class="k">PID</div><div class="v">{{.ChildPID}}</div></div>{{end}}
+      <div class="stat"><div class="k">Fast crashes</div><div class="v{{if .FastCrashes}} warn{{end}}">{{.FastCrashes}}</div></div>
+      <div class="stat"><div class="k">Exec failures</div><div class="v{{if .ExecFailures}} fail{{end}}">{{.ExecFailures}}</div></div>
+    </div>
+
+    <div class="toolbar">
+      <a class="btn primary" href="{{.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
+      {{if .URLs.Healthz}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Healthz}}">Health</a>{{end}}
+      {{if .URLs.State}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.State}}">State</a>{{end}}
+      {{if .URLs.Metrics}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Metrics}}">Metrics</a>{{end}}
+      <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/">Backoffice &rarr;</a>
+    </div>
+
+    {{if .ReadmeHTML}}
+      <div class="readme">{{.ReadmeHTML}}</div>
+    {{else if .ReadmeMissing}}
+      <div class="note">README configured but could not be read.</div>
+    {{else if not .ReadmeConfigured}}
+      <div class="note">No README configured for this component.</div>
+    {{end}}
+  </div>
+</body>
+</html>{{end}}

@@ -20,9 +20,16 @@ type ComponentSnapshot struct {
 	Port          int         `json:"port,omitempty"`
 	ChildPID      int         `json:"child_pid,omitempty"`
 	UptimeSeconds int64       `json:"uptime_seconds,omitempty"`
+	RunCount      int64       `json:"run_count"`
 	FastCrashes   int         `json:"fast_crashes"`
 	ExecFailures  int         `json:"exec_failures"`
-	MonitorURLs   MonitorURLs `json:"monitor_urls,omitzero"`
+
+	// LastUpgrade is the RFC3339 time the running version last changed, taken
+	// from current.txt's mtime (which is only rewritten on an actual version
+	// switch, so it survives supervisor restarts). Empty if no version yet.
+	LastUpgrade string `json:"last_upgrade,omitempty"`
+
+	MonitorURLs MonitorURLs `json:"monitor_urls,omitzero"`
 }
 
 // MonitorURLs is the snapshot-time copy of the URLsConfig path layout. Lives

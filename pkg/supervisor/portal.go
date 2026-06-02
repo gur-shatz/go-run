@@ -1,0 +1,216 @@
+package supervisor
+
+import (
+	"bytes"
+	_ "embed"
+	"fmt"
+	"html/template"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+
+	"github.com/gur-shatz/go-run/internal/log"
+)
+
+//go:embed portal.html
+var portalTemplateHTML string
+
+var portalTemplates = template.Must(template.New("portal").Parse(portalTemplateHTML))
+
+// portalMarkdown renders component README files. The Table extension adds
+// GitHub-style pipe tables (the rest is CommonMark). Raw HTML in the markdown
+// is dropped (goldmark's safe default — WithUnsafe is not set), which is fine
+// for operator-authored docs and avoids injecting arbitrary HTML.
+var portalMarkdown = goldmark.New(goldmark.WithExtensions(extension.Table))
+
+// portal serves the supervisor's front-door UI: a grid of component cards at
+// "/" that drills down into a per-component page at "/components/<name>/".
+// It is the user-facing counterpart to the /backoffice control surface.
+type portal struct {
+	sp      stateProvider
+	configs map[string]ComponentConfig
+	logger  *log.Logger
+}
+
+func newPortal(sp stateProvider, components []ComponentConfig, logger *log.Logger) *portal {
+	m := make(map[string]ComponentConfig, len(components))
+	for _, c := range components {
+		m[c.Name] = c
+	}
+	return &portal{sp: sp, configs: m, logger: logger}
+}
+
+// mount wires the portal routes on the root router. Links inside the rendered
+// pages are relative to a per-page RootRel ("" at "/", "../../" on a component
+// page), so the whole portal survives being served behind a path prefix.
+func (this *portal) mount(router chi.Router) {
+	router.Get("/", this.home)
+	router.Get("/components/{name}/", this.component)
+
+	// Bare /components/<name> -> /components/<name>/ (relative, proxy-safe).
+	router.Get("/components/{name}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", chi.URLParam(r, "name")+"/")
+		w.WriteHeader(http.StatusMovedPermanently)
+	})
+	// /components and /components/ are not pages of their own — send them home.
+	redirectHome := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "../")
+		w.WriteHeader(http.StatusFound)
+	}
+	router.Get("/components", redirectHome)
+	router.Get("/components/", redirectHome)
+}
+
+// portalComponent is one card / page header for a managed component.
+type portalComponent struct {
+	Name        string
+	Description string
+	Status      string // pass / warn / fail / down
+	Current     string
+	Stable      string
+	Port        int
+	HasReadme   bool
+
+	// Health detail, pre-formatted for display.
+	Running      bool
+	Uptime       string // "2h 5m" / "not running"
+	RunCount     int64
+	LastUpgrade  string // "5m ago" / "—"
+	ChildPID     int
+	FastCrashes  int
+	ExecFailures int
+}
+
+type portalHomeView struct {
+	Title      string
+	StartedAt  string
+	RootRel    string
+	Components []portalComponent
+}
+
+type portalComponentView struct {
+	portalComponent
+	RootRel          string
+	ReadmeHTML       template.HTML
+	ReadmeConfigured bool
+	ReadmeMissing    bool
+	URLs             MonitorURLs
+}
+
+func (this *portal) card(c ComponentSnapshot) portalComponent {
+	cfg := this.configs[c.Name]
+	desc := c.Description
+	if desc == "" {
+		desc = cfg.Description
+	}
+	return portalComponent{
+		Name:         c.Name,
+		Description:  desc,
+		Status:       c.Status,
+		Current:      c.Current,
+		Stable:       c.Stable,
+		Port:         c.Port,
+		HasReadme:    cfg.Readme != "",
+		Running:      c.ChildPID != 0,
+		Uptime:       fmtUptime(c.UptimeSeconds),
+		RunCount:     c.RunCount,
+		LastUpgrade:  fmtAgo(c.LastUpgrade),
+		ChildPID:     c.ChildPID,
+		FastCrashes:  c.FastCrashes,
+		ExecFailures: c.ExecFailures,
+	}
+}
+
+// fmtUptime renders a child uptime in seconds as a compact "2h 5m" string.
+func fmtUptime(secs int64) string {
+	if secs <= 0 {
+		return "not running"
+	}
+	return humanDuration(time.Duration(secs) * time.Second)
+}
+
+// fmtAgo renders an RFC3339 timestamp as "5m ago", or "—" when absent.
+func fmtAgo(rfc3339 string) string {
+	if rfc3339 == "" {
+		return "—"
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return rfc3339
+	}
+	d := time.Since(t)
+	if d < time.Minute {
+		return "just now"
+	}
+	return humanDuration(d) + " ago"
+}
+
+// humanDuration formats a duration to two significant units at most.
+func humanDuration(d time.Duration) string {
+	days := int(d / (24 * time.Hour))
+	h := int((d % (24 * time.Hour)) / time.Hour)
+	m := int((d % time.Hour) / time.Minute)
+	s := int((d % time.Minute) / time.Second)
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, h)
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, m)
+	case m > 0:
+		return fmt.Sprintf("%dm", m)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
+}
+
+func (this *portal) home(w http.ResponseWriter, _ *http.Request) {
+	snap := this.sp.Snapshot()
+	view := portalHomeView{Title: "Supervisor", StartedAt: snap.StartedAt}
+	for _, c := range snap.Components {
+		view.Components = append(view.Components, this.card(c))
+	}
+	this.render(w, "home", view)
+}
+
+func (this *portal) component(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	snap, ok := this.sp.ComponentSnapshot(name)
+	if !ok {
+		http.Error(w, "no such component: "+name, http.StatusNotFound)
+		return
+	}
+	cfg := this.configs[name]
+
+	view := portalComponentView{
+		portalComponent:  this.card(snap),
+		RootRel:          "../../",
+		ReadmeConfigured: cfg.Readme != "",
+		URLs:             snap.MonitorURLs,
+	}
+	if cfg.Readme != "" {
+		if md, err := os.ReadFile(cfg.Readme); err != nil {
+			view.ReadmeMissing = true
+			this.logger.Warn("read readme for %s (%s): %v", name, cfg.Readme, err)
+		} else {
+			var buf bytes.Buffer
+			if err := portalMarkdown.Convert(md, &buf); err != nil {
+				view.ReadmeMissing = true
+				this.logger.Warn("render readme for %s: %v", name, err)
+			} else {
+				view.ReadmeHTML = template.HTML(buf.String())
+			}
+		}
+	}
+	this.render(w, "component", view)
+}
+
+func (this *portal) render(w http.ResponseWriter, name string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := portalTemplates.ExecuteTemplate(w, name, data); err != nil {
+		this.logger.Error("render portal %s: %v", name, err)
+	}
+}

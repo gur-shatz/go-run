@@ -124,8 +124,19 @@ func (this *Component) Snapshot() ComponentSnapshot {
 	// Severity comes from the statekit lifecycle leaf — single source of
 	// truth. "down" when no bundle is wired (test-mode without registry).
 	status := "down"
+	var runCount int64
 	if this.bundle != nil {
 		status = this.bundle.lifecycleSnapshot(this.cfg.Name).Status.String()
+		runCount = this.bundle.runCountFor(this.cfg.Name)
+	}
+
+	// Last upgrade = current.txt's mtime, which only advances on a real
+	// version switch (SwitchToVersion writes it only when the version changes).
+	var lastUpgrade string
+	if current != "" {
+		if fi, err := os.Stat(this.paths.Current()); err == nil {
+			lastUpgrade = fi.ModTime().UTC().Format(time.RFC3339)
+		}
 	}
 
 	return ComponentSnapshot{
@@ -136,8 +147,10 @@ func (this *Component) Snapshot() ComponentSnapshot {
 		Current:       current,
 		ChildPID:      this.pid,
 		UptimeSeconds: uptimeSeconds,
+		RunCount:      runCount,
 		FastCrashes:   this.counters.FastCrashes,
 		ExecFailures:  this.counters.ExecFailures,
+		LastUpgrade:   lastUpgrade,
 		Port:          this.cfg.Port,
 		MonitorURLs: MonitorURLs{
 			Healthz: this.cfg.URLs.Healthz,

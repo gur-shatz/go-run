@@ -1,10 +1,13 @@
 package supervisor
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,15 +16,18 @@ import (
 )
 
 // stubStateProvider is a minimal stateProvider exposing a single component.
-type stubStateProvider struct{ name string }
+type stubStateProvider struct {
+	name string
+	port int
+}
 
 func (this stubStateProvider) Snapshot() SupervisorSnapshot {
-	return SupervisorSnapshot{Components: []ComponentSnapshot{{Name: this.name, Status: "pass"}}}
+	return SupervisorSnapshot{Components: []ComponentSnapshot{{Name: this.name, Status: "pass", Port: this.port}}}
 }
 
 func (this stubStateProvider) ComponentSnapshot(name string) (ComponentSnapshot, bool) {
 	if name == this.name {
-		return ComponentSnapshot{Name: this.name}, true
+		return ComponentSnapshot{Name: this.name, Port: this.port}, true
 	}
 	return ComponentSnapshot{}, false
 }
@@ -40,7 +46,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -74,7 +80,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -86,3 +92,91 @@ var _ = Describe("current_version_logs", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 	})
 })
+
+var _ = Describe("component proxy", func() {
+	// startServer wires a supervisor HTTP server whose only component, "hello",
+	// points at the given port, and returns a client that does not follow redirects.
+	startServer := func(componentPort int) (*httptest.Server, *http.Client) {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		client := srv.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		return srv, client
+	}
+
+	It("forwards /proxy/<component>/* to the component port with the prefix stripped", func() {
+		var gotPath, gotQuery, gotPrefix string
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotQuery = r.URL.RawQuery
+			gotPrefix = r.Header.Get("X-Forwarded-Prefix")
+			_, _ = w.Write([]byte("from-backend"))
+		}))
+		defer backend.Close()
+		port, err := strconv.Atoi(must(url.Parse(backend.URL)).Port())
+		Expect(err).NotTo(HaveOccurred())
+
+		srv, client := startServer(port)
+		defer srv.Close()
+
+		// A deep path forwards verbatim regardless of segment depth: only the
+		// /proxy/<component> mount prefix is removed.
+		resp, err := client.Get(srv.URL + "/proxy/hello/api/v2/foo/bar/baz?x=1&y=2")
+		Expect(err).NotTo(HaveOccurred())
+		body := readBody(resp)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(body).To(Equal("from-backend"))
+		Expect(gotPath).To(Equal("/api/v2/foo/bar/baz")) // /proxy/hello stripped, depth preserved
+		Expect(gotQuery).To(Equal("x=1&y=2"))
+		Expect(gotPrefix).To(Equal("/proxy/hello"))
+	})
+
+	It("redirects the bare /proxy/<component> to its trailing-slash form", func() {
+		srv, client := startServer(1) // port unused: redirect happens before any dial
+		defer srv.Close()
+
+		resp, err := client.Get(srv.URL + "/proxy/hello")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusMovedPermanently))
+		Expect(resp.Header.Get("Location")).To(Equal("hello/"))
+	})
+
+	It("404s an unknown component", func() {
+		srv, client := startServer(1)
+		defer srv.Close()
+
+		resp, err := client.Get(srv.URL + "/proxy/nope/")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+	})
+
+	It("502s when the component port is not listening", func() {
+		// Pick a port nothing is on by opening then closing a listener.
+		srv, client := startServer(1) // 127.0.0.1:1 — privileged, nothing listening
+		defer srv.Close()
+
+		resp, err := client.Get(srv.URL + "/proxy/hello/")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+	})
+})
+
+func must(u *url.URL, err error) *url.URL {
+	Expect(err).NotTo(HaveOccurred())
+	return u
+}
+
+func readBody(resp *http.Response) string {
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	Expect(err).NotTo(HaveOccurred())
+	return string(b)
+}
