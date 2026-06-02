@@ -65,7 +65,7 @@ type supervisorSummary struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -73,10 +73,15 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
-	newPortal(sp, componentCfgs, logger).mount(router)
+	newPortal(sp, componentCfgs, obs != nil, logger).mount(router)
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)
+
+	// /health: optional health-aggregation console (statekit storage).
+	if obs != nil {
+		obs.mount(router)
+	}
 
 	// The bare root stays a thin index whose only job is to point operators
 	// at /backoffice. The control surface itself is a subfolder.

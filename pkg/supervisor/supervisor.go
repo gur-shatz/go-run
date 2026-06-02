@@ -39,6 +39,7 @@ type Supervisor struct {
 	httpServer *httpServer
 	bundle     *statekitBundle
 	scraper    *componentScraper
+	observer   *observer // optional health-aggregation role; nil when disabled
 
 	// Forced overrides snapshot, refreshed on every polling tick.
 	forcedMu sync.RWMutex
@@ -115,8 +116,13 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 	this.scraper = sc
 
+	// Optional health-aggregation role: persist scraped state + serve /health.
+	if cfg.Observer.Enabled {
+		this.observer = newObserver(cfg.Observer, this.bundle.registry, logger)
+	}
+
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, logger)
 
 	return this, nil
 }
@@ -205,6 +211,12 @@ func (this *Supervisor) Run(ctx context.Context) error {
 	// Scraper: polls each component's /healthz, /state, /metrics and feeds
 	// the results into the supervisor's statekit registry.
 	wg.Go(func() { this.scraper.Run(ctx) })
+
+	// Observer (optional): snapshots the registry into the health store so
+	// the /health console has current state + transition events.
+	if this.observer != nil {
+		wg.Go(func() { this.observer.Run(ctx) })
+	}
 
 	// HTTP server.
 	httpErr := make(chan error, 1)

@@ -60,7 +60,31 @@ type Config struct {
 	Supervisor SupervisorConfig `yaml:"supervisor"`
 	Remote     RemoteConfig     `yaml:"remote"`
 
+	// Observer enables the optional health-aggregation role: the supervisor
+	// persists scraped component state into an in-memory statekit storage and
+	// serves a dedicated health console at /health (current state, transition
+	// events, per-target rollups). Default disabled — this is a temporary role
+	// that may later move into its own component.
+	Observer ObserverConfig `yaml:"observer,omitempty"`
+
 	Components []ComponentConfig `yaml:"components"`
+}
+
+// ObserverConfig controls the optional health-aggregation role. When Enabled,
+// the supervisor stands up a statekit storage fed from its own registry on a
+// ticker and serves the storage console + API under /health.
+type ObserverConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// IngestInterval is how often the supervisor snapshots its registry into
+	// the store. Each snapshot updates current state and appends any new
+	// transition events. Default 1s.
+	IngestInterval time.Duration `yaml:"ingest_interval"`
+
+	// CacheMB sizes the document cache (full /state documents) in MiB.
+	// Default 32. Note: storage is in-memory only — history does not survive a
+	// supervisor restart.
+	CacheMB int `yaml:"cache_mb"`
 }
 
 // SupervisorConfig controls the supervisor's own HTTP server (own-state, /healthz, /metrics)
@@ -262,6 +286,14 @@ func (this *Config) ApplyDefaults() {
 	}
 	if this.Remote.PollingInterval == 0 {
 		this.Remote.PollingInterval = time.Minute
+	}
+	if this.Observer.Enabled {
+		if this.Observer.IngestInterval == 0 {
+			this.Observer.IngestInterval = time.Second
+		}
+		if this.Observer.CacheMB == 0 {
+			this.Observer.CacheMB = 32
+		}
 	}
 
 	for i := range this.Components {

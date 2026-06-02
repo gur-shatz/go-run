@@ -106,6 +106,7 @@
         {{if .StartedAt}}<div class="sub">running since {{.StartedAt}}</div>{{end}}
       </div>
       <nav class="topnav">
+        {{if .HealthEnabled}}<a href="{{.RootRel}}health/">Health &rarr;</a>{{end}}
         <a href="{{.RootRel}}backoffice/">Backoffice &rarr;</a>
       </nav>
     </header>
@@ -171,6 +172,7 @@
       {{if .URLs.Healthz}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Healthz}}">Health</a>{{end}}
       {{if .URLs.State}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.State}}">State</a>{{end}}
       {{if .URLs.Metrics}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Metrics}}">Metrics</a>{{end}}
+      {{if .HealthEnabled}}<a class="btn" href="{{.RootRel}}health/">Health &amp; events</a>{{end}}
       <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/">Backoffice &rarr;</a>
     </div>
 

@@ -31,17 +31,18 @@ var portalMarkdown = goldmark.New(goldmark.WithExtensions(extension.Table))
 // "/" that drills down into a per-component page at "/components/<name>/".
 // It is the user-facing counterpart to the /backoffice control surface.
 type portal struct {
-	sp      stateProvider
-	configs map[string]ComponentConfig
-	logger  *log.Logger
+	sp            stateProvider
+	configs       map[string]ComponentConfig
+	healthEnabled bool // observer role on -> show links to the /health console
+	logger        *log.Logger
 }
 
-func newPortal(sp stateProvider, components []ComponentConfig, logger *log.Logger) *portal {
+func newPortal(sp stateProvider, components []ComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
 	m := make(map[string]ComponentConfig, len(components))
 	for _, c := range components {
 		m[c.Name] = c
 	}
-	return &portal{sp: sp, configs: m, logger: logger}
+	return &portal{sp: sp, configs: m, healthEnabled: healthEnabled, logger: logger}
 }
 
 // mount wires the portal routes on the root router. Links inside the rendered
@@ -86,15 +87,17 @@ type portalComponent struct {
 }
 
 type portalHomeView struct {
-	Title      string
-	StartedAt  string
-	RootRel    string
-	Components []portalComponent
+	Title         string
+	StartedAt     string
+	RootRel       string
+	HealthEnabled bool
+	Components    []portalComponent
 }
 
 type portalComponentView struct {
 	portalComponent
 	RootRel          string
+	HealthEnabled    bool
 	ReadmeHTML       template.HTML
 	ReadmeConfigured bool
 	ReadmeMissing    bool
@@ -169,7 +172,7 @@ func humanDuration(d time.Duration) string {
 
 func (this *portal) home(w http.ResponseWriter, _ *http.Request) {
 	snap := this.sp.Snapshot()
-	view := portalHomeView{Title: "Supervisor", StartedAt: snap.StartedAt}
+	view := portalHomeView{Title: "Supervisor", StartedAt: snap.StartedAt, HealthEnabled: this.healthEnabled}
 	for _, c := range snap.Components {
 		view.Components = append(view.Components, this.card(c))
 	}
@@ -188,6 +191,7 @@ func (this *portal) component(w http.ResponseWriter, r *http.Request) {
 	view := portalComponentView{
 		portalComponent:  this.card(snap),
 		RootRel:          "../../",
+		HealthEnabled:    this.healthEnabled,
 		ReadmeConfigured: cfg.Readme != "",
 		URLs:             snap.MonitorURLs,
 	}
