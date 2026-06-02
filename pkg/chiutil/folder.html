@@ -386,10 +386,11 @@
             background: transparent !important;
         }
 
-        .viewer-html {
-            font-family: inherit;
-            font-size: 14px;
-            line-height: 1.5;
+        .viewer-iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            background: var(--bg);
         }
 
         .viewer-empty {
@@ -501,6 +502,65 @@
         let currentResponse = '';
         let currentPath = '';
 
+        function endpointHash(path, method) {
+            const params = new URLSearchParams();
+            params.set('method', method);
+            params.set('path', path);
+            return `#${params.toString()}`;
+        }
+
+        function endpointFromHash() {
+            const hash = window.location.hash.replace(/^#/, '');
+            if (!hash) return null;
+
+            const params = new URLSearchParams(hash);
+            const path = params.get('path');
+            if (!path) return null;
+
+            return {
+                method: (params.get('method') || 'GET').toUpperCase(),
+                path,
+            };
+        }
+
+        function findEntry(path, method) {
+            const entries = document.querySelectorAll('#entries .entry');
+            for (const entry of entries) {
+                if (entry.dataset.path === path && entry.dataset.method === method) {
+                    return entry;
+                }
+            }
+            return null;
+        }
+
+        function selectEndpointEntry(entry, updateHash) {
+            const entriesEl = document.getElementById('entries');
+            const path = entry.dataset.path;
+            const method = entry.dataset.method;
+
+            entriesEl.querySelectorAll('.entry').forEach(el => el.classList.remove('active'));
+            entry.classList.add('active');
+
+            if (updateHash) {
+                const hash = endpointHash(path, method);
+                if (window.location.hash !== hash) {
+                    history.pushState(null, '', hash);
+                }
+            }
+
+            loadEndpoint(path, method);
+        }
+
+        function restoreSelectionFromHash() {
+            const target = endpointFromHash();
+            if (!target) return;
+
+            const entry = findEntry(target.path, target.method);
+            if (entry && (target.method === 'GET' || target.method === 'POST')) {
+                selectEndpointEntry(entry, false);
+            }
+        }
+
         function buildBreadcrumb(path) {
             const bc = document.getElementById('breadcrumb');
             const backLink = document.getElementById('back-link');
@@ -599,29 +659,15 @@
                 statusEl.classList.add(res.ok ? 'ok' : 'error');
                 timeEl.textContent = `${elapsed}ms`;
 
-                // Action forms opt into iframe rendering so their CSS/JS
-                // can't interact with the harness page. Plain HTML
-                // responses are shown as text like other endpoint output.
-                if (viewerMode === 'iframe') {
+                // HTML previews need a document boundary so their CSS/JS
+                // cannot interact with the RouteFolder shell.
+                if (viewerMode === 'iframe' || contentType.includes('text/html')) {
                     currentResponse = text;
                     const iframe = document.createElement('iframe');
                     iframe.className = 'viewer-iframe';
-                    iframe.style.width = '100%';
-                    iframe.style.height = '100%';
-                    iframe.style.border = '0';
                     iframe.srcdoc = text;
                     body.innerHTML = '';
                     body.appendChild(iframe);
-                    return;
-                }
-
-                if (contentType.includes('text/html')) {
-                    currentResponse = text;
-                    const htmlEl = document.createElement('div');
-                    htmlEl.className = 'viewer-html';
-                    htmlEl.innerHTML = text;
-                    body.innerHTML = '';
-                    body.appendChild(htmlEl);
                     return;
                 }
 
@@ -721,6 +767,7 @@
                 updateStats(sorted.length, sorted.length);
 
                 setupFilter();
+                restoreSelectionFromHash();
 
             } catch (err) {
                 console.error('Failed to load index:', err);
@@ -797,16 +844,16 @@
                 }
 
                 if (method === 'GET' || method === 'POST') {
-                    // Mark active
-                    entriesEl.querySelectorAll('.entry').forEach(el => el.classList.remove('active'));
-                    entry.classList.add('active');
                     // Whether the entry is GET or POST, we GET the URL to load
                     // it into the right-hand viewer. POST endpoints registered
                     // via PostFunc with an Action serve their HTML form on
                     // GET, so the user sees the form here and submits via POST.
-                    loadEndpoint(path, method);
+                    selectEndpointEntry(entry, true);
                 }
             });
+
+            window.addEventListener('popstate', restoreSelectionFromHash);
+            window.addEventListener('hashchange', restoreSelectionFromHash);
 
             document.addEventListener('keydown', (e) => {
                 if (e.key === '/' && document.activeElement !== filter) {

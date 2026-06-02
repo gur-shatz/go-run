@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 
@@ -55,5 +56,36 @@ var _ = Describe("RouteFolder", func() {
 		Expect(index.Entries[0].Name).To(Equal("accounts"))
 		Expect(index.Entries[0].IsFolder).To(BeTrue())
 		Expect(index.Entries[0].Description).To(Equal("Customer accounts"))
+	})
+
+	It("isolates HTML previews in an iframe", func() {
+		router := chi.NewRouter()
+		chiutil.NewRouteFolder(router, "/backoffice")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		body := w.Body.String()
+		Expect(body).To(ContainSubstring("viewerMode === 'iframe' || contentType.includes('text/html')"))
+		Expect(strings.Contains(body, "innerHTML = text")).To(BeFalse())
+	})
+
+	It("persists selected endpoint previews in the URL hash", func() {
+		router := chi.NewRouter()
+		chiutil.NewRouteFolder(router, "/backoffice")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		body := w.Body.String()
+		Expect(body).To(ContainSubstring("function endpointHash(path, method)"))
+		Expect(body).To(ContainSubstring("params.set('method', method)"))
+		Expect(body).To(ContainSubstring("params.set('path', path)"))
+		Expect(body).To(ContainSubstring("restoreSelectionFromHash();"))
+		Expect(body).To(ContainSubstring("history.pushState(null, '', hash)"))
 	})
 })
