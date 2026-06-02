@@ -146,6 +146,7 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	listingFolder := &RouteFolder{
 		router:      chi.NewRouter(),
 		basePath:    parent.basePath + "/" + cleanName,
+		rootPath:    parent.rootPath, // inherit the tree's home
 		serviceName: parent.serviceName,
 		entries:     []*RouteEntry{},
 	}
@@ -241,7 +242,7 @@ func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Reque
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.basePath,
+		Path:        this.folder.relPath(),
 		Entries:     entries,
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -277,7 +278,7 @@ func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Reque
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.basePath + "/" + paramValue,
+		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
 		Entries:     entries,
 	}
 	w.Header().Set("Content-Type", "application/json")

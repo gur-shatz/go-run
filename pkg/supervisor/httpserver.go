@@ -56,16 +56,27 @@ type supervisorSummary struct {
 	Components []componentSummaryEntry `yaml:"components"`
 }
 
+// backofficePrefix is the mount point for the supervisor's own control
+// surface. Everything the operator browses (state, metrics, summary,
+// component info, logs) lives under here so the bare public port can later
+// be handed to a child component without colliding with control routes.
+const backofficePrefix = "/backoffice"
+
 func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
-	root := chiutil.NewRouteFolder(router, "/").
-		ServiceName("go-run supervisor").
-		Title("Supervisor").
-		Description("Vendor-controlled supervisor: own-state, healthz, components.")
 
-	root.GetDesc("/healthz", "Supervisor liveness probe.", func(w http.ResponseWriter, _ *http.Request) {
+	// keep the root router free for supervisor specific routes.
+
+	// The bare root stays a thin index whose only job is to point operators
+	// at /backoffice. The control surface itself is a subfolder.
+	bo := chiutil.NewRouteFolder(router, "/backoffice").
+		ServiceName("Backoffice").
+		Title("Supervisor").
+		Description("Vendor-controlled supervisor. Control surface lives under /backoffice.")
+
+	bo.GetDesc("/healthz", "Supervisor liveness probe.", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
@@ -73,19 +84,19 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 	// /state and /metrics are served straight from the statekit bundle so the
 	// scraper-friendly YAML and the Prometheus text format come from a single
 	// source of truth. The YAML is canonical; consumers parse it directly.
-	root.GetHandlerDesc("/state", "statekit YAML — aggregated state including scraped components.",
+	bo.GetHandlerDesc("/state", "statekit YAML — aggregated state including scraped components.",
 		bundle.registry.StateDisplayYAMLHandler())
-	root.GetHandlerDesc("/metrics", "Prometheus exposition (supervisor metrics + scraped component metrics).",
+	bo.GetHandlerDesc("/metrics", "Prometheus exposition (supervisor metrics + scraped component metrics).",
 		bundle.registry.PrometheusHandler())
 
 	// /summary is a flat, grep-able YAML overview of each component the
 	// supervisor manages. Complementary to /state: same data condensed.
-	root.GetDesc("/summary", "YAML summary of each managed component (current, stable, pid, uptime, counters).",
+	bo.GetDesc("/summary", "YAML summary of each managed component (current, stable, pid, uptime, counters).",
 		func(w http.ResponseWriter, _ *http.Request) {
 			writeYAML(w, buildSummary(sp.Snapshot()))
 		})
 
-	components := root.WildcardFolder("components", "name", func(r chi.Router) {
+	components := bo.WildcardFolder("components", "name", func(r chi.Router) {
 		// /info: supervisor-side bookkeeping (version triple, pid, counters,
 		// monitor port/url paths). Renamed from /state to avoid confusion
 		// with the statekit state document at /components/{name}/state.
@@ -144,7 +155,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 				http.Error(w, "no current version on disk yet for "+name, http.StatusNotFound)
 				return
 			}
-			http.Redirect(w, r, "/logs/"+name+"/"+current+"/", http.StatusFound)
+			http.Redirect(w, r, backofficePrefix+"/logs/"+name+"/"+current+"/", http.StatusFound)
 		})
 	}).Title("Components").Description("Per-component info + scraped state view.")
 
@@ -158,7 +169,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 	// which component it serves without per-request URL-param lookup. The
 	// directory is pre-created so the index UI doesn't 404 before the
 	// child has launched for the first time.
-	logsRoot := root.Folder("logs").
+	logsRoot := bo.Folder("logs").
 		Title("Component logs").
 		Description("Per-component stdout / stderr + child-written application logs, browseable as static files.")
 	for _, c := range sp.Snapshot().Components {

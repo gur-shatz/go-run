@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,13 +47,42 @@ type FolderIndex struct {
 // RouteFolder wraps a chi.Router and provides automatic index generation.
 // It tracks all registered routes and sub-folders, serving an HTML index
 // at "/" and a JSON index at "/index.json".
+//
+// basePath is the absolute server path of this folder (e.g.
+// "/backoffice/components"). rootPath is the absolute server path of the
+// mount root of the whole tree (e.g. "/backoffice") — the folder the index
+// UI treats as "home". Sub-folders inherit rootPath from their parent, so the
+// breadcrumb can render every level relative to home rather than to the
+// server root.
 type RouteFolder struct {
 	router      chi.Router
 	basePath    string
+	rootPath    string
 	serviceName string
 	title       string
 	description string
 	entries     []*RouteEntry
+}
+
+// relPath returns this folder's path relative to the tree's mount root, with a
+// leading slash. The mount root itself is "/". This is what the index UI
+// publishes as `path`, so the breadcrumb treats the mount root as home.
+func (this *RouteFolder) relPath() string {
+	return relativeToRoot(this.basePath, this.rootPath)
+}
+
+// relativeToRoot strips the mount-root prefix from an absolute folder path.
+// relativeToRoot("/backoffice/logs", "/backoffice") == "/logs";
+// relativeToRoot("/backoffice", "/backoffice") == "/".
+func relativeToRoot(full, root string) string {
+	rel := strings.TrimPrefix(full, root)
+	if rel == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(rel, "/") {
+		rel = "/" + rel
+	}
+	return rel
 }
 
 // NewRouteFolder creates a new RouteFolder mounted at the given path.
@@ -61,6 +91,7 @@ func NewRouteFolder(parent chi.Router, path string) *RouteFolder {
 	folder := &RouteFolder{
 		router:   chi.NewRouter(),
 		basePath: normalizePath(path),
+		rootPath: normalizePath(path), // a freshly-mounted tree is its own home
 		entries:  []*RouteEntry{},
 	}
 
@@ -80,6 +111,7 @@ func NewRouteFolderOn(router chi.Router, path string) *RouteFolder {
 	folder := &RouteFolder{
 		router:   chi.NewRouter(),
 		basePath: normalizePath(path),
+		rootPath: normalizePath(path), // own home unless a parent overrides it
 		entries:  []*RouteEntry{},
 	}
 
@@ -118,7 +150,9 @@ func (this *RouteFolder) ServiceName(name string) *RouteFolder {
 func (this *RouteFolder) Folder(path string) *RouteFolder {
 	name := strings.Trim(path, "/")
 	child := NewRouteFolderOn(this.router, "/"+name)
-	child.serviceName = this.serviceName // Propagate service name to child
+	child.serviceName = this.serviceName       // Propagate service name to child
+	child.basePath = this.basePath + "/" + name // absolute server path, not just "/name"
+	child.rootPath = this.rootPath              // inherit the tree's home
 	this.entries = append(this.entries, &RouteEntry{
 		Name:      name,
 		Method:    "GET",
@@ -171,6 +205,7 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 	listingFolder := &RouteFolder{
 		router:      chi.NewRouter(),
 		basePath:    this.basePath + "/" + cleanName,
+		rootPath:    this.rootPath,    // inherit the tree's home
 		serviceName: this.serviceName, // Propagate service name from parent
 		entries:     []*RouteEntry{},
 	}
@@ -311,7 +346,7 @@ func (this *WildcardEntries) serveJSON(w http.ResponseWriter, _ *http.Request) {
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.basePath,
+		Path:        this.folder.relPath(),
 		Entries:     entries,
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -336,7 +371,7 @@ func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Re
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.basePath + "/" + paramValue,
+		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
 		Entries:     entries,
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -386,6 +421,7 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 	folder := &RouteFolder{
 		router:      chi.NewRouter(),
 		basePath:    this.basePath + "/" + cleanName,
+		rootPath:    this.rootPath, // inherit the tree's home
 		serviceName: this.serviceName,
 		entries:     []*RouteEntry{},
 	}
@@ -409,7 +445,7 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 
 		if info.IsDir() {
 			if isIndexJSON {
-				serveDirJSON(w, fsPath, folder.basePath+"/"+urlPath, folder.serviceName)
+				serveDirJSON(w, fsPath, relativeToRoot(folder.basePath+"/"+urlPath, folder.rootPath), folder.serviceName)
 			} else {
 				folder.serveHTML(w, r)
 			}
@@ -687,9 +723,33 @@ func (this *RouteFolder) addEntry(method, path, description string) {
 	})
 }
 
-func (this *RouteFolder) serveHTML(w http.ResponseWriter, _ *http.Request) {
+func (this *RouteFolder) serveHTML(w http.ResponseWriter, r *http.Request) {
+	// The index addresses its children (the index.json fetch, entry links,
+	// breadcrumb) with relative URLs, so it must be served from a
+	// trailing-slash path. A mounted folder answers both /folder and /folder/
+	// with 200, so redirect the bare form here rather than rendering a page
+	// whose every relative link resolves against the parent.
+	if !strings.HasSuffix(r.URL.Path, "/") {
+		redirectToTrailingSlash(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(folderHTML)
+}
+
+// redirectToTrailingSlash 301s a bare folder URL to its trailing-slash form.
+// The target is the final path segment (relative), not the absolute path, so
+// it stays correct behind a path-stripping reverse proxy where r.URL.Path is
+// not the full path the browser sees.
+func redirectToTrailingSlash(w http.ResponseWriter, r *http.Request) {
+	target := path.Base(r.URL.Path) + "/"
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	// Set Location directly rather than via http.Redirect, which would resolve
+	// the relative target back to an absolute path and undo the proxy safety.
+	w.Header().Set("Location", target)
+	w.WriteHeader(http.StatusMovedPermanently)
 }
 
 func (this *RouteFolder) serveJSON(w http.ResponseWriter, _ *http.Request) {
@@ -697,7 +757,7 @@ func (this *RouteFolder) serveJSON(w http.ResponseWriter, _ *http.Request) {
 		ServiceName: this.serviceName,
 		Title:       this.title,
 		Description: this.description,
-		Path:        this.basePath,
+		Path:        this.relPath(),
 		Entries:     resolveEntries(this.entries),
 	}
 	w.Header().Set("Content-Type", "application/json")
