@@ -274,9 +274,11 @@ func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Reque
 		return entries[i].Name < entries[j].Name
 	})
 
+	// Title is the item id, not the listing folder's title, so each item page
+	// is labelled with the item rather than reading like the collection.
 	index := FolderIndex{
 		ServiceName: this.folder.serviceName,
-		Title:       this.folder.title,
+		Title:       paramValue,
 		Description: this.folder.description,
 		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
 		Entries:     entries,

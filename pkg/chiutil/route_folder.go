@@ -360,6 +360,15 @@ func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Re
 	this.mu.RLock()
 	entries := make([]*RouteEntry, len(this.instanceRoutes))
 	copy(entries, this.instanceRoutes)
+	// The instance's own listing carries its registered description (e.g. the
+	// component description), used as the page subtitle.
+	description := ""
+	for _, e := range this.entries {
+		if e.Name == paramValue {
+			description = e.Description
+			break
+		}
+	}
 	this.mu.RUnlock()
 
 	// Sort entries alphabetically
@@ -367,10 +376,12 @@ func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Re
 		return entries[i].Name < entries[j].Name
 	})
 
+	// Title is the instance id (e.g. the component name), not the listing
+	// folder's title — otherwise every instance page reads "Components".
 	index := FolderIndex{
 		ServiceName: this.folder.serviceName,
-		Title:       this.folder.title,
-		Description: this.folder.description,
+		Title:       paramValue,
+		Description: description,
 		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
 		Entries:     entries,
 	}

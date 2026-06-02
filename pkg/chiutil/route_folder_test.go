@@ -79,15 +79,22 @@ var _ = Describe("RouteFolder", func() {
 			r.Get("/info", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("info")) })
 		}).Add("alpha", "Alpha")
 
-		pathOf := func(url string) string {
+		indexOf := func(url string) chiutil.FolderIndex {
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 			Expect(w.Code).To(Equal(http.StatusOK), "for %s", url)
 			var index chiutil.FolderIndex
 			Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
-			return index.Path
+			return index
 		}
+		pathOf := func(url string) string { return indexOf(url).Path }
+
+		// A wildcard instance page is titled by its id (and carries the
+		// registered description), not by the listing folder's "Components".
+		alpha := indexOf("/backoffice/components/alpha/index.json")
+		Expect(alpha.Title).To(Equal("alpha"))
+		Expect(alpha.Description).To(Equal("Alpha"))
 
 		// The mount root reports "/" (it is home), and every descendant reports
 		// its path relative to home — never the absolute /backoffice/... — so the
