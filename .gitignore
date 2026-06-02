@@ -14,3 +14,8 @@ examples/**/*.sum
 *.swo
 bin/
 build/
+!examples/supervisor-local/build/
+!examples/supervisor-local/build/hello/
+!examples/supervisor-local/build/hello/current.txt
+!examples/supervisor-local/build/hello/greeting.txt.tmpl
+!examples/supervisor-local/build/hello/manifest.yml

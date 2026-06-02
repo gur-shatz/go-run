@@ -120,3 +120,13 @@ var _ = Describe("State files", func() {
 		})
 	})
 })
+
+var _ = Describe("ComponentPaths local version", func() {
+	It("maps current version '.' to the component root", func() {
+		stateDir := GinkgoT().TempDir()
+		comp := supervisor.NewPaths(stateDir).Component("hello")
+
+		Expect(comp.VersionDir(".")).To(Equal(comp.Root))
+		Expect(comp.VersionDir("v1")).To(Equal(filepath.Join(comp.Root, "versions", "v1")))
+	})
+})

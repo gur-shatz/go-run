@@ -291,7 +291,7 @@ func resolvePublicKey(cfg Config, opts Options, logger *log.Logger) ([]byte, err
 		return pub, nil
 	}
 	if cfg.Remote.SignaturePublicKeyPath == "" {
-		if len(cfg.Components) > 0 {
+		if hasRemoteComponents(cfg) {
 			logger.Warn("remote.signature_public_key_path is empty: image signatures will NOT be verified (dev / trusted local FS only)")
 		}
 		return nil, nil
@@ -301,6 +301,15 @@ func resolvePublicKey(cfg Config, opts Options, logger *log.Logger) ([]byte, err
 		return nil, err
 	}
 	return pub, nil
+}
+
+func hasRemoteComponents(cfg Config) bool {
+	for _, c := range cfg.Components {
+		if c.Remote.BaseURL != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func describeForced(o ForcedOverride) string {

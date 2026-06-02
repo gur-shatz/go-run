@@ -1,0 +1,8 @@
+# Vendor-shipped manifest. Supervisor validates these templates as a best-effort
+# check and injects default_vars into the child environment. The customer
+# overrides default_vars by setting the same key under supervisor.yml's vars.
+validate_templates:
+  - greeting.txt
+
+default_vars:
+  GREETING: "Hello (vendor default)"

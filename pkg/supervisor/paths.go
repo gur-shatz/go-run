@@ -2,6 +2,8 @@ package supervisor
 
 import "path/filepath"
 
+const localVersion = "."
+
 // Paths derives every state-dir path the supervisor cares about from a single
 // state_dir root. It is a value type so test code can construct one against a
 // tmpdir without going through Config.
@@ -63,6 +65,9 @@ func (this ComponentPaths) Versions() string { return filepath.Join(this.Root, "
 
 // VersionDir is the read-only folder holding an extracted image for one version.
 func (this ComponentPaths) VersionDir(version string) string {
+	if version == localVersion {
+		return this.Root
+	}
 	return filepath.Join(this.Versions(), version)
 }
 

@@ -155,9 +155,8 @@ type URLsConfig struct {
 // [[ ]] delimiters and the standard func set (default / required / env /
 // add / int). The vars: block is resolved iteratively (vars can reference
 // other vars or env). Templates inside YAML are fully resolved by the
-// time the unmarshal sees the bytes — no {{ }} reaches the rendered
-	// `.tmpl` files. The ${VAR} command-template syntax in components.command
-	// is NOT touched here.
+// time the unmarshal sees the bytes. The ${VAR} command-template syntax in
+// components.command is NOT touched here.
 //
 // Relative file:// URLs in any remote block are then resolved against the
 // directory holding the config file so the example can ship a relative
@@ -344,9 +343,6 @@ func (this *Config) Validate() error {
 			return fmt.Errorf("components[%q]: port %d already used by component %q", c.Name, c.Port, other)
 		}
 		portSeen[c.Port] = c.Name
-		if c.Remote.BaseURL == "" {
-			return fmt.Errorf("components[%q]: remote.base_url is required (set top-level remote.base_url or override per component)", c.Name)
-		}
 	}
 	return nil
 }

@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -25,6 +25,9 @@ test:
 clean:
 	rm -rf bin
 	rm -rf examples/supervisor/state examples/supervisor/fixture examples/supervisor/origin/keys
+	rm -rf examples/supervisor-local/build/logs examples/supervisor-local/build/supervisor.lock
+	rm -f examples/supervisor-local/build/hello/hello.bin examples/supervisor-local/build/hello/stable.txt
+	rm -f examples/supervisor-local/build/hello/rejects.txt examples/supervisor-local/build/hello/kill.sock
 	go clean
 
 install:
@@ -63,6 +66,10 @@ example-supervisor: example-supervisor-fixture
 # exercise the signed update flow end-to-end.
 example-supervisor-origin:
 	cd examples/supervisor/origin && go run . --addr=127.0.0.1:18080 --component=hello --source=../hello --version=v1 --keys=./keys
+
+example-supervisor-local:
+	cd examples/supervisor/hello && go build -o ../../supervisor-local/build/hello/hello.bin .
+	cd examples/supervisor-local && go run -ldflags "$(LDFLAGS)" ../../cmd/supervisor -c supervisor.yml -v
 
 package-supervisor:
 	./deploy/supervisor/package.sh

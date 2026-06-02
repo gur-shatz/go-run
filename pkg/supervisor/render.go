@@ -178,7 +178,7 @@ func validateTemplatePaths(versionDir string) ([]string, error) {
 
 func manifestTemplatePath(versionDir, rel string) (string, error) {
 	if rel == "" {
-			return "", fmt.Errorf("%s validate_templates entry is empty", manifestFilename)
+		return "", fmt.Errorf("%s validate_templates entry is empty", manifestFilename)
 	}
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("%s validate_templates entry %q must be relative", manifestFilename, rel)

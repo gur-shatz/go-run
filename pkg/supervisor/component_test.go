@@ -191,4 +191,24 @@ var _ = Describe("Component lifecycle", func() {
 		cancel()
 		Eventually(done, 3*time.Second).Should(BeClosed())
 	})
+
+	It("runs local snapshot mode from current.txt = . without a remote", func() {
+		Expect(os.WriteFile(filepath.Join(paths.Root, "manifest.yml"), []byte(`validate_templates:
+  - config.yml
+default_vars:
+  GREETING: hello
+`), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(paths.Root, "config.yml.tmpl"), []byte(`greeting: "{{ .GREETING }}"`), 0644)).To(Succeed())
+		Expect(paths.WriteCurrent(".")).To(Succeed())
+
+		cfg := mkComponentCfg()
+		cfg.Command = "./hello.bin"
+		cfg.Remote = supervisor.RemoteConfig{}
+		comp := supervisor.NewComponent(cfg, paths, install, topCfg, nil, nil, log.New("[test]", false))
+
+		target, err := comp.ComputeDesiredVersionForTest(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target).To(Equal("."))
+		Expect(comp.PrepareVersion(context.Background(), ".")).To(Succeed())
+	})
 })

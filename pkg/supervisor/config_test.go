@@ -173,14 +173,14 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(MatchError(ContainSubstring("port 8080 already used")))
 		})
 
-		It("requires a remote base_url for any configured component", func() {
+		It("allows a component with no remote base_url for local snapshot mode", func() {
 			cfg := supervisor.Config{
 				Components: []supervisor.ComponentConfig{
 					{Name: "x", Port: 8080, Command: "/bin/x"},
 				},
 			}
 			cfg.ApplyDefaults()
-			Expect(cfg.Validate()).To(MatchError(ContainSubstring("remote.base_url")))
+			Expect(cfg.Validate()).To(Succeed())
 		})
 
 		It("accepts a config with no components", func() {
