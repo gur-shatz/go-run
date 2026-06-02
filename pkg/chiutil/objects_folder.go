@@ -8,9 +8,20 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// capitalize upper-cases the first rune of s, leaving the rest unchanged.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[size:]
+}
 
 // ObjectMapper represents a collection of objects that can be exposed as a chi folder.
 // It handles listing, lookup, and route registration in one interface.
@@ -278,7 +289,7 @@ func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Reque
 	// is labelled with the item rather than reading like the collection.
 	index := FolderIndex{
 		ServiceName: this.folder.serviceName,
-		Title:       paramValue,
+		Title:       capitalize(paramValue),
 		Description: this.folder.description,
 		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
 		Entries:     entries,
