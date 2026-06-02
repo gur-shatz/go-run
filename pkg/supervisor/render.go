@@ -14,158 +14,246 @@ import (
 	"github.com/gur-shatz/go-run/pkg/config"
 )
 
-// noValuePlaceholder is what Go's text/template emits when a key is missing
-// from a map[string]any context with the "missingkey=zero" option (which
-// pkg/config sets). pkg/config's higher-level Process pass catches it; the
-// lower-level ResolveExpr we call from here does not, so the supervisor
-// catches it explicitly to keep a rendered file from leaking "<no value>"
-// to the child.
+// noValuePlaceholder is what Go's text/template emits when a key is missing.
+// pkg/config normally catches it; this is a defensive validation check.
 const noValuePlaceholder = "<no value>"
 
 // tmplExtension is the suffix that marks a file inside a version dir as a
-// template to be rendered at launch time. The rendered output lands beside
-// it with the suffix stripped.
+// template suitable for best-effort validation.
 const tmplExtension = ".tmpl"
 
-// renderedBackupSuffix is what gets appended to the previous rendered output
-// when we re-render. Single-level backup: a fresh render replaces any
-// existing .bak.
+// renderedBackupSuffix is kept for the legacy render helper. Normal supervisor
+// launch does not render app config files.
 const renderedBackupSuffix = ".bak"
 
-// defaultsFilename is the vendor-shipped baseline values file at the root
-// of a version dir. Optional — missing file means the only context is the
-// supervisor's vars + env + launch vars.
-const defaultsFilename = "defaults.yml"
+// manifestFilename is the vendor-shipped manifest file at the root of a
+// version dir:
+//
+//	validate_templates: # files to best-effort validate; "config.yml" means "config.yml.tmpl"
+//	- config.yml
+//	default_vars:
+//	  GREETING: Hello
+//
+// For compatibility, legacyDefaultsFilename remains valid as a flat default
+// vars file until existing bundles have moved to manifest.yml.
+const manifestFilename = "manifest.yml"
+const legacyDefaultsFilename = "defaults.yml"
 
-// renderVersionTemplates walks versionDir alphabetically and, for every
-// "<x>.tmpl" file, renders the content to "<x>" using a merged template
-// context (defaults.yml + supervisorVars + launchVars + env). If "<x>"
-// already exists from a previous render it is moved to "<x>.bak"
-// (replacing any prior .bak) before the new content is written.
-//
-// File mode of the rendered output mirrors the .tmpl file's mode so an
-// executable template produces an executable rendered file.
-//
-// First error short-circuits; the caller treats it as an exec failure.
-func renderVersionTemplates(versionDir string, supervisorVars map[string]any, launchVars LaunchVars) error {
-	ctx, env, err := buildRenderContext(versionDir, supervisorVars, launchVars)
+func validateVersionTemplatesWithEnv(versionDir string, supervisorVars map[string]any, componentEnv map[string]string, launchVars LaunchVars) error {
+	env, err := buildRenderEnv(versionDir, supervisorVars, componentEnv, launchVars)
 	if err != nil {
 		return err
 	}
 
-	return filepath.WalkDir(versionDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	templates, err := validateTemplatePaths(versionDir)
+	if err != nil {
+		return err
+	}
+	for _, path := range templates {
+		if err := validateOneTemplate(path, env); err != nil {
+			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), tmplExtension) {
-			return nil
-		}
-		return renderOneTemplate(path, ctx, env)
-	})
+	}
+	return nil
 }
 
-// buildRenderContext merges the four context layers, with documented
-// precedence (high → low: env, supervisorVars, defaults, launchVars). env
-// is kept separate because config.ResolveExpr takes it as its own argument
-// — `{{ env "FOO" }}` reaches into it.
-func buildRenderContext(versionDir string, supervisorVars map[string]any, launchVars LaunchVars) (map[string]any, map[string]string, error) {
-	ctx := make(map[string]any)
-
-	// Lowest: launch vars (so they can never silently override an explicit
-	// user setting with the same name). The five fixed names live at the
-	// top level of the context.
-	for k, v := range launchVars.asMap() {
-		ctx[k] = v
-	}
-
-	// Next: defaults.yml.
-	defaults, err := readDefaultsFile(filepath.Join(versionDir, defaultsFilename))
-	if err != nil {
-		return nil, nil, err
-	}
-	for k, v := range defaults {
-		ctx[k] = v
-	}
-
-	// Highest non-env: supervisor.yml vars block.
-	for k, v := range supervisorVars {
-		ctx[k] = v
-	}
-
-	// env is separate — accessed only via the `env` template func.
+// buildRenderEnv builds the same env-shaped data model the child process gets.
+// Later layers override earlier layers. The real process environment remains
+// available for secrets and undeclared values; manifest default_vars is
+// vendor baseline; supervisor vars are deployment-scoped; component env is
+// component-scoped; launch facts are final so VERSION, BUILD_DIR, and ports
+// stay tied to the version being launched.
+func buildRenderEnv(versionDir string, supervisorVars map[string]any, componentEnv map[string]string, launchVars LaunchVars) (map[string]string, error) {
 	env := make(map[string]string)
 	for _, e := range os.Environ() {
 		if k, v, ok := strings.Cut(e, "="); ok {
 			env[k] = v
 		}
 	}
-	return ctx, env, nil
+
+	defaults, err := readDefaultVars(versionDir)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range defaults {
+		env[k] = fmt.Sprintf("%v", v)
+	}
+
+	for k, v := range supervisorVars {
+		env[k] = fmt.Sprintf("%v", v)
+	}
+
+	for k, v := range componentEnv {
+		env[k] = v
+	}
+
+	for k, v := range EnvMap(launchVars) {
+		env[k] = v
+	}
+	return env, nil
 }
 
-// readDefaultsFile loads defaults.yml as a map. Missing file is not an
-// error (returns empty map); other read or parse errors are.
-func readDefaultsFile(path string) (map[string]any, error) {
+type versionManifest struct {
+	ValidateTemplates []string       `yaml:"validate_templates"`
+	Templates         []string       `yaml:"templates"` // legacy name; treated as validate_templates.
+	DefaultVars       map[string]any `yaml:"default_vars"`
+}
+
+func readVersionManifestFile(path string) (versionManifest, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return map[string]any{}, nil
+			return versionManifest{}, false, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return versionManifest{}, false, fmt.Errorf("read %s: %w", path, err)
 	}
+
 	var out map[string]any
 	if err := yaml.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return versionManifest{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if out == nil {
+		return versionManifest{}, true, nil
+	}
+	_, hasValidateTemplates := out["validate_templates"]
+	_, hasTemplates := out["templates"]
+	_, hasDefaultVars := out["default_vars"]
+	if !hasValidateTemplates && !hasTemplates && !hasDefaultVars {
+		return versionManifest{DefaultVars: out}, true, nil
+	}
+
+	var manifest versionManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return versionManifest{}, true, fmt.Errorf("parse manifest %s: %w", path, err)
+	}
+	if manifest.DefaultVars == nil {
+		manifest.DefaultVars = map[string]any{}
+	}
+	if len(manifest.ValidateTemplates) == 0 && len(manifest.Templates) > 0 {
+		manifest.ValidateTemplates = manifest.Templates
+	}
+	return manifest, true, nil
+}
+
+func readVersionManifest(versionDir string) (versionManifest, bool, error) {
+	manifest, ok, err := readVersionManifestFile(filepath.Join(versionDir, manifestFilename))
+	if err != nil || ok {
+		return manifest, ok, err
+	}
+	return readVersionManifestFile(filepath.Join(versionDir, legacyDefaultsFilename))
+}
+
+// readDefaultVars loads manifest default vars. Missing file is not an
+// error (returns empty map); other read or parse errors are.
+func readDefaultVars(versionDir string) (map[string]any, error) {
+	manifest, _, err := readVersionManifest(versionDir)
+	if err != nil {
+		return nil, err
+	}
+	if manifest.DefaultVars == nil {
 		return map[string]any{}, nil
 	}
-	return out, nil
+	return manifest.DefaultVars, nil
+}
+
+func validateTemplatePaths(versionDir string) ([]string, error) {
+	manifest, _, err := readVersionManifest(versionDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(manifest.ValidateTemplates) > 0 {
+		paths := make([]string, 0, len(manifest.ValidateTemplates))
+		for _, rel := range manifest.ValidateTemplates {
+			path, err := manifestTemplatePath(versionDir, rel)
+			if err != nil {
+				return nil, err
+			}
+			paths = append(paths, path)
+		}
+		return paths, nil
+	}
+
+	return nil, nil
+}
+
+func manifestTemplatePath(versionDir, rel string) (string, error) {
+	if rel == "" {
+			return "", fmt.Errorf("%s validate_templates entry is empty", manifestFilename)
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("%s validate_templates entry %q must be relative", manifestFilename, rel)
+	}
+	clean := filepath.Clean(rel)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s validate_templates entry %q escapes version dir", manifestFilename, rel)
+	}
+	if !strings.HasSuffix(clean, tmplExtension) {
+		clean += tmplExtension
+	}
+	path := filepath.Join(versionDir, clean)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s validate_templates entry %q missing source %s", manifestFilename, rel, path)
+		}
+		return "", fmt.Errorf("stat template %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // renderOneTemplate reads tmplPath, resolves its content against ctx/env
-// via the shared template engine, validates the result, and writes it to
-// the target path (.tmpl suffix stripped). A pre-existing target is
+// via the shared config engine, validates the result, and writes it to the
+// target path (.tmpl suffix stripped). A pre-existing target is
 // rotated to .bak first.
 //
 // Validation runs in two layers:
-//  1. Unresolved variables — any "<no value>" substring (left behind by
-//     text/template when missingkey=zero meets a map[string]any) fails the
-//     render. Authors who want a missing var to be a hard error can use
-//     {{ required "..." .X }} for a clearer message; this is the
-//     catch-all.
+//  1. The shared config processor catches missing vars, supports vars:
+//     sections, both {{ }} and [[ ]] delimiters, and runctl's template funcs.
 //  2. File-type — for targets ending in .yml/.yaml/.json the rendered
 //     bytes are parsed before being written. A malformed result is caught
 //     here instead of by the child.
-func renderOneTemplate(tmplPath string, ctx map[string]any, env map[string]string) error {
-	body, err := os.ReadFile(tmplPath)
+func renderOneTemplate(tmplPath string, env map[string]string) error {
+	rendered, target, mode, err := renderTemplateBytes(tmplPath, env)
 	if err != nil {
-		return fmt.Errorf("read template %s: %w", tmplPath, err)
-	}
-
-	rendered, err := config.ResolveExpr(string(body), ctx, env)
-	if err != nil {
-		return fmt.Errorf("render %s: %w", tmplPath, err)
-	}
-	if strings.Contains(rendered, noValuePlaceholder) {
-		return fmt.Errorf("render %s: unresolved template variable (output contains %q)", tmplPath, noValuePlaceholder)
-	}
-
-	info, err := os.Stat(tmplPath)
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", tmplPath, err)
-	}
-
-	target := strings.TrimSuffix(tmplPath, tmplExtension)
-	if err := validateRenderedByExtension(target, []byte(rendered)); err != nil {
-		return fmt.Errorf("validate %s: %w", target, err)
+		return err
 	}
 	if err := rotateBackup(target); err != nil {
 		return err
 	}
-	if err := atomicWrite(target, []byte(rendered), info.Mode().Perm()); err != nil {
+	if err := atomicWrite(target, rendered, mode); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}
 	return nil
+}
+
+func validateOneTemplate(tmplPath string, env map[string]string) error {
+	_, _, _, err := renderTemplateBytes(tmplPath, env)
+	return err
+}
+
+func renderTemplateBytes(tmplPath string, env map[string]string) ([]byte, string, os.FileMode, error) {
+	body, err := os.ReadFile(tmplPath)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("read template %s: %w", tmplPath, err)
+	}
+
+	rendered, _, err := config.Process(body, config.WithEnv(env))
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("render %s: %w", tmplPath, err)
+	}
+	if strings.Contains(string(rendered), noValuePlaceholder) {
+		return nil, "", 0, fmt.Errorf("render %s: unresolved template variable (output contains %q)", tmplPath, noValuePlaceholder)
+	}
+
+	info, err := os.Stat(tmplPath)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("stat %s: %w", tmplPath, err)
+	}
+
+	target := strings.TrimSuffix(tmplPath, tmplExtension)
+	if err := validateRenderedByExtension(target, rendered); err != nil {
+		return nil, "", 0, fmt.Errorf("validate %s: %w", target, err)
+	}
+	return rendered, target, info.Mode().Perm(), nil
 }
 
 // validateRenderedByExtension parses the rendered bytes when the target's
@@ -201,18 +289,4 @@ func rotateBackup(target string) error {
 		return fmt.Errorf("rotate %s → %s: %w", target, bak, err)
 	}
 	return nil
-}
-
-// asMap exposes the launch vars as a string map suitable for merging into
-// the template context. Defined here (not on LaunchVars itself) so the
-// rest of the package can keep template.go narrow.
-func (this LaunchVars) asMap() map[string]string {
-	return map[string]string{
-		"VERSION":      this.Version,
-		"VERSION_DIR":  this.VersionDir,
-		"STATE_DIR":    this.StateDir,
-		"MONITOR_PORT": fmt.Sprintf("%d", this.MonitorPort),
-		"KILL_SOCK":    this.KillSock,
-		"LOG_DIR":      this.LogDir,
-	}
 }

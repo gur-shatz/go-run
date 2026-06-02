@@ -136,8 +136,9 @@ func (this *Supervisor) Paths() Paths { return this.paths }
 // Snapshot implements stateProvider for httpserver.
 func (this *Supervisor) Snapshot() SupervisorSnapshot {
 	snap := SupervisorSnapshot{
-		StateDir:  this.cfg.StateDir,
-		StartedAt: this.startedAt.UTC().Format(time.RFC3339),
+		StateDir:   this.cfg.StateDir,
+		PublicPort: this.cfg.Supervisor.PublicPort,
+		StartedAt:  this.startedAt.UTC().Format(time.RFC3339),
 	}
 	if t, ok := this.lastPoll.Load().(time.Time); ok && !t.IsZero() {
 		snap.LastPollAt = t.UTC().Format(time.RFC3339)

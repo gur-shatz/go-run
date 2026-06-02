@@ -1,0 +1,35 @@
+state_dir: /global/supervisor/state
+
+stability_time: 30s
+crash_window: 10s
+crash_threshold: 3
+exec_fail_threshold: 2
+kill_grace_period: 2s
+version_folder_retention: 2
+reject_expiry: 10m
+
+supervisor:
+  bind_address: 0.0.0.0:9090
+  public_port: 18090
+  metric_labels:
+    source: hertzner1-supervisor-demo
+
+vars:
+  GREETING: "Hello from supervisor on hertzner1"
+
+remote:
+  base_url: file:///global/origin
+  target: required.txt
+  polling_interval: 10s
+  signature_public_key_path: ""
+
+components:
+  - name: hello
+    description: "Minimal hello world app updated from /global/origin"
+    port: 18090
+    command: "./bin/hello"
+    urls:
+      healthz: /healthz
+      readyz: /readyz
+      state: /state
+      metrics: /metrics

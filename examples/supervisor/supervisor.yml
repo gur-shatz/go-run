@@ -28,8 +28,8 @@ observer:
 # Template context for every component's *.tmpl files. Overrides keys from
 # the version manifest's default_vars. The hello example ships manifest.yml
 # with GREETING="Hello (vendor default)"; the line below overrides it so the
-# rendered greeting.txt — and the /greet endpoint — reflect the customer
-# value instead.
+# child's GREETING environment variable — and the /greet endpoint — reflect
+# the customer value instead.
 vars:
   GREETING: "Hi from the customer's supervisor.yml"
 
@@ -54,9 +54,10 @@ remote:
 #
 # `command` is plain argv (shlex-split). The supervisor sets the child's
 # working directory to the version dir, so `./bin/hello` resolves to the
-# binary inside the tarball. The five launch facts flow as OP_* env vars
-# (OP_MONITOR_PORT, OP_VERSION, OP_VERSION_DIR, OP_STATE_DIR, OP_KILL_SOCK);
-# hello reads OP_MONITOR_PORT if --port isn't passed.
+# binary inside the tarball. Launch facts flow as OP_* env vars and
+# artifact-compatible aliases (BUILD_DIR/BUILDDIR point at the version dir;
+# REQUIRED_VERSION/VERSION name the selected version). hello reads
+# OP_MONITOR_PORT if --port isn't passed.
 components:
   - name: hello
     description: "A simple HTTP server"

@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -41,13 +40,9 @@ func main() {
 		version = "unknown"
 	}
 
-	// Greeting is loaded from ./greeting.txt (we run with cwd = version
-	// dir, so it sits right next to the binary). The supervisor renders it
-	// from greeting.txt.tmpl every launch, with supervisor.yml `vars:`
-	// overriding defaults.yml.
-	greeting := "Hello (no greeting.txt — render didn't run?)"
-	if data, err := os.ReadFile("greeting.txt"); err == nil {
-		greeting = strings.TrimRight(string(data), "\n\r ")
+	greeting := os.Getenv("GREETING")
+	if greeting == "" {
+		greeting = "Hello (GREETING env not set)"
 	}
 	log.Printf("hello: greeting=%q", greeting)
 

@@ -1,0 +1,29 @@
+app: supervisor
+
+image:
+  repository: localhost/supervisor
+  tag: dev
+
+global:
+  hostPath: /kubestorage/globals/supervisor
+  mountPath: /global
+
+ports:
+  backoffice: 9090
+  public: 18090
+
+domains:
+  backoffice: supervisor.62.238.27.201.nip.io
+  public: hello.62.238.27.201.nip.io
+
+access:
+  allowedCIDRs:
+    - 46.121.9.131/32
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
