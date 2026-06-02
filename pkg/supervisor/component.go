@@ -192,14 +192,14 @@ func (this *Component) runUpdater(ctx context.Context) {
 }
 
 // reconcileTarget runs one update cycle: compute the desired version, run
-// the full prepare pipeline (download + verify + extract + render), and
-// commit the swap. A failure at any step in PrepareVersion fails the
-// update — the update sub-state goes to fail/warn and SwitchToVersion
-// never fires.
+// the full prepare pipeline (download + verify + extract + best-effort
+// template validation), and commit the swap. A failure at any step in
+// PrepareVersion fails the update — the update sub-state goes to fail/warn
+// and SwitchToVersion never fires.
 //
-// Render runs every cycle (even when target equals current), so a
-// supervisor.yml `vars:` edit propagates to on-disk rendered files on the
-// next poll tick; the child consumes them at its next restart.
+// Validation runs every cycle (even when target equals current), so obvious
+// manifest/template/env problems are caught before the child is asked to run
+// the version.
 func (this *Component) reconcileTarget(ctx context.Context) {
 	target, err := this.computeDesiredVersion(ctx)
 	if err != nil {
@@ -242,7 +242,7 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 
 // computeDesiredVersion returns the version the supervisor should be running
 // — possibly the same one it's already on. The reconcile loop then runs
-// PrepareVersion (which re-renders templates every tick) and
+// PrepareVersion (which re-validates manifest templates every tick) and
 // SwitchToVersion (a no-op when target equals current).
 //
 // Empty means "no actionable target" — halt-like states only:
@@ -312,40 +312,46 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 //  1. download archive,
 //  2. verify signature,
 //  3. extract into versions/<v>/,
-//  4. render every *.tmpl against (supervisor vars + defaults.yml + launch
-//     vars + env), with validation by file extension.
+//  4. validate manifest-listed templates against the same deployment/launch
+//     env shape the child receives, including file-extension validation.
 //
 // Steps 1–3 are idempotent against an already-extracted version dir (they
-// become a no-op). Step 4 always runs, so a vars-block edit reaches the
-// on-disk rendered files on the next reconcile tick. Any step failing
+// become a no-op). Step 4 always runs and writes nothing. Any step failing
 // returns an error; the caller (reconcileTarget) treats that as an update
-// failure and the version never makes it to current.txt.
+// failure and the version never makes it to current.txt. This is a best-effort
+// check only; the application remains the authority for loading its config.
 func (this *Component) PrepareVersion(ctx context.Context, version string) error {
 	if !versionExtracted(this.paths.VersionDir(version)) {
 		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version); err != nil {
 			return err
 		}
 	}
-	return this.renderTemplates(version)
+	return this.validateTemplates(version)
 }
 
-// renderTemplates is the per-version template-render step extracted so it
-// can be called both from PrepareVersion (canonical path) and from focused
-// tests. Not exported — the public entry point is PrepareVersion.
-func (this *Component) renderTemplates(version string) error {
+func (this *Component) launchVars(version string) (LaunchVars, error) {
 	versionDir := this.paths.VersionDir(version)
 	if !versionExtracted(versionDir) {
-		return fmt.Errorf("version dir %s is missing", versionDir)
+		return LaunchVars{}, fmt.Errorf("version dir %s is missing", versionDir)
 	}
-	launchVars := LaunchVars{
+	return LaunchVars{
 		Version:     version,
 		VersionDir:  versionDir,
 		StateDir:    this.paths.Root,
 		MonitorPort: this.cfg.Port,
 		KillSock:    this.paths.KillSock(),
 		LogDir:      this.paths.LogsDir(version),
+	}, nil
+}
+
+// validateTemplates is the prepare-time template check. It renders in memory
+// only. Supervisor does not write application config files.
+func (this *Component) validateTemplates(version string) error {
+	launchVars, err := this.launchVars(version)
+	if err != nil {
+		return err
 	}
-	return renderVersionTemplates(versionDir, this.supervisorVars, launchVars)
+	return validateVersionTemplatesWithEnv(launchVars.VersionDir, this.supervisorVars, this.cfg.Env, launchVars)
 }
 
 // SwitchToVersion commits the named version to current.txt and signals the
@@ -524,9 +530,9 @@ type childExit struct {
 //
 // Notes:
 //   - The command is plain shell-style argv (parsed via shlex). There is no
-//     ${VAR} expansion. The five launch facts (VERSION, VERSION_DIR,
-//     STATE_DIR, MONITOR_PORT, KILL_SOCK) are passed as OP_*-prefixed
-//     environment variables; the child reads them from env.
+//     ${VAR} expansion. Launch facts are passed as OP_*-prefixed variables
+//     plus artifact-compatible aliases such as VERSION, BUILD_DIR, BUILDDIR,
+//     MONITOR_PORT, and REQUIRED_VERSION; the child reads them from env.
 //   - cmd.Dir is set to the version dir, so a relative argv[0] like
 //     "./bin/hello" resolves naturally. For absolute argv[0], cmd.Dir
 //     still applies (the child runs with cwd = version dir, with global
@@ -590,7 +596,13 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	// on-disk copy. Both stay populated for the lifetime of the child.
 	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stdout), stdoutLog)
 	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stderr), stderrLog)
-	cmd.Env = this.buildEnv(vars)
+	cmd.Env, err = this.buildEnv(vars)
+	if err != nil {
+		_ = stdoutLog.Close()
+		_ = stderrLog.Close()
+		_ = ks.Close()
+		return nil, err
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	this.logger.Status("[%s] launching %s port=%d (logs=%s)", this.cfg.Name, version, port, logDir)
@@ -886,13 +898,27 @@ func (this *Component) setStatusRunning(rc *runningChild) {
 	}
 }
 
-// buildEnv merges the component's configured env with the OP_* launch vars
-// and the supervisor's own environment.
-func (this *Component) buildEnv(vars LaunchVars) []string {
-	env := os.Environ()
-	for k, v := range this.cfg.Env {
-		env = append(env, k+"="+v)
+// buildEnv merges process env, manifest default_vars, supervisor vars,
+// component env, and launch facts. This mirrors runctl's child-process model:
+// deployment vars are available as environment variables, and component env can
+// override them for one component.
+func (this *Component) buildEnv(vars LaunchVars) ([]string, error) {
+	env := environSliceToMap(os.Environ())
+	defaults, err := readDefaultVars(vars.VersionDir)
+	if err != nil {
+		return nil, err
 	}
-	env = append(env, EnvSlice(vars)...)
-	return env
+	for k, v := range defaults {
+		env[k] = fmt.Sprintf("%v", v)
+	}
+	for k, v := range this.supervisorVars {
+		env[k] = fmt.Sprintf("%v", v)
+	}
+	for k, v := range this.cfg.Env {
+		env[k] = v
+	}
+	for k, v := range EnvMap(vars) {
+		env[k] = v
+	}
+	return envMapToSlice(env), nil
 }

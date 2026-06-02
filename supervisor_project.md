@@ -206,7 +206,7 @@ Each component holds three small text files. `stable.txt` and `current.txt` each
 - `current.txt`: the version the supervisor is currently running.
 - `rejects.txt`: versions that were rejected, and should not be re-downloaded.
 
-Each version is a folder for that component with the version name. The folder is created once the archive has been fully extracted. Vendor-shipped contents (the binary, any `*.tmpl` files, an optional `defaults.yml`) are never modified after extraction. The supervisor is allowed to write **rendered template outputs** (see §"Template rendering") and their `.bak` backups into the same folder; nothing else gets written there. The three text files (`stable.txt`, `current.txt`, `rejects.txt`) name versions; the version folder is where the bits live. The three files are the source of truth; `state.json` is a derived journal that can be rebuilt by scanning them.
+Each version is a folder for that component with the version name. The folder is created once the archive has been fully extracted. Vendor-shipped contents include the binary, any application config/templates, and an optional `manifest.yml`. The supervisor does not mutate application config files during normal launch. The three text files (`stable.txt`, `current.txt`, `rejects.txt`) name versions; the version folder is where the bits live. The three files are the source of truth; `state.json` is a derived journal that can be rebuilt by scanning them.
 
 All three files are updated by `WriteFile → fsync → Rename` to make the swap atomic. The supervisor is the only writer.
 
@@ -269,7 +269,8 @@ The `command:` field is parsed verbatim as a shell-style argv (via shlex). There
 Before exec the supervisor:
 
 - Sets the child's working directory to the version dir. A relative `command: "./bin/hello"` therefore resolves to the binary inside the tarball. Absolute paths still work; bare names (no slash) fall through to `PATH` lookup, matching shell semantics. The child is *not* chrooted — global paths like `/var/log` remain reachable.
-- Exports the six launch facts as `OP_`-prefixed environment variables:
+- Exports launch facts as `OP_`-prefixed environment variables plus
+  artifact-compatible aliases:
 
   | Env | Meaning |
   | --- | --- |
@@ -279,44 +280,56 @@ Before exec the supervisor:
   | `OP_MONITOR_PORT` | configured monitoring port |
   | `OP_KILL_SOCK` | absolute path of the kill-switch UDS |
   | `OP_LOG_DIR` | absolute path of the per-version log directory (see §"Logs") |
+  | `VERSION` / `REQUIRED_VERSION` | current version string |
+  | `VERSION_DIR` | absolute path of the version folder (also the cwd) |
+  | `BUILD_DIR` / `BUILDDIR` | alias of `VERSION_DIR`, matching artifact build scripts |
+  | `STATE_DIR` | absolute path of the component's state directory |
+  | `MONITOR_PORT` | configured monitoring port |
+  | `KILL_SOCK` | absolute path of the kill-switch UDS |
+  | `LOG_DIR` | absolute path of the per-version log directory |
 
-A child that wants the port from env reads `OP_MONITOR_PORT`; a child that wants it on argv hardcodes the same number (the customer already chose it in `port:`) or pulls it from a top-level `vars:` block via Go template at config-load.
+A child that wants the port from env reads `OP_MONITOR_PORT`; a child that wants it on argv hardcodes the same number (the customer already chose it in `port:`). Other deployment values arrive through environment variables with the same precedence as validation.
 
-The same six values are also available as top-level keys (`.VERSION`, `.VERSION_DIR`, …, `.LOG_DIR`) inside `*.tmpl` files at render time — see §"Template rendering".
+The same values are also available as top-level keys (`.VERSION`, `.BUILD_DIR`, `.MONITOR_PORT`, …) during manifest template validation.
 
-#### Template rendering (deployment-time config)
+#### Template Validation
 
-The shell-style command template above is for argv only. The vendor can also ship arbitrary configuration files as templates inside the tarball, and the supervisor renders them at launch time.
+The shell-style command above is plain argv only. Application configuration remains the application's responsibility: the app loads and decodes its own config using the same mechanism it uses under runctl/execrun. Supervisor only injects environment variables and can perform a best-effort validation pass before accepting a version.
 
-Any file in the extracted version dir whose name ends in `.tmpl` is treated as a template. At every launch the supervisor:
+The artifact may include `manifest.yml`:
 
-1. Builds a template context by merging four layers (precedence high → low):
-   - **env vars** (only via `{{ env "FOO" }}` references inside templates);
-   - **supervisor.yml `vars:` block** — customer-controlled, flat global map;
-   - **`defaults.yml`** at the root of the version dir — vendor-shipped baseline;
-   - **launch variables** as top-level keys (`VERSION`, `VERSION_DIR`, `STATE_DIR`, `MONITOR_PORT`, `KILL_SOCK`).
-2. Walks the version dir alphabetically. For each `<x>.tmpl`:
-   - Renders the body using Go `text/template` with the same engine the rest of go-run uses (delimiters `{{ }}` and `[[ ]]`, funcs `default` / `required` / `env` / `add`).
-   - If `<x>` already exists from a previous render, it is renamed to `<x>.bak` (single-level backup, replacing any prior `.bak`).
-   - Writes `<x>` via `atomicWrite` with the same file mode as the source `.tmpl` (preserves executability).
-3. First render error short-circuits the launch and counts as an `exec_failure`.
+```yaml
+validate_templates:
+  - config.yml
 
-Cadence is **passive**: templates are re-rendered every launch, so a `vars:` edit picks up on the next child restart. There is no fsnotify watch in v0.
+default_vars:
+  GREETING: "Hello"
+```
 
-`defaults.yml` is optional. A tarball with no `defaults.yml` renders against only `vars:` + launch vars + env.
+Each `validate_templates:` entry names the application file being checked; `config.yml` maps to source file `config.yml.tmpl`. The list is used at prepare time for in-memory validation only. If no `validate_templates` list is present, supervisor does not validate templates.
+
+For validation and launch, supervisor builds an environment by merging five layers (precedence high to low):
+
+- **launch facts** (`VERSION`, `REQUIRED_VERSION`, `VERSION_DIR`, `BUILD_DIR`, `BUILDDIR`, `STATE_DIR`, `MONITOR_PORT`, `KILL_SOCK`, `LOG_DIR`, plus `OP_*`);
+- **component `env:`** — component-scoped overrides and child environment;
+- **supervisor.yml `vars:` block** — customer-controlled, flat global map;
+- **`manifest.yml` `default_vars:`** — vendor-shipped baseline;
+- **process environment** — available for secrets and undeclared values.
+
+Validation renders in memory using the shared go-run config engine (delimiters `{{ }}` and `[[ ]]`, funcs `default` / `required` / `env` / `add`) and parses YAML/JSON outputs by extension. It writes nothing. A validation failure blocks the update before `current.txt` changes; if validation misses something and the app fails to load its config, the normal crash/exec-failure rejection path handles the version.
+
+`manifest.yml` is optional. A tarball with no `manifest.yml` still launches with process/supervisor/component/launch environment. Legacy `defaults.yml` flat maps are still accepted as default vars during migration.
 
 Example layout for a hello component:
 
 ```
 versions/v1/
-  defaults.yml             # vendor-shipped: { GREETING: "Hello (vendor default)" }
-  greeting.txt.tmpl        # vendor-shipped: {{ .GREETING }}
-  greeting.txt             # supervisor-rendered
-  greeting.txt.bak         # previous render
-  bin/hello                # vendor-shipped binary, reads ./greeting.txt (cwd=this dir)
+  manifest.yml             # vendor-shipped: validate_templates + default_vars
+  greeting.txt.tmpl        # validation sample: {{ .GREETING }}
+  bin/hello                # vendor-shipped binary, reads GREETING from env
 ```
 
-The child finds its rendered files in its working directory (which equals `OP_VERSION_DIR`).
+The child runs with cwd equal to `OP_VERSION_DIR` and receives the merged environment above.
 
 #### Logs
 
@@ -447,8 +460,8 @@ reject_expiry: 0           # 0 = rejections never auto-clear; e.g. 24h to opt in
 log_max_size: 10485760     # 10 MiB before rotating to <base>.1
 log_max_files: 5           # history generations to keep (negative = no history)
 
-# Customer-controlled template context for every component's *.tmpl files.
-# Overrides keys from each version's defaults.yml. See §"Template rendering".
+# Customer-controlled deployment vars for component env injection and
+# manifest validation. Overrides each version manifest's default_vars.
 vars:
   GREETING: "Hello, customer"
   UPSTREAM_URL: "https://upstream.internal"

@@ -50,11 +50,11 @@ type Config struct {
 	LogMaxSize  int64 `yaml:"log_max_size"`
 	LogMaxFiles int   `yaml:"log_max_files"`
 
-	// Vars is the customer-controlled template context. Every key here
-	// becomes a top-level variable in the rendering pass applied to each
-	// component's *.tmpl files (alongside the component's own
-	// defaults.yml, the five launch variables, and env). Precedence on
-	// key collisions: env > Vars > defaults.yml > launch vars.
+	// Vars is the customer-controlled deployment context. Every key here is
+	// exported to each child process and is also available to manifest
+	// validate_templates checks (alongside manifest default_vars, launch
+	// variables, and env). Precedence on key collisions:
+	// launch facts > component env > Vars > manifest default_vars > process env.
 	Vars map[string]any `yaml:"vars,omitempty"`
 
 	Supervisor SupervisorConfig `yaml:"supervisor"`
@@ -96,6 +96,7 @@ type ObserverConfig struct {
 // A typical entry is `source: <deployment-name>`.
 type SupervisorConfig struct {
 	BindAddress  string            `yaml:"bind_address"`
+	PublicPort   int               `yaml:"public_port,omitempty"`
 	MetricLabels map[string]string `yaml:"metric_labels,omitempty"`
 }
 
@@ -155,9 +156,8 @@ type URLsConfig struct {
 // add / int). The vars: block is resolved iteratively (vars can reference
 // other vars or env). Templates inside YAML are fully resolved by the
 // time the unmarshal sees the bytes — no {{ }} reaches the rendered
-// `.tmpl` files at launch time. The ${VAR} command-template syntax in
-// components.command is NOT touched here (those expand at launch via
-// pkg/supervisor/template.go).
+	// `.tmpl` files. The ${VAR} command-template syntax in components.command
+	// is NOT touched here.
 //
 // Relative file:// URLs in any remote block are then resolved against the
 // directory holding the config file so the example can ship a relative
@@ -175,8 +175,8 @@ func LoadConfig(path string) (*Config, error) {
 
 	// pkg/config strips the `vars:` block from the processed bytes (it
 	// uses `vars:` purely as template-time scoping). We want the resolved
-	// values to also live on Config.Vars so the per-component template
-	// renderer (pkg/supervisor/render.go) can use them.
+	// values to also live on Config.Vars so child env injection and manifest
+	// validate_templates checks can use them.
 	if len(resolvedVars) > 0 {
 		if cfg.Vars == nil {
 			cfg.Vars = make(map[string]any, len(resolvedVars))

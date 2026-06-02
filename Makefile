@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture
+.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -45,11 +45,11 @@ example-supervisor-fixture:
 	@printf '%s\n' '$(SUPERVISOR_VERSION)' > $(SUPERVISOR_FIXTURE)/hello/versions/required.txt
 	@rm -rf bin/.fixture-stage && mkdir -p bin/.fixture-stage/bin
 	cd examples/supervisor/hello && go build -o ../../../bin/.fixture-stage/bin/hello .
-	# Vendor-shipped files that ride along inside the tarball: a baseline
-	# defaults.yml and any *.tmpl the supervisor will render on launch.
-	cp examples/supervisor/hello/defaults.yml bin/.fixture-stage/defaults.yml
+	# Vendor-shipped files that ride along inside the tarball: manifest.yml
+	# and any templates the supervisor can best-effort validate.
+	cp examples/supervisor/hello/manifest.yml bin/.fixture-stage/manifest.yml
 	cp examples/supervisor/hello/greeting.txt.tmpl bin/.fixture-stage/greeting.txt.tmpl
-	tar -C bin/.fixture-stage -czf $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz bin/hello defaults.yml greeting.txt.tmpl
+	tar -C bin/.fixture-stage -czf $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz bin/hello manifest.yml greeting.txt.tmpl
 	@rm -rf bin/.fixture-stage
 	@echo "fixture ready: $(SUPERVISOR_FIXTURE)/hello/images/$(SUPERVISOR_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz"
 
@@ -63,3 +63,11 @@ example-supervisor: example-supervisor-fixture
 # exercise the signed update flow end-to-end.
 example-supervisor-origin:
 	cd examples/supervisor/origin && go run . --addr=127.0.0.1:18080 --component=hello --source=../hello --version=v1 --keys=./keys
+
+package-supervisor:
+	./deploy/supervisor/package.sh
+
+deploy-supervisor:
+	./deploy/supervisor/deploy.sh
+
+ship-supervisor: package-supervisor deploy-supervisor

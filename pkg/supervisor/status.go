@@ -45,6 +45,7 @@ type MonitorURLs struct {
 // SupervisorSnapshot is the top-level shape of /state.
 type SupervisorSnapshot struct {
 	StateDir      string              `json:"state_dir"`
+	PublicPort    int                 `json:"public_port,omitempty"`
 	StartedAt     string              `json:"started_at"`
 	LastPollAt    string              `json:"last_poll_at,omitempty"`
 	LastPollError string              `json:"last_poll_error,omitempty"`

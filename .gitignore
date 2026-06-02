@@ -13,4 +13,4 @@ examples/**/*.sum
 *.swp
 *.swo
 bin/
-
+build/

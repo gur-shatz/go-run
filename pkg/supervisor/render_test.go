@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("renderVersionTemplates", func() {
+var _ = Describe("validateVersionTemplates", func() {
 	var (
 		versionDir string
 		launchVars LaunchVars
@@ -32,160 +32,136 @@ var _ = Describe("renderVersionTemplates", func() {
 		return path
 	}
 
-	readFile := func(rel string) string {
-		data, err := os.ReadFile(filepath.Join(versionDir, rel))
+	It("validates manifest validate_templates without writing rendered files", func() {
+		writeFile("manifest.yml", `validate_templates:
+  - config.yml
+default_vars:
+  VALUE: ok
+`, 0644)
+		writeFile("config.yml.tmpl", `value: "{{ .VALUE }}"`, 0644)
+
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
 		Expect(err).NotTo(HaveOccurred())
-		return string(data)
-	}
+		_, statErr := os.Stat(filepath.Join(versionDir, "config.yml"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue())
+	})
 
-	It("renders a .tmpl using supervisor vars and strips the suffix", func() {
-		writeFile("config.toml.tmpl", `greeting = "{{ .GREETING }}"`, 0644)
+	It("uses manifest default_vars for validation", func() {
+		writeFile("manifest.yml", `validate_templates:
+  - config.yml
+default_vars:
+  LOG_LEVEL: info
+`, 0644)
+		writeFile("config.yml.tmpl", `level: "{{ .LOG_LEVEL }}"`, 0644)
 
-		err := renderVersionTemplates(versionDir, map[string]any{"GREETING": "hi from vars"}, launchVars)
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("config.toml")).To(Equal(`greeting = "hi from vars"`))
 	})
 
-	It("supervisor vars override defaults.yml", func() {
-		writeFile("defaults.yml", "GREETING: from defaults\n", 0644)
-		writeFile("config.toml.tmpl", `g = "{{ .GREETING }}"`, 0644)
+	It("allows supervisor vars and component env to override default_vars during validation", func() {
+		writeFile("manifest.yml", `validate_templates:
+  - config.yml
+default_vars:
+  TOKEN: from default
+`, 0644)
+		writeFile("config.yml.tmpl", `value: "{{ .TOKEN }}"
+from_env_func: "{{ env "TOKEN" }}"
+`, 0644)
 
-		err := renderVersionTemplates(versionDir, map[string]any{"GREETING": "from vars"}, launchVars)
+		err := validateVersionTemplatesWithEnv(versionDir, map[string]any{"TOKEN": "from supervisor"}, map[string]string{"TOKEN": "from component"}, launchVars)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("config.toml")).To(Equal(`g = "from vars"`))
 	})
 
-	It("falls back to defaults.yml when supervisor vars don't set the key", func() {
-		writeFile("defaults.yml", "LOG_LEVEL: info\n", 0644)
-		writeFile("conf.tmpl", `level = "{{ .LOG_LEVEL }}"`, 0644)
+	It("exposes launch vars and artifact-compatible aliases to validation", func() {
+		GinkgoT().Setenv("BUILD_DIR", "/from/process/env")
+		writeFile("manifest.yml", "validate_templates:\n  - paths.toml\n", 0644)
+		writeFile("paths.toml.tmpl", `dir = "{{ .VERSION_DIR }}"; build = "{{ .BUILD_DIR }}"; builddir = "{{ .BUILDDIR }}"; required = "{{ .REQUIRED_VERSION }}"; port = "{{ .MONITOR_PORT }}"`, 0644)
 
-		err := renderVersionTemplates(versionDir, nil, launchVars)
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("conf")).To(Equal(`level = "info"`))
 	})
 
-	It("exposes the five launch vars as template keys", func() {
-		writeFile("paths.toml.tmpl", `dir = "{{ .VERSION_DIR }}"; port = "{{ .MONITOR_PORT }}"`, 0644)
+	It("processes vars sections with the shared runctl config engine", func() {
+		writeFile("manifest.yml", "validate_templates:\n  - config.yml\n", 0644)
+		writeFile("config.yml.tmpl", `vars:
+  BASE_PORT: "8000"
+  API_PORT: "{{ add .BASE_PORT 81 }}"
+server:
+  port: "{{ .API_PORT }}"
+`, 0644)
 
-		err := renderVersionTemplates(versionDir, nil, launchVars)
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("paths.toml")).To(Equal(`dir = "` + versionDir + `"; port = "18090"`))
 	})
 
-	It("renders nested .tmpl files in subdirectories", func() {
-		writeFile("subdir/inner/foo.conf.tmpl", `x = "{{ .X }}"`, 0644)
+	It("fails validation when a validate_templates entry is missing", func() {
+		writeFile("manifest.yml", "validate_templates:\n  - missing.yml\n", 0644)
 
-		err := renderVersionTemplates(versionDir, map[string]any{"X": "nested"}, launchVars)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("subdir/inner/foo.conf")).To(Equal(`x = "nested"`))
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
+		Expect(err).To(MatchError(ContainSubstring("manifest.yml validate_templates entry")))
 	})
 
-	It("rotates a previous render to .bak on re-render", func() {
-		writeFile("config.toml.tmpl", `n = "{{ .N }}"`, 0644)
-
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": "first"}, launchVars)).To(Succeed())
-		Expect(readFile("config.toml")).To(Equal(`n = "first"`))
-
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": "second"}, launchVars)).To(Succeed())
-		Expect(readFile("config.toml")).To(Equal(`n = "second"`))
-		Expect(readFile("config.toml.bak")).To(Equal(`n = "first"`))
-	})
-
-	It("replaces an existing .bak on the next rotation (single-level)", func() {
-		writeFile("config.toml.tmpl", `n = "{{ .N }}"`, 0644)
-
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": "first"}, launchVars)).To(Succeed())
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": "second"}, launchVars)).To(Succeed())
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": "third"}, launchVars)).To(Succeed())
-
-		Expect(readFile("config.toml")).To(Equal(`n = "third"`))
-		Expect(readFile("config.toml.bak")).To(Equal(`n = "second"`))
-		_, err := os.Stat(filepath.Join(versionDir, "config.toml.bak.bak"))
-		Expect(os.IsNotExist(err)).To(BeTrue())
-	})
-
-	It("preserves the .tmpl file's mode on the rendered output", func() {
-		writeFile("run.sh.tmpl", "#!/bin/sh\necho {{ .MSG }}\n", 0755)
-
-		err := renderVersionTemplates(versionDir, map[string]any{"MSG": "hello"}, launchVars)
-		Expect(err).NotTo(HaveOccurred())
-
-		info, statErr := os.Stat(filepath.Join(versionDir, "run.sh"))
-		Expect(statErr).NotTo(HaveOccurred())
-		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0755)))
-	})
-
-	It("works with no defaults.yml at all", func() {
-		writeFile("config.toml.tmpl", `x = "{{ .X | default "fallback" }}"`, 0644)
-
-		err := renderVersionTemplates(versionDir, nil, launchVars)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(readFile("config.toml")).To(Equal(`x = "fallback"`))
-	})
-
-	It("returns a useful error on a syntactically-broken template", func() {
-		writeFile("broken.toml.tmpl", `x = "{{ .X `, 0644)
-
-		err := renderVersionTemplates(versionDir, nil, launchVars)
-		Expect(err).To(MatchError(ContainSubstring("broken.toml.tmpl")))
-	})
-
-	It("returns a useful error for a required-but-missing var", func() {
-		writeFile("config.toml.tmpl", `x = "{{ required "X is required" .X }}"`, 0644)
-
-		err := renderVersionTemplates(versionDir, nil, launchVars)
-		Expect(err).To(MatchError(ContainSubstring("X is required")))
-	})
-
-	It("fails when an undefined var leaves <no value> in the output", func() {
+	It("returns useful validation errors for missing variables", func() {
+		writeFile("manifest.yml", "validate_templates:\n  - config.toml\n", 0644)
 		writeFile("config.toml.tmpl", `x = "{{ .UNDEFINED }}"`, 0644)
 
-		err := renderVersionTemplates(versionDir, nil, launchVars)
-		Expect(err).To(MatchError(ContainSubstring("unresolved template variable")))
-		// The target must NOT have been written.
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
+		Expect(err).To(MatchError(ContainSubstring("undefined variable")))
 		_, statErr := os.Stat(filepath.Join(versionDir, "config.toml"))
 		Expect(os.IsNotExist(statErr)).To(BeTrue())
 	})
 
-	It("validates rendered .yml output", func() {
-		writeFile("ok.yml.tmpl", `name: {{ .NAME }}`, 0644)
-		Expect(renderVersionTemplates(versionDir, map[string]any{"NAME": "hello"}, launchVars)).To(Succeed())
-
+	It("validates rendered YAML and JSON when listed", func() {
+		writeFile("manifest.yml", "validate_templates:\n  - bad.yml\n  - bad.json\n", 0644)
 		writeFile("bad.yml.tmpl", `name: [unbalanced`, 0644)
-		err := renderVersionTemplates(versionDir, nil, launchVars)
+		writeFile("bad.json.tmpl", `{"k": missing-closing-brace`, 0644)
+
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
 		Expect(err).To(MatchError(ContainSubstring("bad.yml")))
 	})
 
-	It("validates rendered .json output", func() {
-		writeFile("bad.json.tmpl", `{"k": {{ .V }}`, 0644)
-		err := renderVersionTemplates(versionDir, map[string]any{"V": "missing-closing-brace"}, launchVars)
-		Expect(err).To(MatchError(ContainSubstring("bad.json")))
+	It("does nothing when no validate_templates are listed", func() {
+		writeFile("config.toml.tmpl", `x = "{{ .UNDEFINED }}"`, 0644)
+
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("doesn't validate arbitrary extensions like .conf or .txt", func() {
-		writeFile("greeting.txt.tmpl", `hi: [oops without close brackets`, 0644)
-		Expect(renderVersionTemplates(versionDir, nil, launchVars)).To(Succeed())
-		Expect(readFile("greeting.txt")).To(Equal(`hi: [oops without close brackets`))
+	It("keeps legacy flat defaults.yml compatibility for env defaults", func() {
+		writeFile("defaults.yml", "LOG_LEVEL: info\n", 0644)
+		env, err := buildRenderEnv(versionDir, nil, nil, launchVars)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(env["LOG_LEVEL"]).To(Equal("info"))
 	})
 
-	It("is idempotent — re-rendering with the same context produces identical bytes", func() {
-		writeFile("c.tmpl", `{{ .N }}`, 0644)
+	It("passes the same deployment and launch env shape to child processes", func() {
+		GinkgoT().Setenv("TOKEN", "from process")
+		GinkgoT().Setenv("BUILD_DIR", "/from/process/env")
+		writeFile("manifest.yml", `default_vars:
+  TOKEN: from default
+  REGION: eu
+`, 0644)
 
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": 42}, launchVars)).To(Succeed())
-		first := readFile("c")
+		c := &Component{
+			cfg: ComponentConfig{
+				Env: map[string]string{
+					"TOKEN": "from component",
+				},
+			},
+			supervisorVars: map[string]any{
+				"TOKEN": "from supervisor",
+			},
+		}
 
-		// Second render: same inputs, same output. .bak gets the same content too.
-		Expect(renderVersionTemplates(versionDir, map[string]any{"N": 42}, launchVars)).To(Succeed())
-		Expect(readFile("c")).To(Equal(first))
-		Expect(readFile("c.bak")).To(Equal(first))
-	})
-
-	It("skips non-.tmpl files (does not touch the binary alongside templates)", func() {
-		writeFile("bin/hello", "binary bytes", 0755)
-		writeFile("config.toml.tmpl", `g = "x"`, 0644)
-
-		Expect(renderVersionTemplates(versionDir, nil, launchVars)).To(Succeed())
-		// The binary is untouched.
-		Expect(readFile("bin/hello")).To(Equal("binary bytes"))
+		items, err := c.buildEnv(launchVars)
+		Expect(err).NotTo(HaveOccurred())
+		env := environSliceToMap(items)
+		Expect(env["TOKEN"]).To(Equal("from component"))
+		Expect(env["REGION"]).To(Equal("eu"))
+		Expect(env["BUILD_DIR"]).To(Equal(versionDir))
+		Expect(env["BUILDDIR"]).To(Equal(versionDir))
+		Expect(env["REQUIRED_VERSION"]).To(Equal("v1"))
+		Expect(env["OP_VERSION_DIR"]).To(Equal(versionDir))
 	})
 })

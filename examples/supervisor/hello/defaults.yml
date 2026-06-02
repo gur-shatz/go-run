@@ -1,3 +1,0 @@
-# Vendor-shipped baseline. The customer overrides any of these by setting
-# the same key under supervisor.yml's top-level `vars:` block.
-GREETING: "Hello (vendor default)"
