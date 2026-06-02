@@ -29,7 +29,7 @@ const renderedBackupSuffix = ".bak"
 // manifestFilename is the vendor-shipped manifest file at the root of a
 // version dir:
 //
-//	validate_templates: # files to best-effort validate; "config.yml" means "config.yml.tmpl"
+//	validate_templates: # files to best-effort validate
 //	- config.yml
 //	default_vars:
 //	  GREETING: Hello
@@ -187,17 +187,24 @@ func manifestTemplatePath(versionDir, rel string) (string, error) {
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s validate_templates entry %q escapes version dir", manifestFilename, rel)
 	}
-	if !strings.HasSuffix(clean, tmplExtension) {
-		clean += tmplExtension
-	}
 	path := filepath.Join(versionDir, clean)
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("%s validate_templates entry %q missing source %s", manifestFilename, rel, path)
-		}
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("stat template %s: %w", path, err)
 	}
-	return path, nil
+
+	if strings.HasSuffix(clean, tmplExtension) {
+		return "", fmt.Errorf("%s validate_templates entry %q missing source %s", manifestFilename, rel, path)
+	}
+	legacyPath := path + tmplExtension
+	if _, err := os.Stat(legacyPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s validate_templates entry %q missing source %s or %s", manifestFilename, rel, path, legacyPath)
+		}
+		return "", fmt.Errorf("stat template %s: %w", legacyPath, err)
+	}
+	return legacyPath, nil
 }
 
 // renderOneTemplate reads tmplPath, resolves its content against ctx/env

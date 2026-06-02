@@ -46,6 +46,30 @@ default_vars:
 		Expect(os.IsNotExist(statErr)).To(BeTrue())
 	})
 
+	It("validates real config files listed in validate_templates", func() {
+		writeFile("manifest.yml", `validate_templates:
+  - config.yml
+default_vars:
+  VALUE: ok
+`, 0644)
+		writeFile("config.yml", `value: "{{ .VALUE }}"`, 0644)
+
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("falls back to legacy .tmpl files when the listed file is absent", func() {
+		writeFile("manifest.yml", `validate_templates:
+  - config.yml
+default_vars:
+  VALUE: ok
+`, 0644)
+		writeFile("config.yml.tmpl", `value: "{{ .VALUE }}"`, 0644)
+
+		err := validateVersionTemplatesWithEnv(versionDir, nil, nil, launchVars)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("uses manifest default_vars for validation", func() {
 		writeFile("manifest.yml", `validate_templates:
   - config.yml

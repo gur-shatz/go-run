@@ -99,6 +99,9 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 	if getForced == nil {
 		getForced = func() ForcedOverride { return ForcedOverride{Kind: ForcedKindNone} }
 	}
+	if cfg.Remote.BaseURL != "" && !cfg.Remote.EnabledSet {
+		cfg.Remote.Enabled = true
+	}
 	return &Component{
 		cfg:             cfg,
 		paths:           paths,
@@ -362,9 +365,9 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 		}
 		target = stable
 	default:
-		if this.cfg.Remote.BaseURL == "" {
+		if !this.cfg.Remote.Enabled {
 			if current == "" {
-				this.markWarn("local mode: current.txt is empty")
+				this.markWarn("updates disabled: current.txt is empty")
 				return "", nil
 			}
 			if this.bundle != nil {
