@@ -142,7 +142,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, logger)
 
 	return this, nil
 }

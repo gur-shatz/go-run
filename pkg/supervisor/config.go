@@ -126,6 +126,29 @@ type SupervisorConfig struct {
 	BindAddress  string            `yaml:"bind_address"`
 	PublicPort   int               `yaml:"public_port,omitempty"`
 	MetricLabels map[string]string `yaml:"metric_labels,omitempty"`
+
+	// BasicAuth, when enabled, gates every route on the supervisor's HTTP
+	// server (including /backoffice/healthz) behind a login form.
+	BasicAuth BasicAuthConfig `yaml:"basic_auth,omitempty"`
+}
+
+// BasicAuthConfig is the optional login gate on the supervisor's HTTP server.
+// When Enabled, an unauthenticated request is redirected to a plain /login
+// form; submitting the configured username and password mints a session cookie
+// that grants access for up to 12 hours. The cookie is a signed
+// "<timestamp>.<hash>" pair (hash = sha256(timestamp|username|password)), so
+// nothing is stored server-side and changing the password invalidates every
+// outstanding cookie. Disabled by default so the surface stays open unless an
+// operator opts in.
+type BasicAuthConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+
+	// Hint is an optional human-readable line shown under the login form —
+	// handy for demos where the credentials aren't secret (e.g.
+	// "demo login: admin / changeme"). Leave empty in production.
+	Hint string `yaml:"hint,omitempty"`
 }
 
 // UpdatesConfig is the operator-facing update switch. When enabled is false,
@@ -377,6 +400,11 @@ func applyURLDefaults(u URLsConfig) URLsConfig {
 
 // Validate checks that the resolved config is internally consistent.
 func (this *Config) Validate() error {
+	if ba := this.Supervisor.BasicAuth; ba.Enabled {
+		if ba.Username == "" || ba.Password == "" {
+			return fmt.Errorf("supervisor.basic_auth: username and password are required when enabled")
+		}
+	}
 	if len(this.Components) == 0 {
 		return nil
 	}
