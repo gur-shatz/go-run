@@ -58,6 +58,7 @@ var _ = Describe("Config", func() {
 			cfg.ApplyDefaults()
 
 			Expect(cfg.Components[0].Remote.BaseURL).To(Equal("https://updates.example.com"))
+			Expect(cfg.Components[0].Remote.Enabled).To(BeTrue())
 			Expect(cfg.Components[0].Remote.SignaturePublicKeyPath).To(Equal("/etc/go-run/update.pub"))
 			Expect(cfg.Components[0].Remote.Target).To(Equal("required.txt"))
 			Expect(cfg.Components[0].Remote.PollingInterval).To(Equal(time.Minute))
@@ -84,7 +85,23 @@ var _ = Describe("Config", func() {
 			cfg.ApplyDefaults()
 
 			Expect(cfg.Components[0].Remote.BaseURL).To(Equal("https://other.example.com"))
+			Expect(cfg.Components[0].Remote.Enabled).To(BeTrue())
 			Expect(cfg.Components[0].Remote.PollingInterval).To(Equal(30 * time.Second))
+		})
+
+		It("lets updates.enabled false disable remote polling even when remote fields are present", func() {
+			disabled := false
+			cfg := supervisor.Config{
+				Updates: supervisor.UpdatesConfig{Enabled: &disabled},
+				Remote:  supervisor.RemoteConfig{BaseURL: "https://updates.example.com"},
+				Components: []supervisor.ComponentConfig{
+					{Name: "x", Port: 8080, Command: "/bin/x"},
+				},
+			}
+			cfg.ApplyDefaults()
+
+			Expect(cfg.Components[0].Remote.BaseURL).To(Equal("https://updates.example.com"))
+			Expect(cfg.Components[0].Remote.Enabled).To(BeFalse())
 		})
 
 		It("fills default URL paths on each component", func() {
@@ -181,6 +198,18 @@ var _ = Describe("Config", func() {
 			}
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("requires a remote base_url when updates are explicitly enabled", func() {
+			enabled := true
+			cfg := supervisor.Config{
+				Updates: supervisor.UpdatesConfig{Enabled: &enabled},
+				Components: []supervisor.ComponentConfig{
+					{Name: "x", Port: 8080, Command: "/bin/x"},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("updates are enabled")))
 		})
 
 		It("accepts a config with no components", func() {

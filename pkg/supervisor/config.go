@@ -58,6 +58,7 @@ type Config struct {
 	Vars map[string]any `yaml:"vars,omitempty"`
 
 	Supervisor SupervisorConfig `yaml:"supervisor"`
+	Updates    UpdatesConfig    `yaml:"updates,omitempty"`
 	Remote     RemoteConfig     `yaml:"remote"`
 
 	// StateMonitor configures the supervisor's component-monitoring role, in
@@ -127,8 +128,23 @@ type SupervisorConfig struct {
 	MetricLabels map[string]string `yaml:"metric_labels,omitempty"`
 }
 
+// UpdatesConfig is the operator-facing update switch. When enabled is false,
+// the supervisor does not poll an update source and runs current.txt locally.
+// The remaining fields mirror remote: and are copied into the effective
+// RemoteConfig during ApplyDefaults.
+type UpdatesConfig struct {
+	Enabled                *bool         `yaml:"enabled,omitempty"`
+	BaseURL                string        `yaml:"base_url,omitempty"`
+	Target                 string        `yaml:"target,omitempty"`
+	PollingInterval        time.Duration `yaml:"polling_interval,omitempty"`
+	Secret                 string        `yaml:"secret,omitempty"`
+	SignaturePublicKeyPath string        `yaml:"signature_public_key_path,omitempty"`
+}
+
 // RemoteConfig describes the vendor's update endpoint. Per-component overrides may set any subset.
 type RemoteConfig struct {
+	Enabled                bool          `yaml:"-"`
+	EnabledSet             bool          `yaml:"-"`
 	BaseURL                string        `yaml:"base_url"`
 	Target                 string        `yaml:"target"`
 	PollingInterval        time.Duration `yaml:"polling_interval"`
@@ -217,6 +233,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("resolve config dir for %s: %w", path, err)
 	}
 	cfg.Remote.BaseURL = resolveFileURL(cfg.Remote.BaseURL, absConfigDir)
+	cfg.Updates.BaseURL = resolveFileURL(cfg.Updates.BaseURL, absConfigDir)
 	for i := range cfg.Components {
 		cfg.Components[i].Remote.BaseURL = resolveFileURL(cfg.Components[i].Remote.BaseURL, absConfigDir)
 		cfg.Components[i].Readme = resolveLocalPath(cfg.Components[i].Readme, absConfigDir)
@@ -307,6 +324,7 @@ func (this *Config) ApplyDefaults() {
 	if this.Supervisor.BindAddress == "" {
 		this.Supervisor.BindAddress = "127.0.0.1:9090"
 	}
+	this.Remote = applyUpdates(this.Remote, this.Updates)
 	if this.Remote.Target == "" {
 		this.Remote.Target = "required.txt"
 	}
@@ -333,6 +351,9 @@ func (this *Config) ApplyDefaults() {
 
 	for i := range this.Components {
 		this.Components[i].Remote = mergeRemote(this.Remote, this.Components[i].Remote)
+		if this.Components[i].Remote.BaseURL != "" && this.Updates.Enabled == nil {
+			this.Components[i].Remote.Enabled = true
+		}
 		this.Components[i].URLs = applyURLDefaults(this.Components[i].URLs)
 	}
 }
@@ -378,6 +399,9 @@ func (this *Config) Validate() error {
 		if other, ok := portSeen[c.Port]; ok {
 			return fmt.Errorf("components[%q]: port %d already used by component %q", c.Name, c.Port, other)
 		}
+		if c.Remote.Enabled && c.Remote.BaseURL == "" {
+			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
+		}
 		portSeen[c.Port] = c.Name
 	}
 	return nil
@@ -387,6 +411,12 @@ func (this *Config) Validate() error {
 // override falls back to the corresponding field in base.
 func mergeRemote(base, override RemoteConfig) RemoteConfig {
 	out := override
+	if !out.EnabledSet {
+		out.EnabledSet = base.EnabledSet
+	}
+	if !out.Enabled {
+		out.Enabled = base.Enabled
+	}
 	if out.BaseURL == "" {
 		out.BaseURL = base.BaseURL
 	}
@@ -403,4 +433,29 @@ func mergeRemote(base, override RemoteConfig) RemoteConfig {
 		out.SignaturePublicKeyPath = base.SignaturePublicKeyPath
 	}
 	return out
+}
+
+func applyUpdates(remote RemoteConfig, updates UpdatesConfig) RemoteConfig {
+	if updates.BaseURL != "" {
+		remote.BaseURL = updates.BaseURL
+	}
+	if updates.Target != "" {
+		remote.Target = updates.Target
+	}
+	if updates.PollingInterval != 0 {
+		remote.PollingInterval = updates.PollingInterval
+	}
+	if updates.Secret != "" {
+		remote.Secret = updates.Secret
+	}
+	if updates.SignaturePublicKeyPath != "" {
+		remote.SignaturePublicKeyPath = updates.SignaturePublicKeyPath
+	}
+	if updates.Enabled != nil {
+		remote.Enabled = *updates.Enabled
+		remote.EnabledSet = true
+	} else if remote.BaseURL != "" {
+		remote.Enabled = true
+	}
+	return remote
 }

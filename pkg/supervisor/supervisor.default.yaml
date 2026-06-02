@@ -23,6 +23,9 @@ log_max_files: 5
 supervisor:
   bind_address: 127.0.0.1:9090
 
+updates:
+  enabled: true
+
 remote:
   base_url: https://updates.example.com
   target: required.txt

@@ -327,7 +327,7 @@ func resolvePublicKey(cfg Config, opts Options, logger *log.Logger) ([]byte, err
 
 func hasRemoteComponents(cfg Config) bool {
 	for _, c := range cfg.Components {
-		if c.Remote.BaseURL != "" {
+		if c.Remote.Enabled {
 			return true
 		}
 	}
