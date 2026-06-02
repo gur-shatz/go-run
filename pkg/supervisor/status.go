@@ -12,10 +12,24 @@ package supervisor
 // to serve, so the control plane can compose URLs without re-reading the
 // supervisor config.
 type ComponentSnapshot struct {
-	Name          string      `json:"name"`
-	Description   string      `json:"description,omitempty"`
-	Stable        string      `json:"stable,omitempty"`
-	Current       string      `json:"current,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Stable      string `json:"stable,omitempty"`
+	Current     string `json:"current,omitempty"`
+
+	// GlobalState is the component's own top-level health, read from its
+	// /healthz: the body ("pass"/"warn"/"fail") when the probe returns 200, or
+	// "down" for any non-200 / connection error. Built-in and always on,
+	// independent of statemonitor.scrape.
+	GlobalState string `json:"global_state,omitempty"`
+
+	// UpdateStatus is the supervisor's versioning posture for this component:
+	// "live" (auto-updating), "pinned to stable", or "pinned to <version>".
+	UpdateStatus string `json:"update_status,omitempty"`
+
+	// Status is the statekit lifecycle status (the supervisor's process view:
+	// running / restarting / halted). Distinct from GlobalState, which is the
+	// component's self-reported health.
 	Status        string      `json:"status"`
 	Port          int         `json:"port,omitempty"`
 	ChildPID      int         `json:"child_pid,omitempty"`

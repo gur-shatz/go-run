@@ -22,15 +22,42 @@ type stubStateProvider struct {
 }
 
 func (this stubStateProvider) Snapshot() SupervisorSnapshot {
-	return SupervisorSnapshot{Components: []ComponentSnapshot{{Name: this.name, Status: "pass", Port: this.port}}}
+	return SupervisorSnapshot{Components: []ComponentSnapshot{this.snap()}}
 }
 
 func (this stubStateProvider) ComponentSnapshot(name string) (ComponentSnapshot, bool) {
 	if name == this.name {
-		return ComponentSnapshot{Name: this.name, Port: this.port}, true
+		return this.snap(), true
 	}
 	return ComponentSnapshot{}, false
 }
+
+func (this stubStateProvider) snap() ComponentSnapshot {
+	return ComponentSnapshot{Name: this.name, Status: "pass", GlobalState: "pass", UpdateStatus: "live", Port: this.port}
+}
+
+var _ = Describe("backoffice version", func() {
+	It("serves build info at /backoffice/version and shows it on the index", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		build := BuildInfo{Version: "v1.2.3", Commit: "abc1234", Branch: "master", Date: "2026-06-02T09:00:00Z"}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, build, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := getBody(srv.Client(), srv.URL+"/backoffice/version")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("version: v1.2.3"))
+		Expect(body).To(ContainSubstring("branch: master"))
+		Expect(body).To(ContainSubstring("commit: abc1234"))
+
+		// The backoffice index (JSON) carries the version in its description.
+		_, idx := getBody(srv.Client(), srv.URL+"/backoffice/index.json")
+		Expect(idx).To(ContainSubstring("Version v1.2.3 (branch master)"))
+	})
+})
 
 var _ = Describe("current_version_logs", func() {
 	It("redirects to the live version's log dir with a proxy-safe relative Location", func() {
@@ -46,7 +73,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -80,7 +107,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -101,7 +128,7 @@ var _ = Describe("component proxy", func() {
 		cfg := Config{StateDir: dir}
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, nil, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

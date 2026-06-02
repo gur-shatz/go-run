@@ -17,7 +17,7 @@ var _ = Describe("observer / health console", func() {
 	newEnabled := func() Config {
 		cfg := Config{StateDir: GinkgoT().TempDir()}
 		cfg.Components = []ComponentConfig{{Name: "hello", Port: 18090, Command: "x", Remote: RemoteConfig{BaseURL: "file://x"}}}
-		cfg.Observer.Enabled = true
+		cfg.StateMonitor.Observe.Enabled = true
 		cfg.ApplyDefaults()
 		return cfg
 	}
@@ -25,7 +25,7 @@ var _ = Describe("observer / health console", func() {
 	It("mounts the console and API at /health and reflects ingested registry state", func() {
 		cfg := newEnabled()
 		bundle := newStatekitBundle(cfg)
-		obs := newObserver(cfg.Observer, bundle.registry, log.New("[t]", false))
+		obs := newObserver(cfg.StateMonitor.Observe, bundle.registry, log.New("[t]", false))
 
 		// One ingest pass: the same thing observer.Run does each tick.
 		Expect(obs.store.IngestDocument(context.Background(), bundle.registry.StateDisplay(), time.Now())).To(Succeed())
@@ -61,9 +61,9 @@ var _ = Describe("observer / health console", func() {
 	It("links the portal to the health console when the observer is enabled", func() {
 		cfg := newEnabled()
 		bundle := newStatekitBundle(cfg)
-		obs := newObserver(cfg.Observer, bundle.registry, log.New("[t]", false))
+		obs := newObserver(cfg.StateMonitor.Observe, bundle.registry, log.New("[t]", false))
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil,
-			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, obs, log.New("[t]", false))
+			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, obs, BuildInfo{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -80,7 +80,7 @@ var _ = Describe("observer / health console", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil,
-			NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, log.New("[t]", false))
+			NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 

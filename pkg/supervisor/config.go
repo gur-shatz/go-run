@@ -60,31 +60,58 @@ type Config struct {
 	Supervisor SupervisorConfig `yaml:"supervisor"`
 	Remote     RemoteConfig     `yaml:"remote"`
 
-	// Observer enables the optional health-aggregation role: the supervisor
-	// persists scraped component state into an in-memory statekit storage and
-	// serves a dedicated health console at /health (current state, transition
-	// events, per-target rollups). Default disabled — this is a temporary role
-	// that may later move into its own component.
-	Observer ObserverConfig `yaml:"observer,omitempty"`
+	// StateMonitor configures the supervisor's component-monitoring role, in
+	// two independently toggleable parts:
+	//
+	//   - scrape: poll each component's healthz/state/metrics into the registry
+	//     (on by default).
+	//   - observe: persist that state and serve the /health console (off by
+	//     default).
+	//
+	// Turning scrape off does NOT affect the supervisor's own liveness
+	// (/backoffice/healthz), its own metrics, or its per-component
+	// process-supervision state (<name>.supervisorstate: running / crashed /
+	// uptime). Those come from the component lifecycle, not from scraping.
+	// Without scrape you lose only the child's self-reported /state, its
+	// /metrics passthrough, and the HTTP liveness probe of the child.
+	StateMonitor StateMonitorConfig `yaml:"statemonitor,omitempty"`
 
 	Components []ComponentConfig `yaml:"components"`
 }
 
-// ObserverConfig controls the optional health-aggregation role. When Enabled,
-// the supervisor stands up a statekit storage fed from its own registry on a
+// StateMonitorConfig groups the two component-monitoring sub-roles.
+type StateMonitorConfig struct {
+	Scrape  ScrapeConfig  `yaml:"scrape,omitempty"`
+	Observe ObserveConfig `yaml:"observe,omitempty"`
+}
+
+// ScrapeConfig controls the component scraper. Enabled is a pointer so an
+// absent block defaults to on; set `enabled: false` to turn scraping off.
+type ScrapeConfig struct {
+	Enabled    *bool         `yaml:"enabled,omitempty"`
+	Interval   time.Duration `yaml:"interval,omitempty"`   // default 15s
+	Timeout    time.Duration `yaml:"timeout,omitempty"`    // default 5s
+	Expiration time.Duration `yaml:"expiration,omitempty"` // default 1m
+}
+
+// IsEnabled reports whether scraping is on. An unset enabled flag means on.
+func (this ScrapeConfig) IsEnabled() bool { return this.Enabled == nil || *this.Enabled }
+
+// ObserveConfig controls the health-aggregation role. When Enabled, the
+// supervisor stands up a statekit storage fed from its own registry on a
 // ticker and serves the storage console + API under /health.
-type ObserverConfig struct {
+type ObserveConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// IngestInterval is how often the supervisor snapshots its registry into
 	// the store. Each snapshot updates current state and appends any new
 	// transition events. Default 1s.
-	IngestInterval time.Duration `yaml:"ingest_interval"`
+	IngestInterval time.Duration `yaml:"ingest_interval,omitempty"`
 
 	// CacheMB sizes the document cache (full /state documents) in MiB.
 	// Default 32. Note: storage is in-memory only — history does not survive a
 	// supervisor restart.
-	CacheMB int `yaml:"cache_mb"`
+	CacheMB int `yaml:"cache_mb,omitempty"`
 }
 
 // SupervisorConfig controls the supervisor's own HTTP server (own-state, /healthz, /metrics)
@@ -286,12 +313,21 @@ func (this *Config) ApplyDefaults() {
 	if this.Remote.PollingInterval == 0 {
 		this.Remote.PollingInterval = time.Minute
 	}
-	if this.Observer.Enabled {
-		if this.Observer.IngestInterval == 0 {
-			this.Observer.IngestInterval = time.Second
+	if this.StateMonitor.Scrape.Interval == 0 {
+		this.StateMonitor.Scrape.Interval = 15 * time.Second
+	}
+	if this.StateMonitor.Scrape.Timeout == 0 {
+		this.StateMonitor.Scrape.Timeout = 5 * time.Second
+	}
+	if this.StateMonitor.Scrape.Expiration == 0 {
+		this.StateMonitor.Scrape.Expiration = time.Minute
+	}
+	if this.StateMonitor.Observe.Enabled {
+		if this.StateMonitor.Observe.IngestInterval == 0 {
+			this.StateMonitor.Observe.IngestInterval = time.Second
 		}
-		if this.Observer.CacheMB == 0 {
-			this.Observer.CacheMB = 32
+		if this.StateMonitor.Observe.CacheMB == 0 {
+			this.StateMonitor.Observe.CacheMB = 32
 		}
 	}
 

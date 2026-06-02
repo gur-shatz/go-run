@@ -73,7 +73,7 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		requests.Inc()
 		requestCounter.Add(1)
-		fmt.Fprintln(w, "ok")
+		fmt.Fprintln(w, "pass")
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		requests.Inc()

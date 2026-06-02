@@ -81,7 +81,15 @@ func run() error {
 	}
 	defer lock.Release()
 
-	sup, err := supervisor.New(*cfg, supervisor.Options{Verbose: *verbose})
+	sup, err := supervisor.New(*cfg, supervisor.Options{
+		Verbose: *verbose,
+		Build: supervisor.BuildInfo{
+			Version: buildinfo.Version,
+			Commit:  buildinfo.Commit,
+			Branch:  buildinfo.Branch,
+			Date:    buildinfo.Date,
+		},
+	})
 	if err != nil {
 		return err
 	}
