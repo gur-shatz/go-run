@@ -65,9 +65,21 @@ type supervisorSummary struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
+
+	// Optional login gate. Registered before any route so it covers the entire
+	// surface — portal, proxy, /health, and the whole /backoffice tree (the
+	// healthz probe included). Unauthenticated requests are bounced to a
+	// /login form; the /login and /logout endpoints stay open.
+	if auth.Enabled {
+		gate := newAuthGate(auth)
+		router.Use(gate.middleware)
+		router.Get("/login", gate.loginPage)
+		router.Post("/login", gate.loginSubmit)
+		router.Get("/logout", gate.logout)
+	}
 
 	// keep the root router free for supervisor specific routes.
 

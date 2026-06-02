@@ -22,7 +22,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		cfgs := []ComponentConfig{{Name: "hello", Description: "A simple HTTP server", Port: 18090, Readme: readme}}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, NewPaths(dir), bundle, cfgs, nil, BuildInfo{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, NewPaths(dir), bundle, cfgs, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
