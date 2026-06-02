@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +19,13 @@ import (
 
 	"github.com/gur-shatz/go-run/internal/log"
 )
+
+// healthProbeInterval is how often the built-in global-health probe hits each
+// component's /healthz. Always on, independent of statemonitor.scrape.
+const healthProbeInterval = 5 * time.Second
+
+// healthProbeClient is the short-timeout client the global-health probe uses.
+var healthProbeClient = &http.Client{Timeout: 2 * time.Second}
 
 // Component is one supervised child plus all the state that decides what
 // version it should be running and what to do when it crashes.
@@ -76,6 +85,11 @@ type Component struct {
 	currentRunning   string
 	currentSince     time.Time
 	cumulativeUptime time.Duration
+
+	// globalState holds the latest /healthz read (pass/warn/fail/down), set by
+	// the built-in health probe and read by Snapshot. atomic.Value so the probe
+	// goroutine and Snapshot don't contend on mu.
+	globalState atomic.Value // string
 }
 
 // NewComponent constructs a Component. Call Run to start the goroutines.
@@ -142,6 +156,8 @@ func (this *Component) Snapshot() ComponentSnapshot {
 	return ComponentSnapshot{
 		Name:          this.cfg.Name,
 		Description:   this.cfg.Description,
+		GlobalState:   this.currentGlobalState(),
+		UpdateStatus:  this.updateStatus(),
 		Status:        status,
 		Stable:        stable,
 		Current:       current,
@@ -161,6 +177,73 @@ func (this *Component) Snapshot() ComponentSnapshot {
 	}
 }
 
+// currentGlobalState returns the latest /healthz read, or "down" if the probe
+// hasn't produced a value yet.
+func (this *Component) currentGlobalState() string {
+	if s, ok := this.globalState.Load().(string); ok && s != "" {
+		return s
+	}
+	return "down"
+}
+
+// updateStatus describes the supervisor's versioning posture for this
+// component: "live" when auto-updating, or pinned by a forced override.
+func (this *Component) updateStatus() string {
+	switch f := this.getForced(); f.Kind {
+	case ForcedKindStable:
+		return "pinned to stable"
+	case ForcedKindVersion:
+		return "pinned to " + f.Version
+	default:
+		return "live"
+	}
+}
+
+// runHealthProbe is the built-in global-health loop: it polls the component's
+// /healthz on a fixed cadence (always on, independent of statemonitor.scrape)
+// and stores the graded result for Snapshot.
+func (this *Component) runHealthProbe(ctx context.Context) {
+	t := time.NewTicker(healthProbeInterval)
+	defer t.Stop()
+	this.globalState.Store(this.probeGlobalState(ctx))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			this.globalState.Store(this.probeGlobalState(ctx))
+		}
+	}
+}
+
+// probeGlobalState performs one /healthz read and maps it to the global-state
+// vocabulary: the response body ("pass"/"warn"/"fail") on 200, else "down". A
+// 200 with an unrecognised body counts as "pass" — it answered, so it's alive.
+func (this *Component) probeGlobalState(ctx context.Context) string {
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", this.cfg.Port, this.cfg.URLs.Healthz)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "down"
+	}
+	resp, err := healthProbeClient.Do(req)
+	if err != nil {
+		return "down"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "down"
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	switch strings.TrimSpace(string(body)) {
+	case "warn":
+		return "warn"
+	case "fail":
+		return "fail"
+	default:
+		return "pass"
+	}
+}
+
 // Run drives the component until ctx is cancelled.
 func (this *Component) Run(ctx context.Context) error {
 	this.logger.Status("[%s] starting", this.cfg.Name)
@@ -169,6 +252,7 @@ func (this *Component) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { this.runUpdater(ctx) })
 	wg.Go(func() { this.runLifecycle(ctx) })
+	wg.Go(func() { this.runHealthProbe(ctx) })
 	wg.Wait()
 	return nil
 }

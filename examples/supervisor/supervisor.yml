@@ -18,12 +18,17 @@ supervisor:
   metric_labels:
     source: example-supervisor
 
-# Optional health-aggregation role. When enabled, the supervisor persists the
-# state it already scrapes from each component into an in-memory statekit
-# store and serves a console at /health (current state, transition events,
-# per-target rollups). In-memory only — history resets on restart.
-observer:
-  enabled: true
+# Component monitoring, in two independently toggleable parts.
+#   scrape:  poll each component's healthz/state/metrics into the registry
+#            (on by default; set enabled: false to turn off — the supervisor's
+#            own liveness and per-component process state still work).
+#   observe: persist that state and serve a console at /health (current state,
+#            transition events, per-target rollups). In-memory; resets on restart.
+statemonitor:
+  scrape:
+    enabled: true
+  observe:
+    enabled: true
 
 # Template context for every component's *.tmpl files. Overrides keys from
 # the version manifest's default_vars. The hello example ships manifest.yml

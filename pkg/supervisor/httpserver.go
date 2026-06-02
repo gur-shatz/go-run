@@ -65,7 +65,7 @@ type supervisorSummary struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -88,12 +88,18 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 	bo := chiutil.NewRouteFolder(router, backofficePrefix).
 		ServiceName("Backoffice").
 		Title("Supervisor").
-		Description("Vendor-controlled supervisor. Control surface lives under /backoffice.")
+		Description("Vendor-controlled supervisor. " + buildDescription(build) + " Control surface lives under /backoffice.")
 
 	bo.GetDesc("/healthz", "Supervisor liveness probe.", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
+
+	// /version: build metadata (version, branch, commit, build date).
+	bo.GetDesc("/version", "Supervisor build info (version, branch, commit, date).",
+		func(w http.ResponseWriter, _ *http.Request) {
+			writeYAML(w, build)
+		})
 
 	// /state and /metrics are served straight from the statekit bundle so the
 	// scraper-friendly YAML and the Prometheus text format come from a single
@@ -276,6 +282,22 @@ func componentStateDocument(bundle *statekitBundle, component string) statekit.S
 	return full
 }
 
+// buildDescription renders the build metadata into a short sentence for the
+// backoffice index, or "" when no build info was injected (dev builds).
+func buildDescription(b BuildInfo) string {
+	if b.Version == "" && b.Branch == "" {
+		return ""
+	}
+	desc := "Build"
+	if b.Version != "" {
+		desc = "Version " + b.Version
+	}
+	if b.Branch != "" {
+		desc += " (branch " + b.Branch + ")"
+	}
+	return desc + "."
+}
+
 func buildSummary(snap SupervisorSnapshot) supervisorSummary {
 	out := supervisorSummary{
 		StateDir:   snap.StateDir,
@@ -302,7 +324,7 @@ func buildSummary(snap SupervisorSnapshot) supervisorSummary {
 // errCh; the caller is expected to read at most one value.
 func (this *httpServer) Start(errCh chan<- error) {
 	go func() {
-		this.logger.Status("HTTP listening on %s", this.addr)
+		this.logger.Status("HTTP listening on http://%s", this.addr)
 		err := this.server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

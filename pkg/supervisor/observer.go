@@ -30,7 +30,7 @@ type observer struct {
 
 // newObserver builds the store. Run must be called to start ingesting, and
 // mount to expose the console.
-func newObserver(cfg ObserverConfig, registry *statekit.Registry, logger *log.Logger) *observer {
+func newObserver(cfg ObserveConfig, registry *statekit.Registry, logger *log.Logger) *observer {
 	store := storage.NewMemoryStore(storage.WithDocumentCache(
 		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](cfg.CacheMB<<20),
 		5*time.Minute,

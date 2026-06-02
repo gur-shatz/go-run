@@ -3,7 +3,6 @@ package supervisor
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/gur-shatz/statekit/scraper"
 
@@ -30,9 +29,9 @@ func newComponentScraper(cfg Config, bundle *statekitBundle, logger *log.Logger)
 
 	scfg := scraper.Config{
 		Defaults: scraper.Defaults{
-			Interval:   scraper.Duration(15 * time.Second),
-			Timeout:    scraper.Duration(5 * time.Second),
-			Expiration: scraper.Duration(1 * time.Minute),
+			Interval:   scraper.Duration(cfg.StateMonitor.Scrape.Interval),
+			Timeout:    scraper.Duration(cfg.StateMonitor.Scrape.Timeout),
+			Expiration: scraper.Duration(cfg.StateMonitor.Scrape.Expiration),
 		},
 	}
 

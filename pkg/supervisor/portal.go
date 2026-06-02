@@ -70,11 +70,15 @@ func (this *portal) mount(router chi.Router) {
 type portalComponent struct {
 	Name        string
 	Description string
-	Status      string // pass / warn / fail / down
-	Current     string
-	Stable      string
-	Port        int
-	HasReadme   bool
+	// GlobalState (pass/warn/fail/down, from the component's /healthz) is the
+	// primary badge. UpdateStatus (live / pinned to ...) is the second signal.
+	GlobalState  string
+	UpdateStatus string
+	Status       string // statekit lifecycle status (process view), shown as detail
+	Current      string
+	Stable       string
+	Port         int
+	HasReadme    bool
 
 	// Health detail, pre-formatted for display.
 	Running      bool
@@ -113,6 +117,8 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 	return portalComponent{
 		Name:         c.Name,
 		Description:  desc,
+		GlobalState:  c.GlobalState,
+		UpdateStatus: c.UpdateStatus,
 		Status:       c.Status,
 		Current:      c.Current,
 		Stable:       c.Stable,

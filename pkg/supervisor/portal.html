@@ -62,6 +62,13 @@
 
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
+  /* update-status chip (live / pinned to ...) — neutral, amber when pinned */
+  .chip {
+    display: inline-flex; align-items: center; font-size: 12px; padding: 2px 9px;
+    border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .chip.pinned { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+
   .btn {
     display: inline-block; font-size: 13px; padding: 6px 12px; border-radius: 8px;
     background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
@@ -117,11 +124,14 @@
       <div class="card">
         <div class="row">
           <h2><a href="{{$.RootRel}}components/{{.Name}}/">{{.Name}}</a></h2>
-          <span class="badge {{.Status}}">{{.Status}}</span>
+          <span class="badge {{.GlobalState}}">{{.GlobalState}}</span>
         </div>
         <div class="desc">{{.Description}}</div>
-        <div class="meta">
-          {{if .Current}}version {{.Current}}{{else}}no version yet{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
+        <div class="row">
+          <div class="meta">
+            {{if .Current}}version {{.Current}}{{else}}no version yet{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
+          </div>
+          {{if .UpdateStatus}}<span class="chip{{if ne .UpdateStatus "live"}} pinned{{end}}">{{.UpdateStatus}}</span>{{end}}
         </div>
         <div class="statline">
           <span>up <b>{{.Uptime}}</b></span>
@@ -151,7 +161,8 @@
     <a class="back" href="{{.RootRel}}">&larr; All components</a>
     <div class="chead">
       <h1>{{.Name}}</h1>
-      <span class="badge {{.Status}}">{{.Status}}</span>
+      <span class="badge {{.GlobalState}}">{{.GlobalState}}</span>
+      {{if .UpdateStatus}}<span class="chip{{if ne .UpdateStatus "live"}} pinned{{end}}">{{.UpdateStatus}}</span>{{end}}
     </div>
     {{if .Description}}<div class="cmeta">{{.Description}}</div>{{end}}
     <div class="cmeta">

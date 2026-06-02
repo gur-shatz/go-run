@@ -24,15 +24,30 @@ type Options struct {
 	// New attempts to load it from cfg.Remote.SignaturePublicKeyPath. A missing
 	// key is a fatal config error.
 	PublicKey []byte
+
+	// Build carries the binary's version/branch/commit metadata (set via
+	// ldflags at the cmd level) so the backoffice can report it. Injected
+	// rather than read here to keep the library decoupled from buildinfo.
+	Build BuildInfo
+}
+
+// BuildInfo is the version metadata the supervisor reports at
+// /backoffice/version and on the backoffice index. Empty fields are omitted.
+type BuildInfo struct {
+	Version string `json:"version,omitempty" yaml:"version,omitempty"`
+	Commit  string `json:"commit,omitempty" yaml:"commit,omitempty"`
+	Branch  string `json:"branch,omitempty" yaml:"branch,omitempty"`
+	Date    string `json:"date,omitempty" yaml:"date,omitempty"`
 }
 
 // Supervisor manages N components against a shared state directory. One
 // supervisor instance per state_dir/.
 type Supervisor struct {
-	cfg     Config
-	paths   Paths
-	logger  *log.Logger
-	verbose bool
+	cfg       Config
+	paths     Paths
+	logger    *log.Logger
+	verbose   bool
+	buildInfo BuildInfo
 
 	startedAt  time.Time
 	components []*Component
@@ -95,6 +110,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 		paths:     paths,
 		logger:    logger,
 		verbose:   opts.Verbose,
+		buildInfo: opts.Build,
 		startedAt: time.Now(),
 		bundle:    newStatekitBundle(cfg),
 	}
@@ -109,20 +125,24 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 		this.components = append(this.components, comp)
 	}
 
-	// Build the statekit scraper for the configured components.
-	sc, err := newComponentScraper(cfg, this.bundle, logger)
-	if err != nil {
-		return nil, err
+	// State monitoring. scrape (default on) polls each component into the
+	// registry; observe (default off) persists that state and serves /health.
+	// Both are independently toggleable; with scrape off the registry still
+	// carries the per-component lifecycle state pushed by the supervisor.
+	if cfg.StateMonitor.Scrape.IsEnabled() {
+		sc, err := newComponentScraper(cfg, this.bundle, logger)
+		if err != nil {
+			return nil, err
+		}
+		this.scraper = sc
 	}
-	this.scraper = sc
 
-	// Optional health-aggregation role: persist scraped state + serve /health.
-	if cfg.Observer.Enabled {
-		this.observer = newObserver(cfg.Observer, this.bundle.registry, logger)
+	if cfg.StateMonitor.Observe.Enabled {
+		this.observer = newObserver(cfg.StateMonitor.Observe, this.bundle.registry, logger)
 	}
 
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, logger)
 
 	return this, nil
 }
@@ -209,9 +229,11 @@ func (this *Supervisor) Run(ctx context.Context) error {
 	// individual components see overrides via this.getForced() at decision time).
 	wg.Go(func() { this.runForcedRefresher(ctx) })
 
-	// Scraper: polls each component's /healthz, /state, /metrics and feeds
-	// the results into the supervisor's statekit registry.
-	wg.Go(func() { this.scraper.Run(ctx) })
+	// Scraper (optional): polls each component's /healthz, /state, /metrics
+	// and feeds the results into the supervisor's statekit registry.
+	if this.scraper != nil {
+		wg.Go(func() { this.scraper.Run(ctx) })
+	}
 
 	// Observer (optional): snapshots the registry into the health store so
 	// the /health console has current state + transition events.
