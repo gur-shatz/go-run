@@ -278,17 +278,28 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 		}
 		target = stable
 	default:
-		remoteVersion, err := this.install.Remote.ResolveVersion(ctx, this.cfg.Remote.BaseURL, this.cfg.Name, this.cfg.Remote.Target)
-		if err != nil {
-			if this.bundle != nil {
-				this.bundle.observeUpdateError(this.cfg.Name, err)
+		if this.cfg.Remote.BaseURL == "" {
+			if current == "" {
+				this.markWarn("local mode: current.txt is empty")
+				return "", nil
 			}
-			return "", err
+			if this.bundle != nil {
+				this.bundle.observeUpdateOK(this.cfg.Name, "local current = "+current)
+			}
+			target = current
+		} else {
+			remoteVersion, err := this.install.Remote.ResolveVersion(ctx, this.cfg.Remote.BaseURL, this.cfg.Name, this.cfg.Remote.Target)
+			if err != nil {
+				if this.bundle != nil {
+					this.bundle.observeUpdateError(this.cfg.Name, err)
+				}
+				return "", err
+			}
+			if this.bundle != nil {
+				this.bundle.observeUpdateOK(this.cfg.Name, "remote required = "+remoteVersion)
+			}
+			target = remoteVersion
 		}
-		if this.bundle != nil {
-			this.bundle.observeUpdateOK(this.cfg.Name, "remote required = "+remoteVersion)
-		}
-		target = remoteVersion
 	}
 
 	// Target differs from current AND is rejected: refuse to switch onto
@@ -321,7 +332,7 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 // failure and the version never makes it to current.txt. This is a best-effort
 // check only; the application remains the authority for loading its config.
 func (this *Component) PrepareVersion(ctx context.Context, version string) error {
-	if !versionExtracted(this.paths.VersionDir(version)) {
+	if version != localVersion && !versionExtracted(this.paths.VersionDir(version)) {
 		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version); err != nil {
 			return err
 		}
