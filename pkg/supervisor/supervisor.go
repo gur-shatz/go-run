@@ -142,7 +142,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, logger)
 
 	return this, nil
 }
@@ -204,6 +204,42 @@ func (this *Supervisor) RejectVersion(name, version string) error {
 		}
 	}
 	return fmt.Errorf("no such component: %s", name)
+}
+
+// StartComponent resumes supervision for the named component.
+func (this *Supervisor) StartComponent(ctx context.Context, name string) error {
+	comp, ok := this.componentByName(name)
+	if !ok {
+		return fmt.Errorf("no such component: %s", name)
+	}
+	return comp.Start(ctx)
+}
+
+// StopComponent stops the named component and keeps it manually stopped.
+func (this *Supervisor) StopComponent(ctx context.Context, name string) error {
+	comp, ok := this.componentByName(name)
+	if !ok {
+		return fmt.Errorf("no such component: %s", name)
+	}
+	return comp.Stop(ctx)
+}
+
+// RestartComponent restarts the named component through its lifecycle loop.
+func (this *Supervisor) RestartComponent(ctx context.Context, name string) error {
+	comp, ok := this.componentByName(name)
+	if !ok {
+		return fmt.Errorf("no such component: %s", name)
+	}
+	return comp.Restart(ctx)
+}
+
+func (this *Supervisor) componentByName(name string) (*Component, bool) {
+	for _, c := range this.components {
+		if c.Name() == name {
+			return c, true
+		}
+	}
+	return nil, false
 }
 
 // Run starts every component goroutine, the HTTP server, and a single

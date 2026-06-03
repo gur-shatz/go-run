@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,25 @@ import (
 	"github.com/gur-shatz/go-run/internal/log"
 )
 
+type recordingControls struct {
+	actions []string
+}
+
+func (this *recordingControls) StartComponent(_ context.Context, component string) error {
+	this.actions = append(this.actions, "start:"+component)
+	return nil
+}
+
+func (this *recordingControls) StopComponent(_ context.Context, component string) error {
+	this.actions = append(this.actions, "stop:"+component)
+	return nil
+}
+
+func (this *recordingControls) RestartComponent(_ context.Context, component string) error {
+	this.actions = append(this.actions, "restart:"+component)
+	return nil
+}
+
 var _ = Describe("portal", func() {
 	// serve builds a supervisor HTTP server exposing one component, "hello",
 	// optionally with a README file, and returns a non-redirecting client.
@@ -22,7 +42,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		cfgs := []ComponentConfig{{Name: "hello", Description: "A simple HTTP server", Port: 18090, Readme: readme}}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, NewPaths(dir), bundle, cfgs, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, &recordingControls{}, NewPaths(dir), bundle, cfgs, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -46,6 +66,33 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring(`href="proxy/hello/"`))      // open app
 		Expect(body).To(ContainSubstring(`href="backoffice/"`))       // backoffice
 		Expect(body).To(ContainSubstring(`badge pass`))               // status badge
+		Expect(body).To(ContainSubstring(`<meta http-equiv="refresh" content="20">`))
+	})
+
+	It("renders component lifecycle controls and posts them through the portal", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		controls := &recordingControls{}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, controls, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+		client := srv.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+		code, body := get(client, srv.URL+"/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring(`action="components/hello/start"`))
+		Expect(body).To(ContainSubstring(`action="components/hello/stop"`))
+		Expect(body).To(ContainSubstring(`action="components/hello/restart"`))
+
+		resp, err := client.PostForm(srv.URL+"/components/hello/stop", nil)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		Expect(resp.Header.Get("Location")).To(Equal("/"))
+		Expect(controls.actions).To(ContainElement("stop:hello"))
 	})
 
 	It("renders the README as HTML on the component page", func() {
@@ -83,7 +130,7 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring("Exec failures"))
 		// With no running child the stub reports zeroes: humanized defaults.
 		Expect(body).To(ContainSubstring("not running")) // uptime
-		Expect(body).To(ContainSubstring("—"))            // last upgrade (em dash)
+		Expect(body).To(ContainSubstring("—"))           // last upgrade (em dash)
 	})
 
 	It("shows a compact stat line on each home card", func() {

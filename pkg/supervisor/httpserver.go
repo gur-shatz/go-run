@@ -33,6 +33,13 @@ type rejectAPI interface {
 	RejectVersion(component, version string) error
 }
 
+// controlAPI is the write-side for operator component lifecycle actions.
+type controlAPI interface {
+	StartComponent(ctx context.Context, component string) error
+	StopComponent(ctx context.Context, component string) error
+	RestartComponent(ctx context.Context, component string) error
+}
+
 // httpServer wraps an *http.Server and the chiutil RouteFolder so a control
 // plane can discover endpoints by browsing the index.
 type httpServer struct {
@@ -76,7 +83,7 @@ type supervisorEnv struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -96,7 +103,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
-	newPortal(sp, componentCfgs, obs != nil, logger).mount(router)
+	newPortal(sp, ca, componentCfgs, obs != nil, logger).mount(router)
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)
@@ -192,6 +199,18 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 			})
 		}
 
+		if ca != nil {
+			r.Post("/start", func(w http.ResponseWriter, r *http.Request) {
+				controlComponent(w, r, chi.URLParam(r, "name"), ca.StartComponent)
+			})
+			r.Post("/stop", func(w http.ResponseWriter, r *http.Request) {
+				controlComponent(w, r, chi.URLParam(r, "name"), ca.StopComponent)
+			})
+			r.Post("/restart", func(w http.ResponseWriter, r *http.Request) {
+				controlComponent(w, r, chi.URLParam(r, "name"), ca.RestartComponent)
+			})
+		}
+
 		// /current_version_logs: shortcut into the per-component log tree
 		// scoped to whatever current.txt names right now. 302s on every
 		// request so the link always tracks the live current — operators
@@ -246,6 +265,22 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 		server: &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 5 * time.Second},
 		logger: logger,
 	}
+}
+
+func controlComponent(w http.ResponseWriter, r *http.Request, name string, fn func(context.Context, string) error) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := fn(ctx, name); err != nil {
+		status := http.StatusInternalServerError
+		if strings.HasPrefix(err.Error(), "no such component:") {
+			status = http.StatusNotFound
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			status = http.StatusGatewayTimeout
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // mountComponentProxy wires /proxy/<component>/* on the root router to the

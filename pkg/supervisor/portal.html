@@ -76,6 +76,9 @@
   .btn:hover { text-decoration: none; border-color: #3a4150; background: #232732; }
   .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
   .btn.primary:hover { background: #2f74e0; }
+  form.inline { display: inline; margin: 0; }
+  button.btn { cursor: pointer; }
+  button.btn:disabled { cursor: not-allowed; opacity: .45; }
 
   .empty { color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; padding: 32px; text-align: center; }
 
@@ -104,6 +107,7 @@
 {{define "home"}}<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="20">
 <title>{{.Title}}</title>{{template "styles" .}}</head>
 <body>
   <div class="wrap">
@@ -141,6 +145,18 @@
         <div class="actions">
           <a class="btn primary" href="{{$.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
           <a class="btn" href="{{$.RootRel}}components/{{.Name}}/">Details</a>
+          <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/start">
+            <input type="hidden" name="next" value="/">
+            <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
+          </form>
+          <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/stop">
+            <input type="hidden" name="next" value="/">
+            <button class="btn" type="submit"{{if not .CanStop}} disabled{{end}}>Stop</button>
+          </form>
+          <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/restart">
+            <input type="hidden" name="next" value="/">
+            <button class="btn" type="submit"{{if not .CanRestart}} disabled{{end}}>Restart</button>
+          </form>
         </div>
       </div>
       {{end}}
@@ -185,6 +201,18 @@
       {{if .URLs.Metrics}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Metrics}}">Metrics</a>{{end}}
       {{if .HealthEnabled}}<a class="btn" href="{{.RootRel}}health/">Health &amp; events</a>{{end}}
       <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/">Backoffice &rarr;</a>
+      <form class="inline" method="post" action="{{.RootRel}}components/{{.Name}}/start">
+        <input type="hidden" name="next" value="/components/{{.Name}}/">
+        <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
+      </form>
+      <form class="inline" method="post" action="{{.RootRel}}components/{{.Name}}/stop">
+        <input type="hidden" name="next" value="/components/{{.Name}}/">
+        <button class="btn" type="submit"{{if not .CanStop}} disabled{{end}}>Stop</button>
+      </form>
+      <form class="inline" method="post" action="{{.RootRel}}components/{{.Name}}/restart">
+        <input type="hidden" name="next" value="/components/{{.Name}}/">
+        <button class="btn" type="submit"{{if not .CanRestart}} disabled{{end}}>Restart</button>
+      </form>
     </div>
 
     {{if .ReadmeHTML}}

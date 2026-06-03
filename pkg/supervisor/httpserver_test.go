@@ -47,7 +47,7 @@ var _ = Describe("backoffice version", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		build := BuildInfo{Version: "v1.2.3", Commit: "abc1234", Branch: "master", Date: "2026-06-02T09:00:00Z"}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, build, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, build, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -84,7 +84,7 @@ var _ = Describe("backoffice env", func() {
 		Expect(os.Setenv("db_password", "pw123")).To(Succeed())
 		Expect(os.Setenv("CLIENT_SECRET_VALUE", "secret123")).To(Succeed())
 
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -136,7 +136,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -170,7 +170,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -183,6 +183,28 @@ var _ = Describe("current_version_logs", func() {
 	})
 })
 
+var _ = Describe("component controls", func() {
+	It("exposes start, stop, and restart POST endpoints under backoffice", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		controls := &recordingControls{}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, controls, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		for _, action := range []string{"start", "stop", "restart"} {
+			resp, err := srv.Client().Post(srv.URL+"/backoffice/components/hello/"+action, "application/x-www-form-urlencoded", nil)
+			Expect(err).NotTo(HaveOccurred())
+			_ = resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusNoContent))
+		}
+
+		Expect(controls.actions).To(Equal([]string{"start:hello", "stop:hello", "restart:hello"}))
+	})
+})
+
 var _ = Describe("component proxy", func() {
 	// startServer wires a supervisor HTTP server whose only component, "hello",
 	// points at the given port, and returns a client that does not follow redirects.
@@ -191,7 +213,7 @@ var _ = Describe("component proxy", func() {
 		cfg := Config{StateDir: dir}
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -268,7 +290,7 @@ var _ = Describe("login gate", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", Hint: "demo login: op / s3cret"}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, log.New("[t]", false))
 		return httptest.NewServer(hs.server.Handler)
 	}
 
@@ -289,6 +311,48 @@ var _ = Describe("login gate", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
 		Expect(resp.Header.Get("Location")).To(HavePrefix("/login"))
 		Expect(resp.Header.Get("Location")).To(ContainSubstring("next=%2Fbackoffice%2Fversion"))
+	})
+
+	It("challenges unauthenticated git-style requests with HTTP Basic", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("User-Agent", "git/2.45.0")
+		req.Header.Set("Accept", "*/*")
+		resp, err := noRedirect(srv).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(resp.Header.Get("WWW-Authenticate")).To(Equal(`Basic realm="supervisor"`))
+	})
+
+	It("accepts HTTP Basic authentication with the configured credentials", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.SetBasicAuth("op", "s3cret")
+		resp, err := srv.Client().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+	})
+
+	It("rejects wrong HTTP Basic credentials with a Basic challenge", func() {
+		srv := newAuthedServer()
+		defer srv.Close()
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.SetBasicAuth("op", "wrong")
+		resp, err := noRedirect(srv).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(resp.Header.Get("WWW-Authenticate")).To(Equal(`Basic realm="supervisor"`))
 	})
 
 	It("serves a login form that shows the hint", func() {
