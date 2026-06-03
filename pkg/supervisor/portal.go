@@ -2,11 +2,13 @@ package supervisor
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"html/template"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,17 +34,18 @@ var portalMarkdown = goldmark.New(goldmark.WithExtensions(extension.Table))
 // It is the user-facing counterpart to the /backoffice control surface.
 type portal struct {
 	sp            stateProvider
+	controls      controlAPI
 	configs       map[string]ComponentConfig
 	healthEnabled bool // observer role on -> show links to the /health console
 	logger        *log.Logger
 }
 
-func newPortal(sp stateProvider, components []ComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
+func newPortal(sp stateProvider, controls controlAPI, components []ComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
 	m := make(map[string]ComponentConfig, len(components))
 	for _, c := range components {
 		m[c.Name] = c
 	}
-	return &portal{sp: sp, configs: m, healthEnabled: healthEnabled, logger: logger}
+	return &portal{sp: sp, controls: controls, configs: m, healthEnabled: healthEnabled, logger: logger}
 }
 
 // mount wires the portal routes on the root router. Links inside the rendered
@@ -51,6 +54,11 @@ func newPortal(sp stateProvider, components []ComponentConfig, healthEnabled boo
 func (this *portal) mount(router chi.Router) {
 	router.Get("/", this.home)
 	router.Get("/components/{name}/", this.component)
+	if this.controls != nil {
+		router.Post("/components/{name}/start", this.control(this.controls.StartComponent))
+		router.Post("/components/{name}/stop", this.control(this.controls.StopComponent))
+		router.Post("/components/{name}/restart", this.control(this.controls.RestartComponent))
+	}
 
 	// Bare /components/<name> -> /components/<name>/ (relative, proxy-safe).
 	router.Get("/components/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +72,25 @@ func (this *portal) mount(router chi.Router) {
 	}
 	router.Get("/components", redirectHome)
 	router.Get("/components/", redirectHome)
+}
+
+func (this *portal) control(fn func(context.Context, string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := fn(ctx, name); err != nil {
+			status := http.StatusInternalServerError
+			if strings.HasPrefix(err.Error(), "no such component:") {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		redirect := safeNext(r.FormValue("next"))
+		w.Header().Set("Location", redirect)
+		w.WriteHeader(http.StatusSeeOther)
+	}
 }
 
 // portalComponent is one card / page header for a managed component.
@@ -82,6 +109,9 @@ type portalComponent struct {
 
 	// Health detail, pre-formatted for display.
 	Running      bool
+	CanStart     bool
+	CanStop      bool
+	CanRestart   bool
 	Uptime       string // "2h 5m" / "not running"
 	RunCount     int64
 	LastUpgrade  string // "5m ago" / "—"
@@ -125,6 +155,9 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		Port:         c.Port,
 		HasReadme:    cfg.Readme != "",
 		Running:      c.ChildPID != 0,
+		CanStart:     c.ChildPID == 0,
+		CanStop:      c.ChildPID != 0,
+		CanRestart:   c.Current != "",
 		Uptime:       fmtUptime(c.UptimeSeconds),
 		RunCount:     c.RunCount,
 		LastUpgrade:  fmtAgo(c.LastUpgrade),

@@ -70,6 +70,18 @@ func (this *authGate) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if this.basicAuthenticated(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "" {
+			this.basicChallenge(w)
+			return
+		}
+		if wantsBasicChallenge(r) {
+			this.basicChallenge(w)
+			return
+		}
 		// Absolute "/login": http.Redirect resolves a relative target against
 		// the request's directory, which would mis-send /backoffice/* requests
 		// to /backoffice/login. The form itself posts back with a relative
@@ -100,6 +112,28 @@ func (this *authGate) authenticated(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(sig), []byte(this.sign(ts))) == 1
+}
+
+func (this *authGate) basicAuthenticated(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(user), []byte(this.user)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(pass), []byte(this.pass)) == 1
+}
+
+func (this *authGate) basicChallenge(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="supervisor"`)
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+}
+
+func wantsBasicChallenge(r *http.Request) bool {
+	if strings.Contains(strings.ToLower(r.UserAgent()), "git/") {
+		return true
+	}
+	accept := r.Header.Get("Accept")
+	return accept != "" && !strings.Contains(strings.ToLower(accept), "text/html")
 }
 
 // loginPage serves the login form (GET /login). An already-authenticated

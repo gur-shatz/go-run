@@ -122,6 +122,47 @@ var _ = Describe("Component lifecycle", func() {
 		Eventually(done, 3*time.Second).Should(BeClosed())
 	})
 
+	It("supports manual stop, start, and restart controls", func() {
+		publishWithBinary(origin, priv, "1.0.0")
+
+		comp := supervisor.NewComponent(mkComponentCfg(), paths, install, topCfg, nil, nil, log.New("[test]", false))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() { _ = comp.Run(ctx); close(done) }()
+
+		Eventually(func() int { return comp.Snapshot().ChildPID }, 3*time.Second).ShouldNot(BeZero())
+		firstPID := comp.Snapshot().ChildPID
+
+		controlCtx, controlCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		Expect(comp.Stop(controlCtx)).To(Succeed())
+		controlCancel()
+		Eventually(func() int { return comp.Snapshot().ChildPID }, 3*time.Second).Should(BeZero())
+		Consistently(func() int { return comp.Snapshot().ChildPID }, 250*time.Millisecond).Should(BeZero())
+
+		controlCtx, controlCancel = context.WithTimeout(context.Background(), 3*time.Second)
+		Expect(comp.Start(controlCtx)).To(Succeed())
+		controlCancel()
+		Eventually(func() int { return comp.Snapshot().ChildPID }, 3*time.Second).ShouldNot(BeZero())
+		secondPID := comp.Snapshot().ChildPID
+		Expect(secondPID).NotTo(Equal(firstPID))
+
+		controlCtx, controlCancel = context.WithTimeout(context.Background(), 3*time.Second)
+		Expect(comp.Restart(controlCtx)).To(Succeed())
+		controlCancel()
+		Eventually(func() int {
+			pid := comp.Snapshot().ChildPID
+			if pid == secondPID {
+				return 0
+			}
+			return pid
+		}, 3*time.Second).ShouldNot(BeZero())
+
+		cancel()
+		Eventually(done, 3*time.Second).Should(BeClosed())
+	})
+
 	It("rolls back to stable when current is crashing fast", func() {
 		// Seed stable.
 		publishWithBinary(origin, priv, "good")

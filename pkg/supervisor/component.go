@@ -71,12 +71,18 @@ type Component struct {
 	// switch at a time; signalSwitch replaces an older queued value.
 	switchCh chan string
 
+	// Channel from HTTP/control planes → Lifecycle. The lifecycle goroutine is
+	// the only owner that stops children, so manual controls stay ordered with
+	// normal update/restart decisions.
+	controlCh chan componentControlRequest
+
 	// State (mu protects everything below). Severity AND the human-readable
 	// reason both live on the bundle's lifecycle leaf — Component owns no
 	// separate vocabulary or error-string buffer.
-	mu         sync.Mutex
-	pid        int
-	launchedAt time.Time
+	mu            sync.Mutex
+	pid           int
+	launchedAt    time.Time
+	manualStopped bool
 
 	counters *Counters
 	backoff  *Backoff
@@ -90,6 +96,19 @@ type Component struct {
 	// the built-in health probe and read by Snapshot. atomic.Value so the probe
 	// goroutine and Snapshot don't contend on mu.
 	globalState atomic.Value // string
+}
+
+type componentControlAction string
+
+const (
+	componentControlStart   componentControlAction = "start"
+	componentControlStop    componentControlAction = "stop"
+	componentControlRestart componentControlAction = "restart"
+)
+
+type componentControlRequest struct {
+	action componentControlAction
+	reply  chan error
 }
 
 // NewComponent constructs a Component. Call Run to start the goroutines.
@@ -117,6 +136,7 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 		supervisorVars:  top.Vars,
 		getForced:       getForced,
 		switchCh:        make(chan string, 1),
+		controlCh:       make(chan componentControlRequest),
 		counters:        NewCounters(top.CrashWindow, top.CrashThreshold, top.ExecFailThreshold),
 		backoff:         NewBackoff(),
 	}
@@ -177,6 +197,38 @@ func (this *Component) Snapshot() ComponentSnapshot {
 			State:   this.cfg.URLs.State,
 			Metrics: this.cfg.URLs.Metrics,
 		},
+	}
+}
+
+// Start resumes normal supervision after a manual stop.
+func (this *Component) Start(ctx context.Context) error {
+	return this.control(ctx, componentControlStart)
+}
+
+// Stop terminates the child, if any, and keeps this component intentionally
+// stopped until Start or Restart is called.
+func (this *Component) Stop(ctx context.Context) error {
+	return this.control(ctx, componentControlStop)
+}
+
+// Restart asks the lifecycle goroutine to stop the current child and relaunch
+// the latest current version through the normal launch path.
+func (this *Component) Restart(ctx context.Context) error {
+	return this.control(ctx, componentControlRestart)
+}
+
+func (this *Component) control(ctx context.Context, action componentControlAction) error {
+	req := componentControlRequest{action: action, reply: make(chan error, 1)}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case this.controlCh <- req:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-req.reply:
+		return err
 	}
 }
 
@@ -492,10 +544,17 @@ func (this *Component) signalSwitch(version string) {
 func (this *Component) runLifecycle(ctx context.Context) {
 runLoop:
 	for {
+		if this.isManuallyStopped() {
+			if !this.waitWhileStopped(ctx) {
+				return
+			}
+			continue
+		}
+
 		version, _ := this.paths.ReadCurrent()
 		if version == "" || !versionExtracted(this.paths.VersionDir(version)) {
 			// Nothing launchable yet — wait for Updater.
-			if !this.waitForSwitch(ctx) {
+			if !this.waitForSwitchOrControl(ctx) {
 				return
 			}
 			continue
@@ -531,6 +590,28 @@ runLoop:
 				stableTicker.Stop()
 				this.StopChild(child)
 				return
+			case req := <-this.controlCh:
+				switch req.action {
+				case componentControlStart:
+					req.reply <- nil
+				case componentControlStop:
+					this.setManualStopped(true)
+					stableTicker.Stop()
+					this.StopChild(child)
+					this.clearChildState()
+					this.markDown("manually stopped")
+					req.reply <- nil
+					continue runLoop
+				case componentControlRestart:
+					this.setManualStopped(false)
+					stableTicker.Stop()
+					this.StopChild(child)
+					this.clearChildState()
+					req.reply <- nil
+					continue runLoop
+				default:
+					req.reply <- fmt.Errorf("unknown component control action: %s", req.action)
+				}
 			case newVersion := <-this.switchCh:
 				if newVersion == version {
 					// Stale signal (e.g. updater re-signalling same version). Stay on this version.
@@ -557,15 +638,56 @@ runLoop:
 	}
 }
 
-// waitForSwitch blocks until either ctx is cancelled or the Updater posts a
-// new version on switchCh. Returns false on cancellation.
-func (this *Component) waitForSwitch(ctx context.Context) bool {
+// waitForSwitchOrControl blocks until either ctx is cancelled, the Updater
+// posts a new version on switchCh, or an operator control changes the launch
+// posture. Returns false on cancellation.
+func (this *Component) waitForSwitchOrControl(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
 	case <-this.switchCh:
 		return true
+	case req := <-this.controlCh:
+		return this.applyControlWithoutChild(req)
 	}
+}
+
+func (this *Component) waitWhileStopped(ctx context.Context) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-this.switchCh:
+			// Keep accepting updater signals while stopped, but do not launch
+			// until an explicit Start/Restart arrives.
+		case req := <-this.controlCh:
+			if !this.applyControlWithoutChild(req) {
+				return false
+			}
+			if !this.isManuallyStopped() {
+				return true
+			}
+		}
+	}
+}
+
+func (this *Component) applyControlWithoutChild(req componentControlRequest) bool {
+	switch req.action {
+	case componentControlStart:
+		this.setManualStopped(false)
+		req.reply <- nil
+	case componentControlStop:
+		this.setManualStopped(true)
+		this.clearChildState()
+		this.markDown("manually stopped")
+		req.reply <- nil
+	case componentControlRestart:
+		this.setManualStopped(false)
+		req.reply <- nil
+	default:
+		req.reply <- fmt.Errorf("unknown component control action: %s", req.action)
+	}
+	return true
 }
 
 // sleepOrSwitch is a context-cancellable sleep that also wakes early on a
@@ -585,6 +707,8 @@ func (this *Component) sleepOrSwitch(ctx context.Context, delay time.Duration) b
 	case v := <-this.switchCh:
 		this.signalSwitch(v)
 		return true
+	case req := <-this.controlCh:
+		return this.applyControlWithoutChild(req)
 	}
 }
 
@@ -934,6 +1058,18 @@ func (this *Component) clearChildState() {
 	this.pid = 0
 	this.launchedAt = time.Time{}
 	this.mu.Unlock()
+}
+
+func (this *Component) setManualStopped(stopped bool) {
+	this.mu.Lock()
+	this.manualStopped = stopped
+	this.mu.Unlock()
+}
+
+func (this *Component) isManuallyStopped() bool {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	return this.manualStopped
 }
 
 // markPass / markWarn / markFail / markDown push a transition directly to the
