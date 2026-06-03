@@ -8,6 +8,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -57,6 +59,15 @@ type supervisorSummary struct {
 	StateDir   string                  `yaml:"state_dir"`
 	StartedAt  string                  `yaml:"started_at"`
 	Components []componentSummaryEntry `yaml:"components"`
+}
+
+type supervisorEnvEntry struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
+type supervisorEnv struct {
+	Env []supervisorEnvEntry `yaml:"env"`
 }
 
 // backofficePrefix is the mount point for the supervisor's own control
@@ -126,6 +137,11 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, paths Paths, bun
 	bo.GetDesc("/summary", "YAML summary of each managed component (current, stable, pid, uptime, counters).",
 		func(w http.ResponseWriter, _ *http.Request) {
 			writeYAML(w, buildSummary(sp.Snapshot()))
+		})
+
+	bo.GetDesc("/env", "YAML process environment. Variables with SECRET, PASSWORD, or KEY in the name are redacted.",
+		func(w http.ResponseWriter, _ *http.Request) {
+			writeYAML(w, buildEnv(os.Environ()))
 		})
 
 	components := bo.WildcardFolder("components", "name", func(r chi.Router) {
@@ -330,6 +346,28 @@ func buildSummary(snap SupervisorSnapshot) supervisorSummary {
 		})
 	}
 	return out
+}
+
+func buildEnv(environ []string) supervisorEnv {
+	out := supervisorEnv{Env: make([]supervisorEnvEntry, 0, len(environ))}
+	for _, item := range environ {
+		name, value, _ := strings.Cut(item, "=")
+		if isSensitiveEnvName(name) {
+			value = "[REDACTED]"
+		}
+		out.Env = append(out.Env, supervisorEnvEntry{Name: name, Value: value})
+	}
+	sort.Slice(out.Env, func(i, j int) bool {
+		return out.Env[i].Name < out.Env[j].Name
+	})
+	return out
+}
+
+func isSensitiveEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	return strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "PASSWORD") ||
+		strings.Contains(upper, "KEY")
 }
 
 // Start launches ListenAndServe in a background goroutine. Errors land on

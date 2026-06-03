@@ -66,7 +66,10 @@
     const params = new URLSearchParams();
     for (const [k, v] of fd.entries()) params.append(k, v);
     try {
-      const r = await fetch({{.PostURL}}, {
+      // Post to the current page URL so any reverse-proxy path prefix
+      // (which the browser sees but the backend's r.URL.Path does not) is
+      // preserved. The form is served on GET of this same route.
+      const r = await fetch(window.location.href, {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: params.toString(),
