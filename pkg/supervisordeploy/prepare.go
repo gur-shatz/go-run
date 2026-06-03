@@ -51,6 +51,13 @@ type Target struct {
 		PublicPort     int     `yaml:"public_port"`
 		Routes         []Route `yaml:"routes"`
 	} `yaml:"supervisor"`
+	// Env is committed, per-target pod environment, projected into
+	// .Values.env at bundle time. It is the lowest-priority env layer: the
+	// host-side values.local.yaml is layered after the generated values.yaml,
+	// so any key it sets wins over the same key here. Intended for non-secret
+	// deployment settings (public URLs, modes, ports); keep secrets in the
+	// host values.local.yaml.
+	Env map[string]string `yaml:"env"`
 }
 
 type Route struct {
@@ -318,6 +325,10 @@ func copyEmbeddedChart(dst string) error {
 }
 
 func writeValues(stageRoot string, target Target) error {
+	env := make(map[string]any, len(target.Env))
+	for k, v := range target.Env {
+		env[k] = v
+	}
 	values := map[string]any{
 		"app":       "supervisor",
 		"namespace": target.Namespace,
@@ -342,7 +353,7 @@ func writeValues(stageRoot string, target Target) error {
 			"allowedCIDRs":      target.Access.AllowedCIDRs,
 			"trustedProxyCIDRs": target.Access.TrustedProxyCIDRs,
 		},
-		"env": map[string]any{},
+		"env": env,
 		"resources": map[string]any{
 			"requests": map[string]any{"cpu": "25m", "memory": "64Mi"},
 			"limits":   map[string]any{"cpu": "500m", "memory": "512Mi"},

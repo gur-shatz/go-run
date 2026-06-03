@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -59,6 +60,65 @@ var _ = Describe("backoffice version", func() {
 		// The backoffice index (JSON) carries the version in its description.
 		_, idx := getBody(srv.Client(), srv.URL+"/backoffice/index.json")
 		Expect(idx).To(ContainSubstring("Version v1.2.3 (branch master)"))
+	})
+})
+
+var _ = Describe("backoffice env", func() {
+	It("serves sorted YAML and redacts sensitive variable names", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+
+		oldEnv := os.Environ()
+		os.Clearenv()
+		defer func() {
+			os.Clearenv()
+			for _, item := range oldEnv {
+				name, value, _ := strings.Cut(item, "=")
+				Expect(os.Setenv(name, value)).To(Succeed())
+			}
+		}()
+		Expect(os.Setenv("Z_VISIBLE", "shown")).To(Succeed())
+		Expect(os.Setenv("API_KEY", "abc123")).To(Succeed())
+		Expect(os.Setenv("db_password", "pw123")).To(Succeed())
+		Expect(os.Setenv("CLIENT_SECRET_VALUE", "secret123")).To(Succeed())
+
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := getBody(srv.Client(), srv.URL+"/backoffice/env")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("env:"))
+		Expect(body).To(ContainSubstring("name: API_KEY"))
+		Expect(body).To(ContainSubstring("name: CLIENT_SECRET_VALUE"))
+		Expect(body).To(ContainSubstring("name: db_password"))
+		Expect(body).To(ContainSubstring("name: Z_VISIBLE"))
+		Expect(body).To(ContainSubstring("value: '[REDACTED]'"))
+		Expect(body).To(ContainSubstring("value: shown"))
+		Expect(body).NotTo(ContainSubstring("abc123"))
+		Expect(body).NotTo(ContainSubstring("pw123"))
+		Expect(body).NotTo(ContainSubstring("secret123"))
+		Expect(body).To(MatchRegexp(`(?s)name: API_KEY.*name: CLIENT_SECRET_VALUE.*name: Z_VISIBLE.*name: db_password`))
+	})
+
+	It("redacts names containing SECRET, PASSWORD, or KEY case-insensitively", func() {
+		env := buildEnv([]string{
+			"plain=value",
+			"HAS_SECRET=value",
+			"has_password=value",
+			"ssh_key=value",
+		})
+
+		values := map[string]string{}
+		for _, entry := range env.Env {
+			values[entry.Name] = entry.Value
+		}
+		Expect(values["plain"]).To(Equal("value"))
+		Expect(values["HAS_SECRET"]).To(Equal("[REDACTED]"))
+		Expect(values["has_password"]).To(Equal("[REDACTED]"))
+		Expect(values["ssh_key"]).To(Equal("[REDACTED]"))
 	})
 })
 
