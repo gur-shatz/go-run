@@ -24,6 +24,7 @@ import (
 
 	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/execrun"
+	"github.com/gur-shatz/go-run/pkg/favico"
 	"github.com/gur-shatz/go-run/pkg/runctl"
 	"github.com/gur-shatz/go-run/pkg/runui"
 )
@@ -172,6 +173,9 @@ func run() error {
 
 	// Create chi router and mount API routes
 	r := chi.NewRouter()
+	r.Handle("/favicon.ico", favico.Handler(cfg.Favicon.Name, func(*http.Request) favico.Status {
+		return ctrl.FavicoStatus()
+	}))
 	r.Mount("/api", ctrl.Routes())
 	if *ui {
 		r.Mount("/", runui.Routes())

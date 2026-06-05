@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gur-shatz/statekit/scraper"
+
 	"github.com/gur-shatz/go-run/internal/log"
 )
 
@@ -129,20 +131,26 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	// registry; observe (default off) persists that state and serves /health.
 	// Both are independently toggleable; with scrape off the registry still
 	// carries the per-component lifecycle state pushed by the supervisor.
+	// The observer is built first so its store can receive the scraper's
+	// component escalations.
+	if cfg.StateMonitor.Observe.Enabled {
+		this.observer = newObserver(cfg.StateMonitor.Observe, this.bundle.registry, logger)
+	}
+
 	if cfg.StateMonitor.Scrape.IsEnabled() {
-		sc, err := newComponentScraper(cfg, this.bundle, logger)
+		var ingestor scraper.EscalationIngestor
+		if this.observer != nil {
+			ingestor = this.observer.store
+		}
+		sc, err := newComponentScraper(cfg, this.bundle, ingestor, logger)
 		if err != nil {
 			return nil, err
 		}
 		this.scraper = sc
 	}
 
-	if cfg.StateMonitor.Observe.Enabled {
-		this.observer = newObserver(cfg.StateMonitor.Observe, this.bundle.registry, logger)
-	}
-
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, cfg.Supervisor.Favicon, logger)
 
 	return this, nil
 }

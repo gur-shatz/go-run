@@ -26,6 +26,7 @@ var _ = Describe("Config", func() {
 			Expect(cfg.KillGracePeriod).To(Equal(5 * time.Second))
 			Expect(cfg.VersionFolderRetention).To(Equal(2))
 			Expect(cfg.Supervisor.BindAddress).To(Equal("127.0.0.1:9090"))
+			Expect(cfg.Supervisor.Favicon.Name).To(Equal("GR"))
 			Expect(cfg.Remote.Target).To(Equal("required.txt"))
 			Expect(cfg.Remote.PollingInterval).To(Equal(time.Minute))
 		})
@@ -230,6 +231,13 @@ var _ = Describe("Config", func() {
 			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret"}
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects favicon names longer than two characters", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.Favicon.Name = "supervisor"
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("supervisor.favicon.name")))
 		})
 	})
 

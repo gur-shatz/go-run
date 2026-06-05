@@ -10,6 +10,8 @@ reject_expiry: 2m
 
 supervisor:
   bind_address: 127.0.0.1:9190
+  favicon:
+    name: LO
   metric_labels:
     source: example-supervisor-local
 

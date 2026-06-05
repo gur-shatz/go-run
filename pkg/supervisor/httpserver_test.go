@@ -47,7 +47,7 @@ var _ = Describe("backoffice version", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		build := BuildInfo{Version: "v1.2.3", Commit: "abc1234", Branch: "master", Date: "2026-06-02T09:00:00Z"}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, build, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, build, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -84,7 +84,7 @@ var _ = Describe("backoffice env", func() {
 		Expect(os.Setenv("db_password", "pw123")).To(Succeed())
 		Expect(os.Setenv("CLIENT_SECRET_VALUE", "secret123")).To(Succeed())
 
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -136,7 +136,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -170,7 +170,7 @@ var _ = Describe("current_version_logs", func() {
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -190,7 +190,7 @@ var _ = Describe("component controls", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		controls := &recordingControls{}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, controls, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, controls, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -205,6 +205,84 @@ var _ = Describe("component controls", func() {
 	})
 })
 
+var _ = Describe("favicon", func() {
+	newFaviconServer := func(status string, auth BasicAuthConfig) (*httptest.Server, *http.Client) {
+		dir := GinkgoT().TempDir()
+		cfg := Config{
+			StateDir: dir,
+			Components: []ComponentConfig{
+				{Name: "hello", Port: 18090, Command: "/bin/hello"},
+			},
+		}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		switch status {
+		case "pass":
+			bundle.markPass("hello", "ok")
+		case "warn":
+			bundle.markWarn("hello", "degraded")
+		case "fail":
+			bundle.markFail("hello", "failed")
+		case "down":
+			bundle.markDown("hello", "down")
+		}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, FaviconConfig{Name: "sv"}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		client := srv.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		return srv, client
+	}
+
+	It("serves the configured two-letter SVG favicon with no-cache headers", func() {
+		srv, client := newFaviconServer("pass", BasicAuthConfig{})
+		defer srv.Close()
+
+		resp, err := client.Get(srv.URL + "/favicon.ico")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+
+		body := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.Header.Get("Content-Type")).To(HavePrefix("image/svg+xml"))
+		Expect(resp.Header.Get("Cache-Control")).To(ContainSubstring("no-cache"))
+		Expect(body).To(ContainSubstring(">SV</text>"))
+		Expect(body).To(ContainSubstring(`fill="#16a34a"`))
+	})
+
+	It("switches the background color from green to yellow to red by state severity", func() {
+		cases := []struct {
+			status string
+			color  string
+		}{
+			{status: "pass", color: "#16a34a"},
+			{status: "warn", color: "#facc15"},
+			{status: "fail", color: "#dc2626"},
+			{status: "down", color: "#dc2626"},
+		}
+		for _, tc := range cases {
+			srv, client := newFaviconServer(tc.status, BasicAuthConfig{})
+			resp, err := client.Get(srv.URL + "/favicon.ico")
+			Expect(err).NotTo(HaveOccurred())
+			body := readBody(resp)
+			srv.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(body).To(ContainSubstring(`fill="` + tc.color + `"`))
+		}
+	})
+
+	It("is available before login when basic auth is enabled", func() {
+		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret"}
+		srv, client := newFaviconServer("pass", auth)
+		defer srv.Close()
+
+		resp, err := client.Get(srv.URL + "/favicon.ico")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+	})
+})
+
 var _ = Describe("component proxy", func() {
 	// startServer wires a supervisor HTTP server whose only component, "hello",
 	// points at the given port, and returns a client that does not follow redirects.
@@ -213,7 +291,7 @@ var _ = Describe("component proxy", func() {
 		cfg := Config{StateDir: dir}
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: componentPort}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -290,7 +368,7 @@ var _ = Describe("login gate", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", Hint: "demo login: op / s3cret"}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, BuildInfo{}, auth, FaviconConfig{}, log.New("[t]", false))
 		return httptest.NewServer(hs.server.Handler)
 	}
 

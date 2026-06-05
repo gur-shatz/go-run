@@ -565,6 +565,7 @@ runLoop:
 			this.counters.OnExecFailure()
 			if this.bundle != nil {
 				this.bundle.observeExecFailure(this.cfg.Name)
+				this.bundle.incidentCrash(this.cfg.Name, version, "exec failed: "+err.Error(), nil)
 			}
 			this.logger.Error("[%s] launch %s failed: %v", this.cfg.Name, version, err)
 			if this.counters.ShouldReject() {
@@ -600,6 +601,9 @@ runLoop:
 					this.StopChild(child)
 					this.clearChildState()
 					this.markDown("manually stopped")
+					if this.bundle != nil {
+						this.bundle.closeIncident(this.cfg.Name, "manually stopped")
+					}
 					req.reply <- nil
 					continue runLoop
 				case componentControlRestart:
@@ -618,6 +622,9 @@ runLoop:
 					continue
 				}
 				this.logger.Status("[%s] switching %s → %s", this.cfg.Name, version, newVersion)
+				if this.bundle != nil {
+					this.bundle.incidentDeploy(this.cfg.Name, version, newVersion)
+				}
 				stableTicker.Stop()
 				this.StopChild(child)
 				continue runLoop
@@ -910,6 +917,11 @@ func (this *Component) HandleChildExit(rc *runningChild, exit childExit) time.Du
 	this.logger.Warn("[%s] child %s exited after %s (err=%v)",
 		this.cfg.Name, rc.version,
 		exit.at.Sub(rc.launchedAt).Truncate(time.Millisecond), exit.err)
+	if this.bundle != nil {
+		this.bundle.incidentCrash(this.cfg.Name, rc.version,
+			fmt.Sprintf("child exited after %s (err=%v)", exit.at.Sub(rc.launchedAt).Truncate(time.Millisecond), exit.err),
+			map[string]any{"version": rc.version, "fast_crashes": this.counters.FastCrashes})
+	}
 
 	if this.counters.ShouldReject() {
 		this.DemoteToStable(rc.version, "fast crashes exceeded threshold")
@@ -941,6 +953,9 @@ func (this *Component) DemoteToStable(version, reason string) {
 		this.counters.Reset()
 		this.backoff.Reset()
 		this.markWarn("demoted to stable " + stable)
+		if this.bundle != nil {
+			this.bundle.incidentRollback(this.cfg.Name, version, stable, reason)
+		}
 		return
 	}
 	// The demote was logged; the regression to stable failed. Surface the
@@ -951,6 +966,9 @@ func (this *Component) DemoteToStable(version, reason string) {
 		this.cfg.Name, failReason, version, this.backoff.Cap.String())
 	this.counters.Reset()
 	this.markWarn("rejected " + version + "; " + failReason + ", retrying under backoff")
+	if this.bundle != nil {
+		this.bundle.incidentRollback(this.cfg.Name, version, "", failReason)
+	}
 }
 
 // isPinnedToStable reports whether the supervisor is currently holding the
@@ -1026,6 +1044,7 @@ func (this *Component) MaybeStabilize(version string) {
 	this.backoff.Reset()
 	if this.bundle != nil {
 		this.bundle.observeStability(this.cfg.Name)
+		this.bundle.incidentStabilized(this.cfg.Name, version)
 	}
 
 	rejected, _ := this.paths.IsActivelyRejected(version, time.Now(), this.rejectExpiry)

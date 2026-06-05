@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Title             string                  `yaml:"title,omitempty"`
 	Description       string                  `yaml:"description,omitempty"`
+	Favicon           FaviconConfig           `yaml:"favicon,omitempty"`
 	Vars              map[string]string       `yaml:"vars,omitempty"`
 	API               APIConfig               `yaml:"api"`
 	LogsDir           string                  `yaml:"logs_dir,omitempty"`             // directory for auto-generated log files
@@ -26,6 +27,11 @@ type Config struct {
 	// ResolvedVars holds all resolved template variables (vars section + env).
 	// Populated by LoadConfig, not from YAML.
 	ResolvedVars map[string]string `yaml:"-"`
+}
+
+// FaviconConfig controls the browser tab icon served at /favicon.ico.
+type FaviconConfig struct {
+	Name string `yaml:"name,omitempty"`
 }
 
 // APIConfig controls the HTTP API server.
@@ -166,6 +172,12 @@ func normalizeTargetName(name string) string {
 func (this *Config) Validate() error {
 	if this.API.Port == 0 {
 		this.API.Port = 9100
+	}
+	if this.Favicon.Name == "" {
+		this.Favicon.Name = "RC"
+	}
+	if name := strings.TrimSpace(this.Favicon.Name); len([]rune(name)) > 2 {
+		return fmt.Errorf("favicon.name must be at most two characters")
 	}
 	if len(this.Targets) == 0 {
 		return fmt.Errorf("at least one target is required")

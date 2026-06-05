@@ -62,7 +62,7 @@ func (this *authGate) mint(now time.Time) string {
 func (this *authGate) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/login", "/logout":
+		case "/login", "/logout", "/favicon.ico":
 			next.ServeHTTP(w, r)
 			return
 		}

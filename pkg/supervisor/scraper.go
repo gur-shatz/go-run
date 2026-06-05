@@ -22,7 +22,12 @@ type componentScraper struct {
 // newComponentScraper builds a scraper.Config from supervisor.Config and
 // registers its outputs against the bundle's registry. The scraper does not
 // start polling until Run is called.
-func newComponentScraper(cfg Config, bundle *statekitBundle, logger *log.Logger) (*componentScraper, error) {
+//
+// ingestor is optional (the observer's store when observe is enabled). When
+// present, each component's own /escalations endpoint is scraped too, so
+// statekit-based children can surface their support incidents on the /health
+// console alongside the supervisor's lifecycle incidents.
+func newComponentScraper(cfg Config, bundle *statekitBundle, ingestor scraper.EscalationIngestor, logger *log.Logger) (*componentScraper, error) {
 	if len(cfg.Components) == 0 {
 		return &componentScraper{cfg: cfg, logger: logger}, nil
 	}
@@ -57,10 +62,19 @@ func newComponentScraper(cfg Config, bundle *statekitBundle, logger *log.Logger)
 				Paths: []string{c.URLs.Metrics},
 			},
 		}
+		if ingestor != nil && c.URLs.Escalations != "" {
+			target.Escalations = &scraper.EscalationsTask{
+				Path: c.URLs.Escalations,
+			}
+		}
 		scfg.Targets = append(scfg.Targets, target)
 	}
 
-	sc, err := scraper.New(scfg)
+	var opts []scraper.Option
+	if ingestor != nil {
+		opts = append(opts, scraper.WithEscalationIngestor(ingestor))
+	}
+	sc, err := scraper.New(scfg, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build scraper: %w", err)
 	}

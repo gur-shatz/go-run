@@ -63,7 +63,7 @@ var _ = Describe("observer / health console", func() {
 		bundle := newStatekitBundle(cfg)
 		obs := newObserver(cfg.StateMonitor.Observe, bundle.registry, log.New("[t]", false))
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, nil,
-			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, obs, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, obs, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -80,7 +80,7 @@ var _ = Describe("observer / health console", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, nil,
-			NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, log.New("[t]", false))
+			NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 

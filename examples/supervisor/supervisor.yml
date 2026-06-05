@@ -12,6 +12,8 @@ reject_expiry: 2m
 
 supervisor:
   bind_address: 127.0.0.1:9090
+  favicon:
+    name: EX
   # Login gate on the whole supervisor surface (every route, including
   # /backoffice/healthz). Unauthenticated visitors land on a /login form; a
   # correct login sets a session cookie. The hint is shown under the form so

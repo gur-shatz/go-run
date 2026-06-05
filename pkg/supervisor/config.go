@@ -126,10 +126,17 @@ type SupervisorConfig struct {
 	BindAddress  string            `yaml:"bind_address"`
 	PublicPort   int               `yaml:"public_port,omitempty"`
 	MetricLabels map[string]string `yaml:"metric_labels,omitempty"`
+	Favicon      FaviconConfig     `yaml:"favicon,omitempty"`
 
 	// BasicAuth, when enabled, gates every route on the supervisor's HTTP
 	// server (including /backoffice/healthz) behind a login form.
 	BasicAuth BasicAuthConfig `yaml:"basic_auth,omitempty"`
+}
+
+// FaviconConfig controls the browser tab icon served at /favicon.ico. Name is
+// rendered as centered text over a status-colored background.
+type FaviconConfig struct {
+	Name string `yaml:"name,omitempty"`
 }
 
 // BasicAuthConfig is the optional login gate on the supervisor's HTTP server.
@@ -207,10 +214,11 @@ type ComponentConfig struct {
 // URLsConfig describes the path layout the supervisor expects each component
 // to serve on its configured port. Empty fields fall back to defaults.
 type URLsConfig struct {
-	Healthz string `yaml:"healthz,omitempty"`
-	Readyz  string `yaml:"readyz,omitempty"`
-	State   string `yaml:"state,omitempty"`
-	Metrics string `yaml:"metrics,omitempty"`
+	Healthz     string `yaml:"healthz,omitempty"`
+	Readyz      string `yaml:"readyz,omitempty"`
+	State       string `yaml:"state,omitempty"`
+	Metrics     string `yaml:"metrics,omitempty"`
+	Escalations string `yaml:"escalations,omitempty"`
 }
 
 // LoadConfig reads and validates a supervisor YAML file, applying defaults.
@@ -347,6 +355,9 @@ func (this *Config) ApplyDefaults() {
 	if this.Supervisor.BindAddress == "" {
 		this.Supervisor.BindAddress = "127.0.0.1:9090"
 	}
+	if this.Supervisor.Favicon.Name == "" {
+		this.Supervisor.Favicon.Name = "GR"
+	}
 	this.Remote = applyUpdates(this.Remote, this.Updates)
 	if this.Remote.Target == "" {
 		this.Remote.Target = "required.txt"
@@ -395,11 +406,17 @@ func applyURLDefaults(u URLsConfig) URLsConfig {
 	if u.Metrics == "" {
 		u.Metrics = "/metrics"
 	}
+	if u.Escalations == "" {
+		u.Escalations = "/escalations"
+	}
 	return u
 }
 
 // Validate checks that the resolved config is internally consistent.
 func (this *Config) Validate() error {
+	if name := strings.TrimSpace(this.Supervisor.Favicon.Name); len([]rune(name)) > 2 {
+		return fmt.Errorf("supervisor.favicon.name must be at most two characters")
+	}
 	if ba := this.Supervisor.BasicAuth; ba.Enabled {
 		if ba.Username == "" || ba.Password == "" {
 			return fmt.Errorf("supervisor.basic_auth: username and password are required when enabled")
