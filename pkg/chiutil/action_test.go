@@ -19,7 +19,8 @@ var _ = Describe("Action", func() {
 
 		Expect(w.Header().Get("Content-Type")).To(ContainSubstring("text/html"))
 		Expect(w.Header().Get("X-Chiutil-Viewer")).To(Equal("iframe"))
-		Expect(w.Body.String()).To(ContainSubstring("fetch('\\/submit'"))
+		Expect(w.Body.String()).To(ContainSubstring("window.__chiutilActionPostURL || '\\/submit'"))
+		Expect(w.Body.String()).To(ContainSubstring("fetch(postURL"))
 		Expect(w.Body.String()).NotTo(ContainSubstring("window.location.href"))
 	})
 
@@ -31,7 +32,8 @@ var _ = Describe("Action", func() {
 
 		Expect(w.Header().Get("Content-Type")).To(ContainSubstring("text/html"))
 		Expect(w.Header().Get("X-Chiutil-Viewer")).To(Equal("iframe"))
-		Expect(w.Body.String()).To(ContainSubstring("fetch('\\/submit'"))
+		Expect(w.Body.String()).To(ContainSubstring("window.__chiutilActionPostURL || '\\/submit'"))
+		Expect(w.Body.String()).To(ContainSubstring("fetch(postURL"))
 		Expect(w.Body.String()).NotTo(ContainSubstring("window.location.href"))
 	})
 })
