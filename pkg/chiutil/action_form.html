@@ -66,10 +66,10 @@
     const params = new URLSearchParams();
     for (const [k, v] of fd.entries()) params.append(k, v);
     try {
-      // The action form is often previewed inside an iframe srcdoc. In that
-      // context window.location.href is about:srcdoc, so use the server-side
-      // route URL captured when this form was rendered.
-      const r = await fetch('{{.PostURL}}', {
+      // RouteFolder previews inject the browser-visible URL here. That keeps
+      // reverse-proxy prefixes intact even though srcdoc itself is about:srcdoc.
+      const postURL = window.__chiutilActionPostURL || '{{.PostURL}}';
+      const r = await fetch(postURL, {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: params.toString(),

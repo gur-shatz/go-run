@@ -567,17 +567,7 @@
             const upSep = document.getElementById('up-sep');
             const parts = path.split('/').filter(Boolean);
 
-            // Derive the base path by subtracting the JSON path from the browser location.
-            // e.g. location=/proxy/svc/backoffice/sub/, path=/backoffice/sub -> base=/proxy/svc
-            const loc = window.location.pathname.replace(/\/+$/, '');
-            const normalized = path.replace(/\/+$/, '');
-            let basePath = '';
-            if (normalized && loc.endsWith(normalized)) {
-                basePath = loc.slice(0, loc.length - normalized.length);
-            } else if (normalized === '/' || normalized === '') {
-                basePath = loc;
-            }
-            basePath = basePath.replace(/\/+$/, '');
+            const basePath = browserBasePath(path);
 
             const isRoot = parts.length === 0;
             backLink.style.display = isRoot ? 'none' : '';
@@ -597,6 +587,33 @@
             });
 
             bc.innerHTML = html;
+        }
+
+        function browserBasePath(path) {
+            // Derive the base path by subtracting the JSON path from the browser location.
+            // e.g. location=/proxy/svc/backoffice/sub/, path=/backoffice/sub -> base=/proxy/svc
+            const loc = window.location.pathname.replace(/\/+$/, '');
+            const normalized = (path || '').replace(/\/+$/, '');
+            let basePath = '';
+            if (normalized && loc.endsWith(normalized)) {
+                basePath = loc.slice(0, loc.length - normalized.length);
+            } else if (normalized === '/' || normalized === '') {
+                basePath = loc;
+            }
+            return basePath.replace(/\/+$/, '');
+        }
+
+        function resolveBrowserPath(routePath, entryPath) {
+            if (!entryPath || /^[a-z][a-z0-9+.-]*:/i.test(entryPath)) {
+                return entryPath;
+            }
+            const basePath = browserBasePath(routePath);
+            const routePrefix = (routePath || '').replace(/^\/+|\/+$/g, '');
+            const entrySuffix = entryPath.replace(/^\/+/, '');
+            const suffix = entryPath.startsWith('/')
+                ? entrySuffix
+                : [routePrefix, entrySuffix].filter(Boolean).join('/');
+            return `${basePath}/${suffix}`.replace(/\/{2,}/g, '/');
         }
 
         function renderEntry(entry, index) {
@@ -665,7 +682,7 @@
                     currentResponse = text;
                     const iframe = document.createElement('iframe');
                     iframe.className = 'viewer-iframe';
-                    iframe.srcdoc = text;
+                    iframe.srcdoc = injectActionPostURL(text, path);
                     body.innerHTML = '';
                     body.appendChild(iframe);
                     return;
@@ -709,6 +726,14 @@
                 body.innerHTML = '';
                 body.appendChild(preEl);
             }
+        }
+
+        function injectActionPostURL(html, path) {
+            const script = `<script>window.__chiutilActionPostURL = ${JSON.stringify(path)};<\/script>`;
+            if (html.includes('</head>')) {
+                return html.replace('</head>', `${script}</head>`);
+            }
+            return `${script}${html}`;
         }
 
         function escapeHtml(text) {
@@ -757,7 +782,12 @@
                     return;
                 }
 
-                const sorted = [...data.entries].sort((a, b) => {
+                const entries = data.entries.map(entry => ({
+                    ...entry,
+                    path: resolveBrowserPath(data.path || '', entry.path),
+                }));
+
+                const sorted = entries.sort((a, b) => {
                     if (a.isFolder && !b.isFolder) return -1;
                     if (!a.isFolder && b.isFolder) return 1;
                     return (a.name || a.path).localeCompare(b.name || b.path);
