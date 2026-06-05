@@ -56,10 +56,10 @@
     e.preventDefault();
     resp.style.display = 'none';
     try {
-      // Post to the current page URL so any reverse-proxy path prefix
-      // (which the browser sees but the backend's r.URL.Path does not) is
-      // preserved. The form is served on GET of this same route.
-      const r = await fetch(window.location.href, {
+      // The action form is often previewed inside an iframe srcdoc. In that
+      // context window.location.href is about:srcdoc, so use the server-side
+      // route URL captured when this form was rendered.
+      const r = await fetch('{{.PostURL}}', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: ta.value,
