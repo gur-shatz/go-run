@@ -11,6 +11,8 @@ reject_expiry: 10m
 supervisor:
   bind_address: 0.0.0.0:9090
   public_port: 18090
+  favicon:
+    name: SP
   metric_labels:
     source: hertzner1-supervisor-demo
 

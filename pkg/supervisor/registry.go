@@ -1,11 +1,18 @@
 package supervisor
 
 import (
+	"context"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/gur-shatz/statekit"
 )
+
+// incidentTypeCrash marks component-scoped crash episodes. Unlike the
+// statekit global types (deployment, rollback) it renders as a per-target
+// range on the health console timeline, not a system-wide band.
+const incidentTypeCrash = "crash"
 
 // statekitBundle is the per-supervisor view of state and metrics expressed in
 // statekit terms. For each component the bundle owns an AggregateState named
@@ -29,6 +36,15 @@ type statekitBundle struct {
 	// Per-component state handles. The Component lifecycle pushes into
 	// `lifecycle`; the Updater pushes into `update`.
 	components map[string]*componentStates
+
+	// escalations turns lifecycle events (deploy, crash, rollback) into
+	// statekit incidents, exported at /backoffice/escalations and mirrored
+	// into the observer store. openIncidents tracks at most one live
+	// incident per component — a crash loop is one incident accumulating
+	// events, not one incident per exit.
+	escalations   *statekit.Escalations
+	incidentMu    sync.Mutex
+	openIncidents map[string]*statekit.Escalation
 
 	// Per-component gauges (aggregate /metrics view). fast_crashes and
 	// exec_failures are gauges, not counters, because they reset on
@@ -74,7 +90,15 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 	reg := statekit.NewRegistry(opts...)
 
 	b := &statekitBundle{
-		registry:                 reg,
+		registry: reg,
+		// Generous budget: nothing acks incidents unless an upstream
+		// statekit scraper consumes /backoffice/escalations, so closed
+		// incidents linger until the TTL recycles them.
+		escalations: statekit.NewEscalations(statekit.WithEscalationPolicy(statekit.EscalationPolicy{
+			MaxUnacknowledged: 100,
+			TTL:               24 * time.Hour,
+		})),
+		openIncidents:            make(map[string]*statekit.Escalation, len(cfg.Components)),
 		components:               make(map[string]*componentStates, len(cfg.Components)),
 		fastCrashes:              statekit.NewGaugeVec("component_fast_crashes", "Fast crashes since the last stability_time reset.", "component"),
 		execFailures:             statekit.NewGaugeVec("component_exec_failures", "Supervisor exec failures since the last stability_time reset.", "component"),
@@ -87,6 +111,7 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		perComponentExecFailures: make(map[string]*statekit.Gauge, len(cfg.Components)),
 	}
 	_ = reg.RegisterCollectors(b.fastCrashes, b.execFailures, b.runCount, b.uptimeSeconds, b.monitorPort)
+	reg.RegisterEscalations(b.escalations)
 
 	for _, c := range cfg.Components {
 		// Lifecycle leaf — Important. Mirrors the supervisor's local view of
@@ -204,6 +229,24 @@ func (this *statekitBundle) lifecycleSnapshot(name string) statekit.Snapshot {
 	return statekit.Snapshot{}
 }
 
+// worstStatus returns the favicon-level rollup across every registered state:
+// red for fail/down, yellow for warn, green for pass or no states.
+func (this *statekitBundle) worstStatus() statekit.Status {
+	if this == nil || this.registry == nil {
+		return statekit.Pass
+	}
+	worst := statekit.Pass
+	for _, s := range this.registry.StateDisplay().States {
+		switch s.Status {
+		case statekit.Fail, statekit.Down:
+			return s.Status
+		case statekit.Warn:
+			worst = statekit.Warn
+		}
+	}
+	return worst
+}
+
 // observeUpdateOK marks the update sub-state as healthy.
 func (this *statekitBundle) observeUpdateOK(name, reason string) {
 	if cs, ok := this.components[name]; ok {
@@ -259,6 +302,100 @@ func (this *statekitBundle) observeStability(name string) {
 	if g, ok := this.perComponentExecFailures[name]; ok {
 		g.Set(0)
 	}
+}
+
+// incidentDeploy opens a deployment incident when the lifecycle switches a
+// running child to a new version. Any incident still open for the component
+// (e.g. a crash episode on the old version) is superseded — the deploy ends
+// that story and starts a new one. The incident stays open until
+// incidentStabilized or incidentRollback resolves it, so the health console
+// timeline shows a deployment band spanning switch → outcome.
+func (this *statekitBundle) incidentDeploy(name, from, to string) {
+	this.closeIncident(name, "superseded by deploy to "+to)
+	this.startIncident(name, statekit.EscalationSpec{
+		Type:     statekit.EscalationTypeDeployment,
+		Title:    name + ": deploy " + from + " → " + to,
+		Severity: statekit.Pass,
+		Topics:   map[string]any{"component": name, "from": from, "to": to},
+	}, "deployment", "switching "+from+" → "+to, nil)
+}
+
+// incidentCrash records a child exit or exec failure. If the component
+// already has an open incident (a deployment in flight, or an earlier crash
+// in the same episode) the event is appended there — a crash loop is one
+// incident accumulating events, not one incident per exit. Otherwise a new
+// crash incident opens.
+func (this *statekitBundle) incidentCrash(name, version, detail string, data map[string]any) {
+	if this.appendIncident(name, incidentTypeCrash, detail, data) {
+		return
+	}
+	this.startIncident(name, statekit.EscalationSpec{
+		Type:     incidentTypeCrash,
+		Title:    name + ": " + version + " crashing",
+		Severity: statekit.Fail,
+		Topics:   map[string]any{"component": name, "version": version},
+	}, incidentTypeCrash, detail, data)
+}
+
+// incidentRollback closes the open incident (the crash episode or deployment
+// that tripped the bad-version criterion) and opens a rollback incident.
+// stable is empty when no fallback version was available.
+func (this *statekitBundle) incidentRollback(name, rejected, stable, reason string) {
+	this.closeIncident(name, "demoting "+rejected+": "+reason)
+	title := name + ": rollback " + rejected + " → " + stable
+	if stable == "" {
+		title = name + ": rejected " + rejected + ", no stable fallback"
+	}
+	this.startIncident(name, statekit.EscalationSpec{
+		Type:     statekit.EscalationTypeRollback,
+		Title:    title,
+		Severity: statekit.Warn,
+		Topics:   map[string]any{"component": name, "rejected": rejected, "stable": stable},
+	}, "rollback", reason, nil)
+}
+
+// incidentStabilized resolves the component's open incident once the child
+// reaches stability_time of continuous uptime. No-op when nothing is open —
+// MaybeStabilize keeps firing on every stability tick.
+func (this *statekitBundle) incidentStabilized(name, version string) {
+	this.closeIncident(name, version+" stable")
+}
+
+// startIncident opens an incident and remembers the handle so later
+// lifecycle events append to it. A rejected Start (unacknowledged budget
+// exhausted) leaves the component with no open incident.
+func (this *statekitBundle) startIncident(name string, spec statekit.EscalationSpec, topic, message string, data map[string]any) {
+	inc, ok := this.escalations.Start(context.Background(), spec)
+	if !ok {
+		return
+	}
+	inc.AddLog(context.Background(), time.Now(), topic, message, data)
+	this.incidentMu.Lock()
+	this.openIncidents[name] = inc
+	this.incidentMu.Unlock()
+}
+
+// appendIncident adds an event to the component's open incident. Reports
+// false when no incident is open.
+func (this *statekitBundle) appendIncident(name, topic, message string, data map[string]any) bool {
+	this.incidentMu.Lock()
+	inc := this.openIncidents[name]
+	this.incidentMu.Unlock()
+	if inc == nil {
+		return false
+	}
+	inc.AddLog(context.Background(), time.Now(), topic, message, data)
+	return true
+}
+
+// closeIncident closes and forgets the component's open incident. No-op when
+// nothing is open.
+func (this *statekitBundle) closeIncident(name, reason string) {
+	this.incidentMu.Lock()
+	inc := this.openIncidents[name]
+	delete(this.openIncidents, name)
+	this.incidentMu.Unlock()
+	inc.Close(context.Background(), reason)
 }
 
 // observeLaunch records that a child has just been started. Drives both the

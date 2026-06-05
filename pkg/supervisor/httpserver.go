@@ -19,6 +19,7 @@ import (
 
 	"github.com/gur-shatz/go-run/internal/log"
 	"github.com/gur-shatz/go-run/pkg/chiutil"
+	"github.com/gur-shatz/go-run/pkg/favico"
 )
 
 // stateProvider is the read-only view the per-component routes need.
@@ -83,7 +84,7 @@ type supervisorEnv struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -100,6 +101,9 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 	}
 
 	// keep the root router free for supervisor specific routes.
+	router.Handle("/favicon.ico", favico.Handler(favicon.Name, func(*http.Request) favico.Status {
+		return supervisorFavicoStatus(bundle)
+	}))
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
@@ -138,6 +142,14 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 		bundle.registry.StateDisplayYAMLHandler())
 	bo.GetHandlerDesc("/metrics", "Prometheus exposition (supervisor metrics + scraped component metrics).",
 		bundle.registry.PrometheusHandler())
+
+	// /escalations exports the supervisor's lifecycle incidents (deploy,
+	// rollback, crash episodes) in the statekit escalation YAML shape, so an
+	// upstream fleet scraper can ingest them with an escalations task. The
+	// after/ack cursor belongs to that consumer; the local observer mirrors
+	// the document without acking.
+	bo.GetHandlerDesc("/escalations", "statekit escalations YAML — supervisor lifecycle incidents (deploy, rollback, crash).",
+		bundle.registry.EscalationHandler())
 
 	// /summary is a flat, grep-able YAML overview of each component the
 	// supervisor manages. Complementary to /state: same data condensed.
@@ -281,6 +293,17 @@ func controlComponent(w http.ResponseWriter, r *http.Request, name string, fn fu
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func supervisorFavicoStatus(bundle *statekitBundle) favico.Status {
+	switch bundle.worstStatus() {
+	case statekit.Fail, statekit.Down:
+		return favico.StatusFail
+	case statekit.Warn:
+		return favico.StatusWarn
+	default:
+		return favico.StatusOK
+	}
 }
 
 // mountComponentProxy wires /proxy/<component>/* on the root router to the

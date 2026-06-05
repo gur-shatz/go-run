@@ -1,5 +1,7 @@
 title: go-run examples
 description: Example stack for execrun, runctl, runui, and backoffice.
+favicon:
+  name: RX
 
 vars:
   # Base port — all service ports are derived from this offset.

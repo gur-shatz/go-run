@@ -78,10 +78,36 @@ func (this *observer) Run(ctx context.Context) {
 		if err := this.store.IngestDocument(ctx, this.registry.StateDisplay(), time.Now()); err != nil {
 			this.logger.Warn("observer ingest: %v", err)
 		}
+		this.ingestEscalations(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// ingestEscalations mirrors the registry's incidents (deploy, rollback,
+// crash episodes) into the store so they appear on the /health console as
+// incident rows and timeline markers. The full document is read without an
+// after/ack cursor: the store dedupes events, and the cursor stays untouched
+// for an upstream fleet scraper consuming /backoffice/escalations. Each
+// incident is attributed to its component (from the "component" topic) so it
+// lines up with the console's per-target rows.
+func (this *observer) ingestEscalations(ctx context.Context) {
+	doc := this.registry.EscalationDisplay("", "")
+	if len(doc.Incidents) == 0 {
+		return
+	}
+	for i := range doc.Incidents {
+		if doc.Incidents[i].ScrapedFrom != "" {
+			continue
+		}
+		if component, ok := doc.Incidents[i].Topics["component"].(string); ok {
+			doc.Incidents[i].ScrapedFrom = component
+		}
+	}
+	if err := this.store.IngestEscalations(ctx, "supervisor", doc, time.Now()); err != nil {
+		this.logger.Warn("observer escalations ingest: %v", err)
 	}
 }

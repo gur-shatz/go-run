@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/gur-shatz/go-run/pkg/favico"
 	"github.com/gur-shatz/go-run/pkg/runctl"
 )
 
@@ -81,6 +82,42 @@ targets:
 			cfg, err := runctl.LoadConfig(cfgPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.API.Port).To(Equal(9100))
+			Expect(cfg.Favicon.Name).To(Equal("RC"))
+		})
+
+		It("loads the optional favicon name", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+favicon:
+  name: LS
+targets:
+  my-app:
+    config: "execrun.yaml"
+`
+			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
+
+			cfg, err := runctl.LoadConfig(cfgPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Favicon.Name).To(Equal("LS"))
+		})
+
+		It("rejects favicon names longer than two characters", func() {
+			dir := GinkgoT().TempDir()
+			cfgPath := filepath.Join(dir, "runctl.yaml")
+
+			yaml := `
+favicon:
+  name: local
+targets:
+  my-app:
+    config: "execrun.yaml"
+`
+			Expect(os.WriteFile(cfgPath, []byte(yaml), 0644)).To(Succeed())
+
+			_, err := runctl.LoadConfig(cfgPath)
+			Expect(err).To(MatchError(ContainSubstring("favicon.name")))
 		})
 
 		It("returns error for missing config field", func() {
@@ -416,6 +453,33 @@ targets:
 			Expect(overview.Targets).To(HaveLen(1))
 			Expect(overview.Targets[0].Build.Count).To(Equal(0))
 			Expect(overview.Targets[0].Test.Count).To(Equal(0))
+		})
+
+		It("reports favicon warning while enabled run targets are idle", func() {
+			cfg := runctl.Config{
+				API: runctl.APIConfig{Port: 9100},
+				Targets: map[string]runctl.TargetConfig{
+					"app": {Config: "app/execrun.yaml"},
+				},
+			}
+			ctrl, err := runctl.New(cfg, ".", false)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(ctrl.FavicoStatus()).To(Equal(favico.StatusWarn))
+		})
+
+		It("reports favicon ok when all targets are disabled", func() {
+			disabled := false
+			cfg := runctl.Config{
+				API: runctl.APIConfig{Port: 9100},
+				Targets: map[string]runctl.TargetConfig{
+					"app": {Config: "app/execrun.yaml", Enabled: &disabled},
+				},
+			}
+			ctrl, err := runctl.New(cfg, ".", false)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(ctrl.FavicoStatus()).To(Equal(favico.StatusOK))
 		})
 
 		It("returns error for unknown target", func() {

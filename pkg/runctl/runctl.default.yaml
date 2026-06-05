@@ -27,6 +27,8 @@
 
 # title: Local Dev
 # description: API, worker, and frontend dev stack
+# favicon:
+#   name: RC
 
 api:
   port: 9100  # HTTP API port

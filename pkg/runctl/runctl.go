@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/go-run/internal/logtail"
+	"github.com/gur-shatz/go-run/pkg/favico"
 )
 
 // Controller manages multiple targets and exposes an HTTP API.
@@ -302,6 +303,48 @@ func (this *Controller) Overview() Overview {
 		Description: this.cfg.Description,
 		Targets:     this.Status(),
 	}
+}
+
+// FavicoStatus returns a compact health rollup for the browser favicon.
+func (this *Controller) FavicoStatus() favico.Status {
+	status := favico.StatusOK
+	for _, t := range this.Status() {
+		if targetFavicoFailed(t) {
+			return favico.StatusFail
+		}
+		if targetFavicoWarn(t) {
+			status = favico.StatusWarn
+		}
+	}
+	return status
+}
+
+func targetFavicoFailed(t TargetStatus) bool {
+	if t.State == StateError || t.State == StateExited {
+		return true
+	}
+	return t.Build.Result == "failed" || t.Test.Result == "failed" ||
+		t.LastBuildResult == "failed" || t.LastTestResult == "failed" ||
+		t.LastExecResult == "failed"
+}
+
+func targetFavicoWarn(t TargetStatus) bool {
+	if !t.Enabled {
+		return false
+	}
+	if t.CurrentStage != "" || t.State == StateStarting {
+		return true
+	}
+	if t.HasRun && t.State != StateRunning {
+		return true
+	}
+	if t.HasBuild && t.Build.Result == "" {
+		return true
+	}
+	if t.HasTest && t.Test.Result == "" {
+		return true
+	}
+	return false
 }
 
 // TargetStatus returns the status of a single target.
