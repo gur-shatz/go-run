@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"path"
@@ -41,6 +42,7 @@ type FolderIndex struct {
 	Title       string        `json:"title,omitempty"`
 	Description string        `json:"description,omitempty"`
 	Path        string        `json:"path"`
+	HasIndex    bool          `json:"hasIndex,omitempty"`
 	Entries     []*RouteEntry `json:"entries"`
 }
 
@@ -61,6 +63,7 @@ type RouteFolder struct {
 	serviceName string
 	title       string
 	description string
+	index       http.Handler
 	entries     []*RouteEntry
 }
 
@@ -146,11 +149,26 @@ func (this *RouteFolder) ServiceName(name string) *RouteFolder {
 	return this
 }
 
+// Index registers a folder-level page that the HTML index viewer renders when
+// no entry is selected. The folder shell itself remains mounted at "/" and the
+// JSON index remains at "/index.json"; the handler is served only for preview
+// requests from the shell.
+func (this *RouteFolder) Index(handler http.HandlerFunc) *RouteFolder {
+	return this.IndexHandler(handler)
+}
+
+// IndexHandler registers a folder-level http.Handler rendered by the HTML
+// index viewer when no entry is selected.
+func (this *RouteFolder) IndexHandler(handler http.Handler) *RouteFolder {
+	this.index = handler
+	return this
+}
+
 // Folder creates a nested RouteFolder and adds it to the index.
 func (this *RouteFolder) Folder(path string) *RouteFolder {
 	name := strings.Trim(path, "/")
 	child := NewRouteFolderOn(this.router, "/"+name)
-	child.serviceName = this.serviceName       // Propagate service name to child
+	child.serviceName = this.serviceName        // Propagate service name to child
 	child.basePath = this.basePath + "/" + name // absolute server path, not just "/name"
 	child.rootPath = this.rootPath              // inherit the tree's home
 	this.entries = append(this.entries, &RouteEntry{
@@ -219,13 +237,13 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 	}
 
 	// /<name>/ serves the instance listing
-	listingFolder.router.Get("/", listingFolder.serveHTML)
+	listingFolder.router.Get("/", wildcard.serveHTML)
 	listingFolder.router.Get("/index.json", wildcard.serveJSON)
 
 	// /<name>/{paramName}/... handles all parameterized routes
 	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
 		// /<name>/{paramName}/ serves the route listing for this instance
-		r.Get("/", listingFolder.serveHTML)
+		r.Get("/", wildcard.serveInstanceHTML)
 		r.Get("/index.json", wildcard.serveInstanceJSON)
 
 		// Register user's routes (e.g., /details, /settings)
@@ -331,6 +349,35 @@ func (this *WildcardEntries) Description(desc string) *WildcardEntries {
 	return this
 }
 
+func (this *WildcardEntries) serveHTML(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") != "true" {
+		this.folder.serveHTML(w, r)
+		return
+	}
+	if this.folder.index != nil {
+		this.folder.index.ServeHTTP(w, r)
+		return
+	}
+
+	this.mu.RLock()
+	entries := make([]*RouteEntry, len(this.entries))
+	copy(entries, this.entries)
+	this.mu.RUnlock()
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+
+	writeDefaultIndexHTML(w, FolderIndex{
+		ServiceName: this.folder.serviceName,
+		Title:       this.folder.title,
+		Description: this.folder.description,
+		Path:        this.folder.relPath(),
+		HasIndex:    true,
+		Entries:     entries,
+	})
+}
+
 func (this *WildcardEntries) serveJSON(w http.ResponseWriter, _ *http.Request) {
 	this.mu.RLock()
 	entries := make([]*RouteEntry, len(this.entries))
@@ -347,16 +394,33 @@ func (this *WildcardEntries) serveJSON(w http.ResponseWriter, _ *http.Request) {
 		Title:       this.folder.title,
 		Description: this.folder.description,
 		Path:        this.folder.relPath(),
+		HasIndex:    true,
 		Entries:     entries,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
 }
 
+func (this *WildcardEntries) serveInstanceHTML(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") != "true" {
+		this.folder.serveHTML(w, r)
+		return
+	}
+
+	paramValue := chi.URLParam(r, this.paramName)
+	index := this.instanceIndex(paramValue)
+	writeDefaultIndexHTML(w, index)
+}
+
 // serveInstanceJSON serves the index for a specific instance (e.g., /accounts/acct-123/)
 func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Request) {
 	paramValue := chi.URLParam(r, this.paramName)
+	index := this.instanceIndex(paramValue)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(index)
+}
 
+func (this *WildcardEntries) instanceIndex(paramValue string) FolderIndex {
 	this.mu.RLock()
 	entries := make([]*RouteEntry, len(this.instanceRoutes))
 	copy(entries, this.instanceRoutes)
@@ -378,15 +442,14 @@ func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Re
 
 	// Title is the instance id (e.g. the component name), not the listing
 	// folder's title — otherwise every instance page reads "Components".
-	index := FolderIndex{
+	return FolderIndex{
 		ServiceName: this.folder.serviceName,
 		Title:       paramValue,
 		Description: description,
 		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
+		HasIndex:    true,
 		Entries:     entries,
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(index)
 }
 
 // captureRoutes extracts registered routes from the chi router for the instance index
@@ -735,6 +798,15 @@ func (this *RouteFolder) addEntry(method, path, description string) {
 }
 
 func (this *RouteFolder) serveHTML(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") == "true" {
+		if this.index != nil {
+			this.index.ServeHTTP(w, r)
+			return
+		}
+		writeDefaultIndexHTML(w, this.indexData())
+		return
+	}
+
 	// The index addresses its children (the index.json fetch, entry links,
 	// breadcrumb) with relative URLs, so it must be served from a
 	// trailing-slash path. A mounted folder answers both /folder and /folder/
@@ -764,15 +836,92 @@ func redirectToTrailingSlash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (this *RouteFolder) serveJSON(w http.ResponseWriter, _ *http.Request) {
-	index := FolderIndex{
+	index := this.indexData()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(index)
+}
+
+func (this *RouteFolder) indexData() FolderIndex {
+	return FolderIndex{
 		ServiceName: this.serviceName,
 		Title:       this.title,
 		Description: this.description,
 		Path:        this.relPath(),
+		HasIndex:    true,
 		Entries:     resolveEntries(this.entries),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(index)
+}
+
+func writeDefaultIndexHTML(w http.ResponseWriter, index FolderIndex) {
+	title := index.Title
+	if title == "" {
+		title = "Routes"
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e6edf3;margin:0;padding:16px;background:#161b22}
+h1{font-size:18px;margin:0 0 6px;color:#e6edf3}
+p{color:#8b949e;margin:0 0 16px}
+table{width:100%;border-collapse:collapse;background:#0d1117;border:1px solid #30363d}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #30363d;vertical-align:top}
+th{font-size:12px;color:#8b949e;font-weight:600;background:#161b22}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.method{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#8b949e;white-space:nowrap}
+.desc{color:#8b949e}
+.empty{color:#8b949e;padding:12px 0}
+</style></head><body>`)
+	fmt.Fprintf(w, "<h1>%s</h1>", html.EscapeString(title))
+	if index.Description != "" {
+		fmt.Fprintf(w, "<p>%s</p>", html.EscapeString(index.Description))
+	}
+	if len(index.Entries) == 0 {
+		fmt.Fprint(w, `<div class="empty">No routes registered</div>`)
+		fmt.Fprint(w, `</body></html>`)
+		return
+	}
+	fmt.Fprint(w, `<table><thead><tr><th>Name</th><th>Method</th><th>Description</th></tr></thead><tbody>`)
+	for _, entry := range index.Entries {
+		if !entry.IsFolder && !entry.IsExternal && entry.Method != http.MethodGet {
+			continue
+		}
+
+		name := entry.Name
+		if name == "" {
+			name = entry.Path
+		}
+		method := entry.Method
+		if entry.IsFolder {
+			method = "DIR"
+		} else if entry.IsExternal {
+			method = "LINK"
+		}
+		target := entry.Path
+		if target == "" {
+			target = name
+		}
+
+		var link string
+		switch {
+		case entry.IsFolder:
+			link = fmt.Sprintf(`<a href="%s" target="_parent">%s</a>`, html.EscapeString(target), html.EscapeString(name))
+		case entry.IsExternal:
+			link = fmt.Sprintf(`<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>`, html.EscapeString(target), html.EscapeString(name))
+		default:
+			action := fmt.Sprintf("parent.postMessage({type:'chiutil:select',path:%s,method:%s}, '*'); return false;", jsonString(target), jsonString(entry.Method))
+			link = fmt.Sprintf(`<a href="#" onclick="%s">%s</a>`, html.EscapeString(action), html.EscapeString(name))
+		}
+
+		fmt.Fprintf(w, `<tr><td>%s</td><td class="method">%s</td><td class="desc">%s</td></tr>`,
+			link, html.EscapeString(method), html.EscapeString(entry.Description))
+	}
+	fmt.Fprint(w, `</tbody></table></body></html>`)
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // resolveEntries returns a copy of entries with each sub-folder entry's
