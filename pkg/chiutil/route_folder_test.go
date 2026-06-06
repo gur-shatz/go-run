@@ -124,6 +124,80 @@ var _ = Describe("RouteFolder", func() {
 		Expect(index.Entries[0].Description).To(Equal("Customer accounts"))
 	})
 
+	It("serves an index handler as the default preview without replacing the folder shell", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice")
+		folder.Index(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("overview"))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.HasIndex).To(BeTrue())
+		Expect(index.Entries).To(BeEmpty())
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/?preview=true", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("overview"))
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(ContainSubstring("Select a GET endpoint to view response"))
+	})
+
+	It("serves a default index preview table from the folder index entries", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice").
+			Title("Backoffice").
+			Description("Operational routes")
+		folder.GetDesc("/status", "Status page", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("ok"))
+		})
+		folder.PostFunc(chiutil.PostArgs{
+			Path:        "/flush",
+			Description: "Flush cache",
+			Handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("flushed"))
+			},
+		})
+		folder.Folder("accounts").Description("Customer accounts")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.HasIndex).To(BeTrue())
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/?preview=true", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		body := w.Body.String()
+		Expect(body).To(ContainSubstring("Backoffice"))
+		Expect(body).To(ContainSubstring("Operational routes"))
+		Expect(body).To(ContainSubstring("background:#161b22"))
+		Expect(body).To(ContainSubstring("chiutil:select"))
+		Expect(body).To(ContainSubstring("status"))
+		Expect(body).To(ContainSubstring("Status page"))
+		Expect(body).To(ContainSubstring(`href="accounts/" target="_parent"`))
+		Expect(body).To(ContainSubstring("Customer accounts"))
+		Expect(body).NotTo(ContainSubstring("Flush cache"))
+	})
+
 	It("isolates HTML previews in an iframe", func() {
 		router := chi.NewRouter()
 		chiutil.NewRouteFolder(router, "/backoffice")

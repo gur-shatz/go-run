@@ -117,6 +117,19 @@ func (this *objectsFolder[T]) Description(desc string) *objectsFolder[T] {
 	return this
 }
 
+// Index registers a collection-level page that the HTML index viewer renders
+// when no object is selected.
+func (this *objectsFolder[T]) Index(handler http.HandlerFunc) *objectsFolder[T] {
+	return this.IndexHandler(handler)
+}
+
+// IndexHandler registers a collection-level http.Handler rendered by the HTML
+// index viewer when no object is selected.
+func (this *objectsFolder[T]) IndexHandler(handler http.Handler) *objectsFolder[T] {
+	this.folder.index = handler
+	return this
+}
+
 // FlatJSON adds /{id}.json endpoints that encode items directly and makes
 // list JSON entries point at those flat item documents.
 func (this *objectsFolder[T]) FlatJSON() *objectsFolder[T] {
@@ -182,12 +195,12 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	}
 
 	// Listing endpoints - delegate to mapper.ListItems()
-	listingFolder.router.Get("/", listingFolder.serveHTML)
+	listingFolder.router.Get("/", omf.serveHTML)
 	listingFolder.router.Get("/index.json", omf.serveListJSON)
 
 	// Item routes
 	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
-		r.Get("/", listingFolder.serveHTML)
+		r.Get("/", omf.serveItemHTML)
 		r.Get("/index.json", omf.serveItemJSON)
 
 		// Register each route with automatic item lookup
@@ -218,8 +231,26 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	return omf
 }
 
+func (this *objectsFolder[T]) serveHTML(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") != "true" {
+		this.folder.serveHTML(w, r)
+		return
+	}
+	if this.folder.index != nil {
+		this.folder.index.ServeHTTP(w, r)
+		return
+	}
+	writeDefaultIndexHTML(w, this.listIndex())
+}
+
 // serveListJSON serves the list of items from the mapper.
 func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Request) {
+	index := this.listIndex()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(index)
+}
+
+func (this *objectsFolder[T]) listIndex() FolderIndex {
 	items := this.mapper.ListItems()
 
 	entries := make([]*RouteEntry, 0, len(items))
@@ -249,15 +280,14 @@ func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Reque
 		return entries[i].Name < entries[j].Name
 	})
 
-	index := FolderIndex{
+	return FolderIndex{
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
 		Path:        this.folder.relPath(),
+		HasIndex:    true,
 		Entries:     entries,
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(index)
 }
 
 // serveFlatItemJSON serves the item itself at /{id}.json.
@@ -276,7 +306,22 @@ func (this *objectsFolder[T]) serveFlatItemJSON(w http.ResponseWriter, r *http.R
 // serveItemJSON serves the routes available for a specific item.
 func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Request) {
 	paramValue := chi.URLParam(r, this.paramName)
+	index := this.itemIndex(paramValue)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(index)
+}
 
+func (this *objectsFolder[T]) serveItemHTML(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") != "true" {
+		this.folder.serveHTML(w, r)
+		return
+	}
+
+	paramValue := chi.URLParam(r, this.paramName)
+	writeDefaultIndexHTML(w, this.itemIndex(paramValue))
+}
+
+func (this *objectsFolder[T]) itemIndex(paramValue string) FolderIndex {
 	entries := make([]*RouteEntry, len(this.instanceRoutes))
 	copy(entries, this.instanceRoutes)
 
@@ -287,13 +332,12 @@ func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Reque
 
 	// Title is the item id, not the listing folder's title, so each item page
 	// is labelled with the item rather than reading like the collection.
-	index := FolderIndex{
+	return FolderIndex{
 		ServiceName: this.folder.serviceName,
 		Title:       capitalize(paramValue),
 		Description: this.folder.description,
 		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
+		HasIndex:    true,
 		Entries:     entries,
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(index)
 }

@@ -501,6 +501,7 @@
 
         let currentResponse = '';
         let currentPath = '';
+        let currentRoutePath = '';
 
         function endpointHash(path, method) {
             const params = new URLSearchParams();
@@ -551,14 +552,24 @@
             loadEndpoint(path, method);
         }
 
+        function selectEndpointPath(path, method) {
+            const resolvedPath = resolveBrowserPath(currentRoutePath, path);
+            const entry = findEntry(resolvedPath, method) || findEntry(path, method);
+            if (entry) {
+                selectEndpointEntry(entry, true);
+            }
+        }
+
         function restoreSelectionFromHash() {
             const target = endpointFromHash();
-            if (!target) return;
+            if (!target) return false;
 
             const entry = findEntry(target.path, target.method);
             if (entry && (target.method === 'GET' || target.method === 'POST')) {
                 selectEndpointEntry(entry, false);
+                return true;
             }
+            return false;
         }
 
         function buildBreadcrumb(path) {
@@ -643,7 +654,7 @@
             `;
         }
 
-        async function loadEndpoint(path, method) {
+        async function loadEndpoint(path, method, displayPath) {
             const header = document.getElementById('viewer-header');
             const body = document.getElementById('viewer-body');
             const pathText = document.getElementById('viewer-path-text');
@@ -653,7 +664,7 @@
             const openBtn = document.getElementById('open-btn');
 
             header.style.display = '';
-            pathText.textContent = path;
+            pathText.textContent = displayPath || path;
             methodEl.textContent = method;
             methodEl.className = `method ${method.toLowerCase()}`;
             statusEl.textContent = '';
@@ -760,6 +771,7 @@
             try {
                 const res = await fetch('./index.json');
                 const data = await res.json();
+                currentRoutePath = data.path || '';
 
                 document.getElementById('title').textContent = data.title || 'Routes';
                 document.getElementById('description').textContent = data.description || '';
@@ -779,6 +791,9 @@
                 if (!data.entries || data.entries.length === 0) {
                     entriesEl.innerHTML = '<div class="empty">No routes registered</div>';
                     updateStats(0, 0);
+                    if (data.hasIndex) {
+                        loadEndpoint('.', 'GET', 'index');
+                    }
                     return;
                 }
 
@@ -797,7 +812,10 @@
                 updateStats(sorted.length, sorted.length);
 
                 setupFilter();
-                restoreSelectionFromHash();
+                const restored = restoreSelectionFromHash();
+                if (!restored && data.hasIndex) {
+                    loadEndpoint('.', 'GET', 'index');
+                }
 
             } catch (err) {
                 console.error('Failed to load index:', err);
@@ -884,6 +902,10 @@
 
             window.addEventListener('popstate', restoreSelectionFromHash);
             window.addEventListener('hashchange', restoreSelectionFromHash);
+            window.addEventListener('message', (e) => {
+                if (!e.data || e.data.type !== 'chiutil:select') return;
+                selectEndpointPath(e.data.path, e.data.method || 'GET');
+            });
 
             document.addEventListener('keydown', (e) => {
                 if (e.key === '/' && document.activeElement !== filter) {

@@ -106,6 +106,45 @@ var _ = Describe("ObjectMapper", func() {
 			Expect(index.Entries).To(HaveLen(2))
 			Expect(index.Title).To(Equal("Accounts"))
 		})
+
+		It("serves a collection index handler as the default preview", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", mapper).Index(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("accounts overview"))
+			})
+
+			req := httptest.NewRequest("GET", "/backoffice/accounts/index.json", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var index chiutil.FolderIndex
+			Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+			Expect(index.HasIndex).To(BeTrue())
+
+			req = httptest.NewRequest("GET", "/backoffice/accounts/?preview=true", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("accounts overview"))
+		})
+
+		It("serves a default collection preview table from listed objects", func() {
+			req := httptest.NewRequest("GET", "/backoffice/accounts/?preview=true", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			body := w.Body.String()
+			Expect(body).To(ContainSubstring("Accounts"))
+			Expect(body).To(ContainSubstring(`href="acc-1/"`))
+			Expect(body).To(ContainSubstring("Acme Corp"))
+			Expect(body).To(ContainSubstring(`href="acc-2/"`))
+			Expect(body).To(ContainSubstring("Globex Inc"))
+		})
 	})
 
 	Describe("Item routes", func() {
@@ -131,6 +170,20 @@ var _ = Describe("ObjectMapper", func() {
 			}
 			Expect(detailsEntry).NotTo(BeNil())
 			Expect(detailsEntry.Description).To(Equal("Account details"))
+		})
+
+		It("serves a default item preview table with detail-select links", func() {
+			req := httptest.NewRequest("GET", "/backoffice/accounts/acc-1/?preview=true", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			body := w.Body.String()
+			Expect(body).To(ContainSubstring("Acc-1"))
+			Expect(body).To(ContainSubstring("chiutil:select"))
+			Expect(body).To(ContainSubstring("details"))
+			Expect(body).To(ContainSubstring("Account details"))
+			Expect(body).NotTo(ContainSubstring(`href="details"`))
 		})
 
 		It("should call the item's handler", func() {
