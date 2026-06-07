@@ -325,6 +325,19 @@ func (this *WildcardEntries) Title(title string) *WildcardEntries {
 	return this
 }
 
+// Index registers a folder-level page that the HTML index viewer renders when
+// no entry is selected, mirroring RouteFolder.Index.
+func (this *WildcardEntries) Index(handler http.HandlerFunc) *WildcardEntries {
+	return this.IndexHandler(handler)
+}
+
+// IndexHandler registers a folder-level http.Handler rendered by the HTML
+// index viewer when no entry is selected, mirroring RouteFolder.IndexHandler.
+func (this *WildcardEntries) IndexHandler(handler http.Handler) *WildcardEntries {
+	this.folder.index = handler
+	return this
+}
+
 // MarkInstanceExternal flags the per-instance route entry at the given path as
 // an external link so the index UI renders it as "open in new tab". The route
 // itself must already be registered in the WildcardFolder callback (so it has

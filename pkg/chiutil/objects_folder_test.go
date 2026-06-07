@@ -186,6 +186,23 @@ var _ = Describe("ObjectMapper", func() {
 			Expect(body).NotTo(ContainSubstring(`href="details"`))
 		})
 
+		It("serves a per-object item index handler as the default preview", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			mapper.accounts.Store("acc-1", &TestAccount{ID: "acc-1", Name: "Acme Corp"})
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", mapper).ItemIndex(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte("object page for " + chi.URLParam(r, "id")))
+			})
+
+			req := httptest.NewRequest("GET", "/backoffice/accounts/acc-1/?preview=true", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("object page for acc-1"))
+		})
+
 		It("should call the item's handler", func() {
 			req := httptest.NewRequest("GET", "/backoffice/accounts/acc-1/details", nil)
 			w := httptest.NewRecorder()

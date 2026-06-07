@@ -103,6 +103,7 @@ type objectsFolder[T any] struct {
 	mapper         ObjectMapper[T]
 	instanceRoutes []*RouteEntry
 	flatJSON       bool
+	itemIndexFn    http.Handler
 }
 
 // Title sets the folder title displayed in the index.
@@ -127,6 +128,20 @@ func (this *objectsFolder[T]) Index(handler http.HandlerFunc) *objectsFolder[T] 
 // index viewer when no object is selected.
 func (this *objectsFolder[T]) IndexHandler(handler http.Handler) *objectsFolder[T] {
 	this.folder.index = handler
+	return this
+}
+
+// ItemIndex registers a per-object page that the HTML index viewer renders at
+// /<name>/{id}/ in place of the default route listing. The handler reads the
+// object id from chi.URLParam(r, "id") to render the selected object.
+func (this *objectsFolder[T]) ItemIndex(handler http.HandlerFunc) *objectsFolder[T] {
+	return this.ItemIndexHandler(handler)
+}
+
+// ItemIndexHandler registers a per-object http.Handler rendered by the HTML
+// index viewer at /<name>/{id}/ in place of the default route listing.
+func (this *objectsFolder[T]) ItemIndexHandler(handler http.Handler) *objectsFolder[T] {
+	this.itemIndexFn = handler
 	return this
 }
 
@@ -314,6 +329,11 @@ func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Reque
 func (this *objectsFolder[T]) serveItemHTML(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("preview") != "true" {
 		this.folder.serveHTML(w, r)
+		return
+	}
+
+	if this.itemIndexFn != nil {
+		this.itemIndexFn.ServeHTTP(w, r)
 		return
 	}
 

@@ -18,6 +18,12 @@ supervisor:
 vars:
   GREETING: "Hello from local supervisor snapshot"
 
+remote:
+  base_url: file://./fixture
+  target: required.txt
+  polling_interval: 5s
+  signature_public_key_path: ""
+
 components:
   - name: hello
     description: "Local snapshot hello app"
