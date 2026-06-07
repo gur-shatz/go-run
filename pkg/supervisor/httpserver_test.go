@@ -21,8 +21,13 @@ import (
 
 // stubStateProvider is a minimal stateProvider exposing a single component.
 type stubStateProvider struct {
-	name string
-	port int
+	name         string
+	port         int
+	globalState  string
+	status       string
+	statusReason string
+	updateState  string
+	updateReason string
 }
 
 func (this stubStateProvider) Snapshot() SupervisorSnapshot {
@@ -37,7 +42,19 @@ func (this stubStateProvider) ComponentSnapshot(name string) (ComponentSnapshot,
 }
 
 func (this stubStateProvider) snap() ComponentSnapshot {
-	return ComponentSnapshot{Name: this.name, Status: "pass", GlobalState: "pass", UpdateStatus: "live", Port: this.port}
+	globalState := this.globalState
+	if globalState == "" {
+		globalState = "pass"
+	}
+	updateState := this.updateState
+	if updateState == "" {
+		updateState = "pass"
+	}
+	status := this.status
+	if status == "" {
+		status = "pass"
+	}
+	return ComponentSnapshot{Name: this.name, Status: status, StatusReason: this.statusReason, GlobalState: globalState, UpdateStatus: "live", UpdateState: updateState, UpdateReason: this.updateReason, Port: this.port}
 }
 
 var _ = Describe("backoffice version", func() {

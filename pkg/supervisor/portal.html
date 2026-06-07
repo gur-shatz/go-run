@@ -36,6 +36,25 @@
   .card .statline { display: flex; gap: 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   .card .statline b { color: var(--text); font-weight: 600; }
   .card .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 8px; flex-wrap: wrap; }
+  .statuslines { display: grid; gap: 5px; }
+  .statusline {
+    display: grid; grid-template-columns: 54px auto; align-items: baseline; gap: 8px;
+    color: var(--muted); font-size: 12.5px; line-height: 1.35;
+  }
+  .statusline .label { color: var(--muted); text-transform: uppercase; font-size: 10.5px; letter-spacing: .04em; }
+  .statusline .reason {
+    padding-left: 9px;
+    border-left: 2px solid var(--border);
+  }
+  .statusline.warn .reason { color: var(--warn); border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+  .statusline.fail .reason { color: var(--fail); border-left-color: color-mix(in srgb, var(--fail) 55%, var(--border)); }
+  .statusline.down .reason { color: var(--down); }
+  .mini-badge {
+    display: inline-flex; align-items: center; font-size: 11.5px; padding: 1px 7px;
+    border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .mini-badge.pass { color: var(--pass); } .mini-badge.warn { color: var(--warn); }
+  .mini-badge.fail { color: var(--fail); } .mini-badge.down { color: var(--down); }
 
   /* health stat grid (component page) */
   .stats {
@@ -128,9 +147,21 @@
       <div class="card">
         <div class="row">
           <h2><a href="{{$.RootRel}}components/{{.Name}}/">{{.Name}}</a></h2>
-          <span class="badge {{.GlobalState}}">{{.GlobalState}}</span>
+          <span class="badge {{.DisplayState}}">{{.DisplayState}}</span>
         </div>
         <div class="desc">{{.Description}}</div>
+        <div class="statuslines">
+          <div class="statusline {{.Status}}">
+            <span class="label">Run</span>
+            <span><span class="mini-badge {{.Status}}">{{.Status}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
+          </div>
+          {{if .UpdateState}}
+          <div class="statusline {{.UpdateState}}">
+            <span class="label">Update</span>
+            <span><span class="mini-badge {{.UpdateState}}">{{.UpdateState}}</span>{{if .UpdateReason}} <span class="reason">{{.UpdateReason}}</span>{{end}}</span>
+          </div>
+          {{end}}
+        </div>
         <div class="row">
           <div class="meta">
             {{if .Current}}version {{.Current}}{{else}}no version yet{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
@@ -177,10 +208,22 @@
     <a class="back" href="{{.RootRel}}">&larr; All components</a>
     <div class="chead">
       <h1>{{.Name}}</h1>
-      <span class="badge {{.GlobalState}}">{{.GlobalState}}</span>
+      <span class="badge {{.DisplayState}}">{{.DisplayState}}</span>
       {{if .UpdateStatus}}<span class="chip{{if ne .UpdateStatus "live"}} pinned{{end}}">{{.UpdateStatus}}</span>{{end}}
     </div>
     {{if .Description}}<div class="cmeta">{{.Description}}</div>{{end}}
+    <div class="statuslines">
+      <div class="statusline {{.Status}}">
+        <span class="label">Run</span>
+        <span><span class="mini-badge {{.Status}}">{{.Status}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
+      </div>
+      {{if .UpdateState}}
+      <div class="statusline {{.UpdateState}}">
+        <span class="label">Update</span>
+        <span><span class="mini-badge {{.UpdateState}}">{{.UpdateState}}</span>{{if .UpdateReason}} <span class="reason">{{.UpdateReason}}</span>{{end}}</span>
+      </div>
+      {{end}}
+    </div>
     <div class="cmeta">
       {{if .Current}}current {{.Current}}{{else}}no version yet{{end}}{{if .Stable}} &middot; stable {{.Stable}}{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
     </div>

@@ -1,6 +1,8 @@
 build/logs/
 build/supervisor.lock
 build/hello/hello.bin
+build/hello/versions/
 build/hello/stable.txt
 build/hello/rejects.txt
 build/hello/kill.sock
+fixture/

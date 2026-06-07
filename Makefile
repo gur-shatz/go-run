@@ -25,6 +25,7 @@ test:
 clean:
 	rm -rf bin
 	rm -rf examples/supervisor/state examples/supervisor/fixture examples/supervisor/origin/keys
+	rm -rf examples/supervisor-local/fixture examples/supervisor-local/build/hello/versions
 	rm -rf examples/supervisor-local/build/logs examples/supervisor-local/build/supervisor.lock
 	rm -f examples/supervisor-local/build/hello/hello.bin examples/supervisor-local/build/hello/stable.txt
 	rm -f examples/supervisor-local/build/hello/rejects.txt examples/supervisor-local/build/hello/kill.sock
@@ -68,7 +69,13 @@ example-supervisor-origin:
 	cd examples/supervisor/origin && go run . --addr=127.0.0.1:18080 --component=hello --source=../hello --version=v1 --keys=./keys
 
 example-supervisor-local:
-	cd examples/supervisor/hello && go build -o ../../supervisor-local/build/hello/hello.bin .
+	@mkdir -p examples/supervisor-local/build/hello/versions/rejected-running examples/supervisor-local/fixture/hello/versions
+	@printf '%s\n' 'rejected-running' > examples/supervisor-local/build/hello/current.txt
+	@printf '%s\n%s\n' 'rejected-running' 'rejected-required' > examples/supervisor-local/build/hello/rejects.txt
+	@printf '%s\n' 'rejected-required' > examples/supervisor-local/fixture/hello/versions/required.txt
+	cp examples/supervisor-local/build/hello/manifest.yml examples/supervisor-local/build/hello/versions/rejected-running/manifest.yml
+	cp examples/supervisor-local/build/hello/greeting.txt.tmpl examples/supervisor-local/build/hello/versions/rejected-running/greeting.txt.tmpl
+	cd examples/supervisor/hello && GOTOOLCHAIN=auto go build -o ../../supervisor-local/build/hello/versions/rejected-running/hello.bin .
 	cd examples/supervisor-local && go run -ldflags "$(LDFLAGS)" ../../cmd/supervisor -c supervisor.yml -v
 
 package-supervisor:

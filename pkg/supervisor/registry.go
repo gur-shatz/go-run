@@ -229,6 +229,15 @@ func (this *statekitBundle) lifecycleSnapshot(name string) statekit.Snapshot {
 	return statekit.Snapshot{}
 }
 
+// updateSnapshot returns the updater leaf snapshot, used by Component.Snapshot
+// and the portal to surface rejected/blocked target information.
+func (this *statekitBundle) updateSnapshot(name string) statekit.Snapshot {
+	if cs, ok := this.components[name]; ok {
+		return cs.update.Snapshot()
+	}
+	return statekit.Snapshot{}
+}
+
 // worstStatus returns the favicon-level rollup across every registered state:
 // red for fail/down, yellow for warn, green for pass or no states.
 func (this *statekitBundle) worstStatus() statekit.Status {

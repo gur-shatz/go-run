@@ -100,8 +100,12 @@ type portalComponent struct {
 	// GlobalState (pass/warn/fail/down, from the component's /healthz) is the
 	// primary badge. UpdateStatus (live / pinned to ...) is the second signal.
 	GlobalState  string
+	DisplayState string
 	UpdateStatus string
-	Status       string // statekit lifecycle status (process view), shown as detail
+	UpdateState  string
+	UpdateReason string
+	Status       string // statekit lifecycle status (process view), shown as run detail
+	StatusReason string
 	Current      string
 	Stable       string
 	Port         int
@@ -148,8 +152,12 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		Name:         c.Name,
 		Description:  desc,
 		GlobalState:  c.GlobalState,
+		DisplayState: portalDisplayState(c.GlobalState, c.Status, c.UpdateState),
 		UpdateStatus: c.UpdateStatus,
+		UpdateState:  c.UpdateState,
+		UpdateReason: c.UpdateReason,
 		Status:       c.Status,
+		StatusReason: c.StatusReason,
 		Current:      c.Current,
 		Stable:       c.Stable,
 		Port:         c.Port,
@@ -164,6 +172,39 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		ChildPID:     c.ChildPID,
 		FastCrashes:  c.FastCrashes,
 		ExecFailures: c.ExecFailures,
+	}
+}
+
+// portalDisplayState downgrades the visible component badge when the
+// supervisor knows updates are blocked/degraded. Updater trouble is capped at
+// warn because the update leaf is informational; a bad vendor poll should not
+// hide a child-reported fail/down, and should not turn a healthy child red.
+func portalDisplayState(global, run, update string) string {
+	if global == "" {
+		global = "down"
+	}
+	display := global
+	if run != "" && statusRank(display) < statusRank(run) {
+		display = run
+	}
+	if update != "" && update != "pass" && statusRank(display) < statusRank("warn") {
+		display = "warn"
+	}
+	return display
+}
+
+func statusRank(status string) int {
+	switch status {
+	case "pass":
+		return 0
+	case "warn":
+		return 1
+	case "fail":
+		return 2
+	case "down":
+		return 3
+	default:
+		return 3
 	}
 }
 

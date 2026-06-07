@@ -143,6 +143,36 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring("upgraded"))
 	})
 
+	It("shows run and update states independently on the home card", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		sp := stubStateProvider{
+			name:         "hello",
+			port:         18090,
+			globalState:  "pass",
+			status:       "fail",
+			statusReason: "exec failed: exit status 1",
+			updateState:  "warn",
+			updateReason: "target v3 is rejected; holding current",
+		}
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := get(srv.Client(), srv.URL+"/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring(`badge fail`))
+		Expect(body).To(ContainSubstring(`Run</span>`))
+		Expect(body).To(ContainSubstring(`mini-badge fail`))
+		Expect(body).To(ContainSubstring("exec failed: exit status 1"))
+		Expect(body).To(ContainSubstring(`Update</span>`))
+		Expect(body).To(ContainSubstring(`mini-badge warn`))
+		Expect(body).To(ContainSubstring("target v3 is rejected; holding current"))
+		Expect(sp.snap().GlobalState).To(Equal("pass"))
+	})
+
 	It("notes when no README is configured", func() {
 		srv, client := serve("")
 		defer srv.Close()
@@ -186,6 +216,19 @@ var _ = Describe("portal", func() {
 		Expect(fmtAgo(timeRFC(30))).To(Equal("just now")) // under a minute
 		Expect(fmtAgo(timeRFC(5 * 60))).To(Equal("5m ago"))
 	})
+
+	DescribeTable("portalDisplayState downgrades only",
+		func(global, run, update, want string) {
+			Expect(portalDisplayState(global, run, update)).To(Equal(want))
+		},
+		Entry("healthy app, run, and updater", "pass", "pass", "pass", "pass"),
+		Entry("healthy app and rejected target", "pass", "pass", "warn", "warn"),
+		Entry("failed run downgrades healthy app", "pass", "fail", "pass", "fail"),
+		Entry("warn app stays warn", "warn", "pass", "warn", "warn"),
+		Entry("fail app is not softened", "fail", "pass", "warn", "fail"),
+		Entry("down app is not softened", "down", "pass", "warn", "down"),
+		Entry("update failure is capped at warn", "pass", "pass", "fail", "warn"),
+	)
 })
 
 // timeRFC returns an RFC3339 timestamp secondsAgo in the past.

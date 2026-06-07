@@ -161,9 +161,17 @@ func (this *Component) Snapshot() ComponentSnapshot {
 	// Severity comes from the statekit lifecycle leaf — single source of
 	// truth. "down" when no bundle is wired (test-mode without registry).
 	status := "down"
+	statusReason := ""
+	updateState := ""
+	updateReason := ""
 	var runCount int64
 	if this.bundle != nil {
-		status = this.bundle.lifecycleSnapshot(this.cfg.Name).Status.String()
+		lifecycleSnap := this.bundle.lifecycleSnapshot(this.cfg.Name)
+		status = lifecycleSnap.Status.String()
+		statusReason = lifecycleSnap.Reason
+		updateSnap := this.bundle.updateSnapshot(this.cfg.Name)
+		updateState = updateSnap.Status.String()
+		updateReason = updateSnap.Reason
 		runCount = this.bundle.runCountFor(this.cfg.Name)
 	}
 
@@ -181,7 +189,10 @@ func (this *Component) Snapshot() ComponentSnapshot {
 		Description:   this.cfg.Description,
 		GlobalState:   this.currentGlobalState(),
 		UpdateStatus:  this.updateStatus(),
+		UpdateState:   updateState,
+		UpdateReason:  updateReason,
 		Status:        status,
+		StatusReason:  statusReason,
 		Stable:        stable,
 		Current:       current,
 		ChildPID:      this.pid,

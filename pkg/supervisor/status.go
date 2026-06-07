@@ -27,16 +27,22 @@ type ComponentSnapshot struct {
 	// "live" (auto-updating), "pinned to stable", or "pinned to <version>".
 	UpdateStatus string `json:"update_status,omitempty"`
 
+	// UpdateState/UpdateReason describe the updater leaf: last poll/prepare
+	// result, including cases like "target v3 is rejected; holding current".
+	UpdateState  string `json:"update_state,omitempty"`
+	UpdateReason string `json:"update_reason,omitempty"`
+
 	// Status is the statekit lifecycle status (the supervisor's process view:
 	// running / restarting / halted). Distinct from GlobalState, which is the
 	// component's self-reported health.
-	Status        string      `json:"status"`
-	Port          int         `json:"port,omitempty"`
-	ChildPID      int         `json:"child_pid,omitempty"`
-	UptimeSeconds int64       `json:"uptime_seconds,omitempty"`
-	RunCount      int64       `json:"run_count"`
-	FastCrashes   int         `json:"fast_crashes"`
-	ExecFailures  int         `json:"exec_failures"`
+	Status        string `json:"status"`
+	StatusReason  string `json:"status_reason,omitempty"`
+	Port          int    `json:"port,omitempty"`
+	ChildPID      int    `json:"child_pid,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+	RunCount      int64  `json:"run_count"`
+	FastCrashes   int    `json:"fast_crashes"`
+	ExecFailures  int    `json:"exec_failures"`
 
 	// LastUpgrade is the RFC3339 time the running version last changed, taken
 	// from current.txt's mtime (which is only rewritten on an actual version
