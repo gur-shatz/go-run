@@ -125,4 +125,3 @@ func (this *rotatingFile) rotateLocked() error {
 	this.size = 0
 	return nil
 }
-

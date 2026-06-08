@@ -117,6 +117,17 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Components[0].URLs.Metrics).To(Equal("/metrics"))
 		})
 
+		It("fills only reachability URL defaults on external components", func() {
+			cfg := supervisor.Config{
+				ExternalComponents: []supervisor.ExternalComponentConfig{{Name: "docs", URL: "http://docs.internal:8080"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.ExternalComponents[0].URLs.Healthz).To(Equal("/healthz"))
+			Expect(cfg.ExternalComponents[0].URLs.Readyz).To(Equal("/readyz"))
+			Expect(cfg.ExternalComponents[0].URLs.State).To(BeEmpty())
+			Expect(cfg.ExternalComponents[0].URLs.Metrics).To(BeEmpty())
+		})
+
 		It("preserves explicitly set URL paths", func() {
 			cfg := supervisor.Config{
 				Remote: supervisor.RemoteConfig{BaseURL: "https://x"},
@@ -217,6 +228,31 @@ var _ = Describe("Config", func() {
 			cfg := supervisor.Config{}
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts a config with only external components", func() {
+			cfg := supervisor.Config{
+				ExternalComponents: []supervisor.ExternalComponentConfig{{Name: "docs", URL: "http://docs.internal:8080"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects duplicate names across managed and external components", func() {
+			cfg := supervisor.Config{
+				Components:         []supervisor.ComponentConfig{{Name: "docs", Port: 8080, Command: "/bin/docs"}},
+				ExternalComponents: []supervisor.ExternalComponentConfig{{Name: "docs", URL: "http://docs.internal:8080"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("duplicate name")))
+		})
+
+		It("requires external component URLs to be absolute HTTP URLs", func() {
+			cfg := supervisor.Config{
+				ExternalComponents: []supervisor.ExternalComponentConfig{{Name: "docs", URL: "docs.internal:8080"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("http:// or https://")))
 		})
 
 		It("rejects basic auth enabled without a username or password", func() {

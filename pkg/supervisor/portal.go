@@ -35,15 +35,23 @@ var portalMarkdown = goldmark.New(goldmark.WithExtensions(extension.Table))
 type portal struct {
 	sp            stateProvider
 	controls      controlAPI
-	configs       map[string]ComponentConfig
+	configs       map[string]portalConfig
 	healthEnabled bool // observer role on -> show links to the /health console
 	logger        *log.Logger
 }
 
-func newPortal(sp stateProvider, controls controlAPI, components []ComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
-	m := make(map[string]ComponentConfig, len(components))
+type portalConfig struct {
+	Description string
+	Readme      string
+}
+
+func newPortal(sp stateProvider, controls controlAPI, components []ComponentConfig, external []ExternalComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
+	m := make(map[string]portalConfig, len(components)+len(external))
 	for _, c := range components {
-		m[c.Name] = c
+		m[c.Name] = portalConfig{Description: c.Description, Readme: c.Readme}
+	}
+	for _, c := range external {
+		m[c.Name] = portalConfig{Description: c.Description, Readme: c.Readme}
 	}
 	return &portal{sp: sp, controls: controls, configs: m, healthEnabled: healthEnabled, logger: logger}
 }
@@ -97,6 +105,7 @@ func (this *portal) control(fn func(context.Context, string) error) http.Handler
 type portalComponent struct {
 	Name        string
 	Description string
+	External    bool
 	// GlobalState (pass/warn/fail/down, from the component's /healthz) is the
 	// primary badge. UpdateStatus (live / pinned to ...) is the second signal.
 	GlobalState  string
@@ -151,6 +160,7 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 	return portalComponent{
 		Name:         c.Name,
 		Description:  desc,
+		External:     c.External,
 		GlobalState:  c.GlobalState,
 		DisplayState: portalDisplayState(c.GlobalState, c.Status, c.UpdateState),
 		UpdateStatus: c.UpdateStatus,
@@ -163,9 +173,9 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		Port:         c.Port,
 		HasReadme:    cfg.Readme != "",
 		Running:      c.ChildPID != 0,
-		CanStart:     c.ChildPID == 0,
-		CanStop:      c.ChildPID != 0,
-		CanRestart:   c.Current != "",
+		CanStart:     !c.External && c.ChildPID == 0,
+		CanStop:      !c.External && c.ChildPID != 0,
+		CanRestart:   !c.External && c.Current != "",
 		Uptime:       fmtUptime(c.UptimeSeconds),
 		RunCount:     c.RunCount,
 		LastUpgrade:  fmtAgo(c.LastUpgrade),

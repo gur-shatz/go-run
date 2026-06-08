@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -236,6 +237,25 @@ func (this *statekitBundle) updateSnapshot(name string) statekit.Snapshot {
 		return cs.update.Snapshot()
 	}
 	return statekit.Snapshot{}
+}
+
+func (this *statekitBundle) scrapedLivenessSnapshot(name string) statekit.Snapshot {
+	if this == nil || this.registry == nil {
+		return statekit.Snapshot{}
+	}
+	var fallback statekit.Snapshot
+	for _, s := range this.registry.StateDisplay().States {
+		if s.ScrapedFrom != name {
+			continue
+		}
+		if fallback.Name == "" {
+			fallback = s
+		}
+		if strings.HasSuffix(s.Name, ".responsive") {
+			return s
+		}
+	}
+	return fallback
 }
 
 // worstStatus returns the favicon-level rollup across every registered state:

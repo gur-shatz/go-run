@@ -149,8 +149,15 @@
           <h2><a href="{{$.RootRel}}components/{{.Name}}/">{{.Name}}</a></h2>
           <span class="badge {{.DisplayState}}">{{.DisplayState}}</span>
         </div>
+        {{if .External}}<div><span class="chip pinned">external</span></div>{{end}}
         <div class="desc">{{.Description}}</div>
         <div class="statuslines">
+          {{if .External}}
+          <div class="statusline {{.GlobalState}}">
+            <span class="label">Monitor</span>
+            <span><span class="mini-badge {{.GlobalState}}">{{.GlobalState}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
+          </div>
+          {{else}}
           <div class="statusline {{.Status}}">
             <span class="label">Run</span>
             <span><span class="mini-badge {{.Status}}">{{.Status}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
@@ -161,7 +168,9 @@
             <span><span class="mini-badge {{.UpdateState}}">{{.UpdateState}}</span>{{if .UpdateReason}} <span class="reason">{{.UpdateReason}}</span>{{end}}</span>
           </div>
           {{end}}
+          {{end}}
         </div>
+        {{if not .External}}
         <div class="row">
           <div class="meta">
             {{if .Current}}version {{.Current}}{{else}}no version yet{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
@@ -173,9 +182,11 @@
           <span><b>{{.RunCount}}</b> runs</span>
           <span>upgraded <b>{{.LastUpgrade}}</b></span>
         </div>
+        {{end}}
         <div class="actions">
           <a class="btn primary" href="{{$.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
           <a class="btn" href="{{$.RootRel}}components/{{.Name}}/">Details</a>
+          {{if not .External}}
           <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/start">
             <input type="hidden" name="next" value="/">
             <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
@@ -188,6 +199,7 @@
             <input type="hidden" name="next" value="/">
             <button class="btn" type="submit"{{if not .CanRestart}} disabled{{end}}>Restart</button>
           </form>
+          {{end}}
         </div>
       </div>
       {{end}}
@@ -209,10 +221,17 @@
     <div class="chead">
       <h1>{{.Name}}</h1>
       <span class="badge {{.DisplayState}}">{{.DisplayState}}</span>
+      {{if .External}}<span class="chip pinned">external</span>{{end}}
       {{if .UpdateStatus}}<span class="chip{{if ne .UpdateStatus "live"}} pinned{{end}}">{{.UpdateStatus}}</span>{{end}}
     </div>
     {{if .Description}}<div class="cmeta">{{.Description}}</div>{{end}}
     <div class="statuslines">
+      {{if .External}}
+      <div class="statusline {{.GlobalState}}">
+        <span class="label">Monitor</span>
+        <span><span class="mini-badge {{.GlobalState}}">{{.GlobalState}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
+      </div>
+      {{else}}
       <div class="statusline {{.Status}}">
         <span class="label">Run</span>
         <span><span class="mini-badge {{.Status}}">{{.Status}}</span>{{if .StatusReason}} <span class="reason">{{.StatusReason}}</span>{{end}}</span>
@@ -223,7 +242,9 @@
         <span><span class="mini-badge {{.UpdateState}}">{{.UpdateState}}</span>{{if .UpdateReason}} <span class="reason">{{.UpdateReason}}</span>{{end}}</span>
       </div>
       {{end}}
+      {{end}}
     </div>
+    {{if not .External}}
     <div class="cmeta">
       {{if .Current}}current {{.Current}}{{else}}no version yet{{end}}{{if .Stable}} &middot; stable {{.Stable}}{{end}}{{if .Port}} &middot; port {{.Port}}{{end}}
     </div>
@@ -236,6 +257,7 @@
       <div class="stat"><div class="k">Fast crashes</div><div class="v{{if .FastCrashes}} warn{{end}}">{{.FastCrashes}}</div></div>
       <div class="stat"><div class="k">Exec failures</div><div class="v{{if .ExecFailures}} fail{{end}}">{{.ExecFailures}}</div></div>
     </div>
+    {{end}}
 
     <div class="toolbar">
       <a class="btn primary" href="{{.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
@@ -244,6 +266,7 @@
       {{if .URLs.Metrics}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Metrics}}">Metrics</a>{{end}}
       {{if .HealthEnabled}}<a class="btn" href="{{.RootRel}}health/">Health &amp; events</a>{{end}}
       <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/">Backoffice &rarr;</a>
+      {{if not .External}}
       <form class="inline" method="post" action="{{.RootRel}}components/{{.Name}}/start">
         <input type="hidden" name="next" value="/components/{{.Name}}/">
         <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
@@ -256,6 +279,7 @@
         <input type="hidden" name="next" value="/components/{{.Name}}/">
         <button class="btn" type="submit"{{if not .CanRestart}} disabled{{end}}>Restart</button>
       </form>
+      {{end}}
     </div>
 
     {{if .ReadmeHTML}}

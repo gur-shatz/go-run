@@ -122,4 +122,3 @@ func versionExtracted(dir string) bool {
 	}
 	return len(entries) > 0
 }
-

@@ -14,6 +14,8 @@ package supervisor
 type ComponentSnapshot struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	External    bool   `json:"external,omitempty"`
+	URL         string `json:"url,omitempty"`
 	Stable      string `json:"stable,omitempty"`
 	Current     string `json:"current,omitempty"`
 
@@ -56,10 +58,11 @@ type ComponentSnapshot struct {
 // in status.go so the JSON tags are stable and independent of any config
 // reshuffling.
 type MonitorURLs struct {
-	Healthz string `json:"healthz,omitempty"`
-	Readyz  string `json:"readyz,omitempty"`
-	State   string `json:"state,omitempty"`
-	Metrics string `json:"metrics,omitempty"`
+	Healthz     string `json:"healthz,omitempty"`
+	Readyz      string `json:"readyz,omitempty"`
+	State       string `json:"state,omitempty"`
+	Metrics     string `json:"metrics,omitempty"`
+	Escalations string `json:"escalations,omitempty"`
 }
 
 // SupervisorSnapshot is the top-level shape of /state.
