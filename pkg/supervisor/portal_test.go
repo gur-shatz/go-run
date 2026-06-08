@@ -42,7 +42,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		cfgs := []ComponentConfig{{Name: "hello", Description: "A simple HTTP server", Port: 18090, Readme: readme}}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, &recordingControls{}, NewPaths(dir), bundle, cfgs, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, &recordingControls{}, NewPaths(dir), bundle, cfgs, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -75,7 +75,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		controls := &recordingControls{}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, controls, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, controls, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -93,6 +93,29 @@ var _ = Describe("portal", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
 		Expect(resp.Header.Get("Location")).To(Equal("/"))
 		Expect(controls.actions).To(ContainElement("stop:hello"))
+	})
+
+	It("renders external components without lifecycle controls", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0",
+			stubStateProvider{name: "docs", external: true, url: "http://docs.internal:8080", globalState: "pass", status: "pass", statusReason: "ok"},
+			nil, &recordingControls{}, NewPaths(dir), bundle, nil,
+			[]ExternalComponentConfig{{Name: "docs", Description: "Docs service", URL: "http://docs.internal:8080"}},
+			nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := get(srv.Client(), srv.URL+"/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("Docs service"))
+		Expect(body).To(ContainSubstring("external"))
+		Expect(body).To(ContainSubstring(`href="proxy/docs/"`))
+		Expect(body).NotTo(ContainSubstring(`action="components/docs/start"`))
+		Expect(body).NotTo(ContainSubstring(`action="components/docs/stop"`))
+		Expect(body).NotTo(ContainSubstring(`action="components/docs/restart"`))
 	})
 
 	It("renders the README as HTML on the component page", func() {
@@ -157,7 +180,7 @@ var _ = Describe("portal", func() {
 			updateState:  "warn",
 			updateReason: "target v3 is rejected; holding current",
 		}
-		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 

@@ -34,3 +34,13 @@ components:
       readyz: /readyz
       state: /state
       metrics: /metrics
+
+external_components:
+  - name: external-hello
+    description: "Hello app started outside supervisor"
+    url: http://127.0.0.1:18092
+    urls:
+      healthz: /healthz
+      readyz: /readyz
+      state: /state
+      metrics: /metrics

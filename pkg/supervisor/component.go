@@ -203,10 +203,11 @@ func (this *Component) Snapshot() ComponentSnapshot {
 		LastUpgrade:   lastUpgrade,
 		Port:          this.cfg.Port,
 		MonitorURLs: MonitorURLs{
-			Healthz: this.cfg.URLs.Healthz,
-			Readyz:  this.cfg.URLs.Readyz,
-			State:   this.cfg.URLs.State,
-			Metrics: this.cfg.URLs.Metrics,
+			Healthz:     this.cfg.URLs.Healthz,
+			Readyz:      this.cfg.URLs.Readyz,
+			State:       this.cfg.URLs.State,
+			Metrics:     this.cfg.URLs.Metrics,
+			Escalations: this.cfg.URLs.Escalations,
 		},
 	}
 }

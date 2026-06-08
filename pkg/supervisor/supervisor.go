@@ -150,7 +150,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, cfg.Supervisor.Favicon, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, cfg.ExternalComponents, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, cfg.Supervisor.Favicon, logger)
 
 	return this, nil
 }
@@ -188,6 +188,9 @@ func (this *Supervisor) Snapshot() SupervisorSnapshot {
 	for _, c := range this.components {
 		snap.Components = append(snap.Components, c.Snapshot())
 	}
+	for _, c := range this.cfg.ExternalComponents {
+		snap.Components = append(snap.Components, this.externalSnapshot(c))
+	}
 	sort.Slice(snap.Components, func(i, j int) bool { return snap.Components[i].Name < snap.Components[j].Name })
 	return snap
 }
@@ -199,7 +202,37 @@ func (this *Supervisor) ComponentSnapshot(name string) (ComponentSnapshot, bool)
 			return c.Snapshot(), true
 		}
 	}
+	for _, c := range this.cfg.ExternalComponents {
+		if c.Name == name {
+			return this.externalSnapshot(c), true
+		}
+	}
 	return ComponentSnapshot{}, false
+}
+
+func (this *Supervisor) externalSnapshot(c ExternalComponentConfig) ComponentSnapshot {
+	status := "down"
+	reason := "waiting for first scrape"
+	if snap := this.bundle.scrapedLivenessSnapshot(c.Name); snap.Name != "" {
+		status = snap.Status.String()
+		reason = snap.Reason
+	}
+	return ComponentSnapshot{
+		Name:         c.Name,
+		Description:  c.Description,
+		External:     true,
+		URL:          c.URL,
+		GlobalState:  status,
+		Status:       status,
+		StatusReason: reason,
+		MonitorURLs: MonitorURLs{
+			Healthz:     c.URLs.Healthz,
+			Readyz:      c.URLs.Readyz,
+			State:       c.URLs.State,
+			Metrics:     c.URLs.Metrics,
+			Escalations: c.URLs.Escalations,
+		},
+	}
 }
 
 // RejectVersion appends version to the named component's rejects.txt. The

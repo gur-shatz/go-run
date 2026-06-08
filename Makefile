@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -69,14 +69,10 @@ example-supervisor-origin:
 	cd examples/supervisor/origin && go run . --addr=127.0.0.1:18080 --component=hello --source=../hello --version=v1 --keys=./keys
 
 example-supervisor-local:
-	@mkdir -p examples/supervisor-local/build/hello/versions/rejected-running examples/supervisor-local/fixture/hello/versions
-	@printf '%s\n' 'rejected-running' > examples/supervisor-local/build/hello/current.txt
-	@printf '%s\n%s\n' 'rejected-running' 'rejected-required' > examples/supervisor-local/build/hello/rejects.txt
-	@printf '%s\n' 'rejected-required' > examples/supervisor-local/fixture/hello/versions/required.txt
-	cp examples/supervisor-local/build/hello/manifest.yml examples/supervisor-local/build/hello/versions/rejected-running/manifest.yml
-	cp examples/supervisor-local/build/hello/greeting.txt.tmpl examples/supervisor-local/build/hello/versions/rejected-running/greeting.txt.tmpl
-	cd examples/supervisor/hello && GOTOOLCHAIN=auto go build -o ../../supervisor-local/build/hello/versions/rejected-running/hello.bin .
-	cd examples/supervisor-local && go run -ldflags "$(LDFLAGS)" ../../cmd/supervisor -c supervisor.yml -v
+	LDFLAGS="$(LDFLAGS)" examples/supervisor-local/run-with-external.sh
+
+example-supervisor-local-external:
+	LDFLAGS="$(LDFLAGS)" examples/supervisor-local/run-with-external.sh
 
 package-supervisor:
 	./deploy/supervisor/package.sh

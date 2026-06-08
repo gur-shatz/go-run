@@ -53,6 +53,8 @@ type httpServer struct {
 // grep-able overview of each component.
 type componentSummaryEntry struct {
 	Name          string `yaml:"name"`
+	External      bool   `yaml:"external,omitempty"`
+	URL           string `yaml:"url,omitempty"`
 	Status        string `yaml:"status"`
 	Current       string `yaml:"current,omitempty"`
 	Stable        string `yaml:"stable,omitempty"`
@@ -84,7 +86,7 @@ type supervisorEnv struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, externalCfgs []ExternalComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -107,7 +109,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
-	newPortal(sp, ca, componentCfgs, obs != nil, logger).mount(router)
+	newPortal(sp, ca, componentCfgs, externalCfgs, obs != nil, logger).mount(router)
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)
@@ -198,6 +200,10 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 		if ra != nil {
 			r.Post("/reject", func(w http.ResponseWriter, r *http.Request) {
 				name := chi.URLParam(r, "name")
+				if snap, ok := sp.ComponentSnapshot(name); ok && snap.External {
+					http.Error(w, "external component cannot be rejected", http.StatusBadRequest)
+					return
+				}
 				version := r.URL.Query().Get("version")
 				if version == "" {
 					http.Error(w, "missing ?version=", http.StatusBadRequest)
@@ -213,12 +219,24 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 
 		if ca != nil {
 			r.Post("/start", func(w http.ResponseWriter, r *http.Request) {
+				if snap, ok := sp.ComponentSnapshot(chi.URLParam(r, "name")); ok && snap.External {
+					http.Error(w, "external component cannot be started", http.StatusBadRequest)
+					return
+				}
 				controlComponent(w, r, chi.URLParam(r, "name"), ca.StartComponent)
 			})
 			r.Post("/stop", func(w http.ResponseWriter, r *http.Request) {
+				if snap, ok := sp.ComponentSnapshot(chi.URLParam(r, "name")); ok && snap.External {
+					http.Error(w, "external component cannot be stopped", http.StatusBadRequest)
+					return
+				}
 				controlComponent(w, r, chi.URLParam(r, "name"), ca.StopComponent)
 			})
 			r.Post("/restart", func(w http.ResponseWriter, r *http.Request) {
+				if snap, ok := sp.ComponentSnapshot(chi.URLParam(r, "name")); ok && snap.External {
+					http.Error(w, "external component cannot be restarted", http.StatusBadRequest)
+					return
+				}
 				controlComponent(w, r, chi.URLParam(r, "name"), ca.RestartComponent)
 			})
 		}
@@ -264,6 +282,9 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 			desc = c.Description
 		}
 		components.Add(c.Name, desc)
+		if c.External {
+			continue
+		}
 
 		fsRoot := paths.LogsForComponent(c.Name)
 		_ = os.MkdirAll(fsRoot, 0o755)
@@ -323,12 +344,25 @@ func mountComponentProxy(router chi.Router, sp stateProvider, logger *log.Logger
 			http.Error(w, "no such component: "+name, http.StatusNotFound)
 			return
 		}
-		if snap.Port <= 0 {
+		var target *url.URL
+		if snap.External {
+			if snap.URL == "" {
+				http.Error(w, "external component "+name+" has no url", http.StatusServiceUnavailable)
+				return
+			}
+			var err error
+			target, err = url.Parse(snap.URL)
+			if err != nil || target.Scheme == "" || target.Host == "" {
+				http.Error(w, "external component "+name+" has invalid url", http.StatusServiceUnavailable)
+				return
+			}
+		} else if snap.Port <= 0 {
 			http.Error(w, "component "+name+" has no port", http.StatusServiceUnavailable)
 			return
+		} else {
+			target = &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", snap.Port)}
 		}
 
-		target := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", snap.Port)}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 			logger.Warn("proxy %s -> %s failed: %v", name, target.Host, err)
@@ -393,6 +427,8 @@ func buildSummary(snap SupervisorSnapshot) supervisorSummary {
 	for _, c := range snap.Components {
 		out.Components = append(out.Components, componentSummaryEntry{
 			Name:          c.Name,
+			External:      c.External,
+			URL:           c.URL,
 			Status:        c.Status,
 			Current:       c.Current,
 			Stable:        c.Stable,

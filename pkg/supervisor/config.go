@@ -3,6 +3,7 @@ package supervisor
 import (
 	_ "embed"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -78,6 +79,10 @@ type Config struct {
 	StateMonitor StateMonitorConfig `yaml:"statemonitor,omitempty"`
 
 	Components []ComponentConfig `yaml:"components"`
+
+	// ExternalComponents are workloads the supervisor does not launch or
+	// update, but still exposes in the portal, proxies to, and scrapes.
+	ExternalComponents []ExternalComponentConfig `yaml:"external_components,omitempty"`
 }
 
 // StateMonitorConfig groups the two component-monitoring sub-roles.
@@ -211,6 +216,20 @@ type ComponentConfig struct {
 	Remote RemoteConfig `yaml:"remote,omitempty"`
 }
 
+// ExternalComponentConfig describes a component owned by another process or
+// system. The supervisor does not start/stop/restart it, but proxies and
+// scrapes it using URL and URLs.
+type ExternalComponentConfig struct {
+	Name        string     `yaml:"name"`
+	Description string     `yaml:"description,omitempty"`
+	URL         string     `yaml:"url"`
+	URLs        URLsConfig `yaml:"urls,omitempty"`
+
+	// Readme is shown on the component portal page, same as managed
+	// components. Relative paths resolve against supervisor.yml.
+	Readme string `yaml:"readme,omitempty"`
+}
+
 // URLsConfig describes the path layout the supervisor expects each component
 // to serve on its configured port. Empty fields fall back to defaults.
 type URLsConfig struct {
@@ -268,6 +287,9 @@ func LoadConfig(path string) (*Config, error) {
 	for i := range cfg.Components {
 		cfg.Components[i].Remote.BaseURL = resolveFileURL(cfg.Components[i].Remote.BaseURL, absConfigDir)
 		cfg.Components[i].Readme = resolveLocalPath(cfg.Components[i].Readme, absConfigDir)
+	}
+	for i := range cfg.ExternalComponents {
+		cfg.ExternalComponents[i].Readme = resolveLocalPath(cfg.ExternalComponents[i].Readme, absConfigDir)
 	}
 
 	cfg.ApplyDefaults()
@@ -390,6 +412,9 @@ func (this *Config) ApplyDefaults() {
 		}
 		this.Components[i].URLs = applyURLDefaults(this.Components[i].URLs)
 	}
+	for i := range this.ExternalComponents {
+		this.ExternalComponents[i].URLs = applyExternalURLDefaults(this.ExternalComponents[i].URLs)
+	}
 }
 
 // applyURLDefaults fills in any unset URL paths with the conventional values.
@@ -412,6 +437,19 @@ func applyURLDefaults(u URLsConfig) URLsConfig {
 	return u
 }
 
+// applyExternalURLDefaults fills only reachability defaults. State, metrics,
+// and escalations are opt-in for external components because many external
+// apps will not expose statekit/Prometheus endpoints.
+func applyExternalURLDefaults(u URLsConfig) URLsConfig {
+	if u.Healthz == "" {
+		u.Healthz = "/healthz"
+	}
+	if u.Readyz == "" {
+		u.Readyz = "/readyz"
+	}
+	return u
+}
+
 // Validate checks that the resolved config is internally consistent.
 func (this *Config) Validate() error {
 	if name := strings.TrimSpace(this.Supervisor.Favicon.Name); len([]rune(name)) > 2 {
@@ -422,7 +460,7 @@ func (this *Config) Validate() error {
 			return fmt.Errorf("supervisor.basic_auth: username and password are required when enabled")
 		}
 	}
-	if len(this.Components) == 0 {
+	if len(this.Components) == 0 && len(this.ExternalComponents) == 0 {
 		return nil
 	}
 	seen := make(map[string]bool, len(this.Components))
@@ -448,6 +486,35 @@ func (this *Config) Validate() error {
 			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
 		}
 		portSeen[c.Port] = c.Name
+	}
+	for i, c := range this.ExternalComponents {
+		if c.Name == "" {
+			return fmt.Errorf("external_components[%d]: name is required", i)
+		}
+		if seen[c.Name] {
+			return fmt.Errorf("external_components[%d]: duplicate name %q", i, c.Name)
+		}
+		seen[c.Name] = true
+		if c.URL == "" {
+			return fmt.Errorf("external_components[%q]: url is required", c.Name)
+		}
+		if err := validateHTTPBaseURL(c.URL); err != nil {
+			return fmt.Errorf("external_components[%q]: url: %w", c.Name, err)
+		}
+	}
+	return nil
+}
+
+func validateHTTPBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("must use http:// or https://")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("host is required")
 	}
 	return nil
 }

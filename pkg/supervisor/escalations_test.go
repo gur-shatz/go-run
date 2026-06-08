@@ -83,7 +83,7 @@ var _ = Describe("supervisor incidents", func() {
 		bundle := newStatekitBundle(cfg)
 		bundle.incidentDeploy("hello", "v1", "v2")
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18091}, nil, nil,
-			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+			NewPaths(cfg.StateDir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
