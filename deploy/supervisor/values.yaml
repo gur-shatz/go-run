@@ -12,13 +12,15 @@ ports:
   backoffice: 9090
   public: 18090
 
+# Domains and CIDRs are injected at package time by deploy/supervisor/package.sh
+# from the required BACKOFFICE_DOMAIN, PUBLIC_DOMAIN, and ALLOWED_CIDR env vars.
 domains:
-  backoffice: supervisor.203.0.113.10.nip.io
-  public: hello.203.0.113.10.nip.io
+  backoffice: __BACKOFFICE_DOMAIN__
+  public: __PUBLIC_DOMAIN__
 
 access:
   allowedCIDRs:
-    - 198.51.100.10/32
+    - __ALLOWED_CIDR__
 
 resources:
   requests:

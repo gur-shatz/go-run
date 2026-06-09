@@ -9,11 +9,14 @@
 #   - global/origin/hello/...           hello component update tree
 #   - manifest.json                     bundle metadata
 #
-# Env overrides:
+# Required env (no defaults; must be provided):
+#   BACKOFFICE_DOMAIN=supervisor.<server-ip>.nip.io
+#   PUBLIC_DOMAIN=hello.<server-ip>.nip.io
+#   ALLOWED_CIDR=<operator-ip>/32
+#
+# Optional env overrides:
 #   PLATFORM=linux/arm64
 #   IMAGE_TAG=<tag>
-#   BACKOFFICE_DOMAIN=supervisor.203.0.113.10.nip.io
-#   PUBLIC_DOMAIN=hello.203.0.113.10.nip.io
 #   HELLO_VERSION=v1
 
 set -euo pipefail
@@ -23,8 +26,9 @@ DEPLOY_DIR="$PROJECT_ROOT/deploy/supervisor"
 BUILD_DIR="$PROJECT_ROOT/build"
 PLATFORM="${PLATFORM:-linux/arm64}"
 IMAGE_REPO="localhost/supervisor"
-BACKOFFICE_DOMAIN="${BACKOFFICE_DOMAIN:-supervisor.203.0.113.10.nip.io}"
-PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-hello.203.0.113.10.nip.io}"
+BACKOFFICE_DOMAIN="${BACKOFFICE_DOMAIN:?set BACKOFFICE_DOMAIN, e.g. supervisor.<server-ip>.nip.io}"
+PUBLIC_DOMAIN="${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN, e.g. hello.<server-ip>.nip.io}"
+ALLOWED_CIDR="${ALLOWED_CIDR:?set ALLOWED_CIDR, e.g. <operator-ip>/32}"
 HELLO_VERSION="${HELLO_VERSION:-v1}"
 
 case "$PLATFORM" in
@@ -89,8 +93,9 @@ echo "==> stage chart, values, and global config"
 cp -R "$DEPLOY_DIR/chart/." "$STAGE_DIR/chart/"
 sed \
   -e "s|tag: dev|tag: $TAG|g" \
-  -e "s|backoffice: supervisor.203.0.113.10.nip.io|backoffice: $BACKOFFICE_DOMAIN|g" \
-  -e "s|public: hello.203.0.113.10.nip.io|public: $PUBLIC_DOMAIN|g" \
+  -e "s|__BACKOFFICE_DOMAIN__|$BACKOFFICE_DOMAIN|g" \
+  -e "s|__PUBLIC_DOMAIN__|$PUBLIC_DOMAIN|g" \
+  -e "s|__ALLOWED_CIDR__|$ALLOWED_CIDR|g" \
   "$DEPLOY_DIR/values.yaml" > "$STAGE_DIR/values.yaml"
 cp "$DEPLOY_DIR/config.yml" "$STAGE_DIR/global/supervisor/config.yml"
 
