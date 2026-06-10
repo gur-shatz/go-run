@@ -59,10 +59,18 @@ func (this *authGate) mint(now time.Time) string {
 // middleware gates every route. /login and /logout stay open; any other path
 // without a valid session cookie is bounced to the login form with a ?next=
 // pointer back to where the request was headed.
+//
+// Health probes are also exempt: liveness/readiness probes (e.g. a kubelet
+// hitting /backoffice/healthz) carry no session cookie or credentials, so
+// gating them would make the orchestrator kill the pod in a crash loop. The
+// health endpoints expose no sensitive data, so leaving them open is safe and
+// is what every other gated deployment expects.
 func (this *authGate) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/login", "/logout", "/favicon.ico":
+		case "/login", "/logout", "/favicon.ico",
+			backofficePrefix + "/healthz", backofficePrefix + "/readyz",
+			"/healthz", "/readyz":
 			next.ServeHTTP(w, r)
 			return
 		}

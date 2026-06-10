@@ -304,6 +304,21 @@ var _ = Describe("favicon", func() {
 		defer resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 	})
+
+	// Health probes must stay reachable with the auth gate on: a kubelet
+	// liveness/readiness probe carries no session cookie or credentials, so a
+	// gated healthz returns 401/303 and the orchestrator crash-loops the pod.
+	It("serves /backoffice/healthz without auth when basic auth is enabled", func() {
+		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret"}
+		srv, client := newFaviconServer("pass", auth)
+		defer srv.Close()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+		resp, err := client.Get(srv.URL + "/backoffice/healthz")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+	})
 })
 
 var _ = Describe("component proxy", func() {
@@ -524,14 +539,17 @@ var _ = Describe("login gate", func() {
 		Expect(code).To(Equal(http.StatusOK))
 	})
 
-	It("gates the healthz probe too", func() {
+	It("exempts the healthz probe from the gate", func() {
+		// Health probes must stay open even with the gate on: a kubelet probe
+		// carries no cookie/credentials, so gating healthz would crash-loop the
+		// pod. healthz exposes nothing sensitive, so it is safe to leave open.
 		srv := newAuthedServer()
 		defer srv.Close()
 
 		resp, err := noRedirect(srv).Get(srv.URL + "/backoffice/healthz")
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
-		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 	})
 
 	It("rejects a cookie whose timestamp is too old", func() {
