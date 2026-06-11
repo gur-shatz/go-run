@@ -147,6 +147,30 @@ var _ = Describe("backoffice env", func() {
 })
 
 var _ = Describe("current_version_logs", func() {
+	It("serves supervisor process run logs from the logs tree", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		paths := NewPaths(dir)
+
+		runLogs := paths.SupervisorRunLogs("20260611-120000Z-pid42")
+		Expect(os.MkdirAll(runLogs, 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(runLogs, "stdout.log"), []byte("started\n"), 0o644)).To(Succeed())
+
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/logs/_supervisor/20260611-120000Z-pid42/stdout.log")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(Equal("started\n"))
+	})
+
 	It("redirects to the live version's log dir with a proxy-safe relative Location", func() {
 		dir := GinkgoT().TempDir()
 		cfg := Config{StateDir: dir}

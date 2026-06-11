@@ -275,8 +275,13 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 	// directory is pre-created so the index UI doesn't 404 before the
 	// child has launched for the first time.
 	logsRoot := bo.Folder("logs").
-		Title("Component logs").
-		Description("Per-component stdout / stderr + child-written application logs, browseable as static files.")
+		Title("Logs").
+		Description("Supervisor process logs and per-component stdout / stderr + child-written application logs.")
+	supervisorLogs := paths.SupervisorLogs()
+	_ = os.MkdirAll(supervisorLogs, 0o755)
+	logsRoot.StaticFilesFolder("_supervisor", supervisorLogs).
+		Title("Supervisor process logs").
+		Description("state_dir/logs/_supervisor/")
 	for _, c := range sp.Snapshot().Components {
 		desc := "Component " + c.Name
 		if c.Description != "" {

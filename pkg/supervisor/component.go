@@ -834,10 +834,11 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = versionDir
-	// MultiWriter: kubectl-logs-style supervisor stdout AND the per-version
-	// on-disk copy. Both stay populated for the lifetime of the child.
-	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stdout), stdoutLog)
-	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, os.Stderr), stderrLog)
+	// MultiWriter: kubectl-logs-style process output AND the per-version
+	// on-disk copy. The process output uses the original stdout/stderr, so
+	// component output does not pollute the supervisor's own process log.
+	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStdout()), stdoutLog)
+	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStderr()), stderrLog)
 	cmd.Env, err = this.buildEnv(vars)
 	if err != nil {
 		_ = stdoutLog.Close()

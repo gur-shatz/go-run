@@ -46,6 +46,18 @@ func (this Paths) LogsForVersion(name, version string) string {
 	return filepath.Join(this.LogsRoot(), name, version)
 }
 
+// SupervisorLogs returns the directory containing one subdirectory per
+// supervisor process run.
+func (this Paths) SupervisorLogs() string {
+	return filepath.Join(this.LogsRoot(), "_supervisor")
+}
+
+// SupervisorRunLogs returns the stdout/stderr log directory for one
+// supervisor process run.
+func (this Paths) SupervisorRunLogs(runID string) string {
+	return filepath.Join(this.SupervisorLogs(), runID)
+}
+
 // Component returns paths scoped to a single component.
 func (this Paths) Component(name string) ComponentPaths {
 	return ComponentPaths{Root: filepath.Join(this.StateDir, name)}

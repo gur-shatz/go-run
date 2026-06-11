@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/gur-shatz/go-run/internal/buildinfo"
@@ -25,7 +27,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (err error) {
 	fs := flag.NewFlagSet("supervisor", flag.ContinueOnError)
 
 	configPath := fs.String("config", "/etc/go-run/config.yml", "path to supervisor config file")
@@ -75,6 +77,30 @@ func run() error {
 		return fmt.Errorf("create state_dir %s: %w", cfg.StateDir, err)
 	}
 
+	processLog, err := supervisor.StartProcessLog(supervisor.NewPaths(cfg.StateDir))
+	if err != nil {
+		return err
+	}
+	var shutdownSignal atomic.Value
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Error("panic: %v", recovered)
+			_, _ = os.Stderr.Write(debug.Stack())
+			_ = processLog.Mark("panic", fmt.Sprintf("%v", recovered))
+			panic(recovered)
+		}
+		if err != nil {
+			_ = processLog.Mark("error", err.Error())
+			return
+		}
+		if sig, _ := shutdownSignal.Load().(string); sig != "" {
+			_ = processLog.Mark("signal", sig)
+			return
+		}
+		_ = processLog.Mark("exited", "")
+	}()
+	log.Status("process logs: %s", processLog.Dir)
+
 	lock, err := supervisor.AcquireLock(supervisor.NewPaths(cfg.StateDir).SupervisorLock())
 	if err != nil {
 		return err
@@ -100,9 +126,10 @@ func run() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
+		sig := <-sigCh
+		shutdownSignal.Store(sig.String())
 		fmt.Println()
-		log.Status("Shutting down...")
+		log.Status("Shutting down after %s...", sig)
 		cancel()
 	}()
 
