@@ -209,6 +209,7 @@ func (this *Component) Snapshot() ComponentSnapshot {
 			Metrics:     this.cfg.URLs.Metrics,
 			Escalations: this.cfg.URLs.Escalations,
 		},
+		ProxyURLs: this.cfg.ProxyURLs,
 	}
 }
 

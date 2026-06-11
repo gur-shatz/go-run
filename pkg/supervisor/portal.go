@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,6 +120,7 @@ type portalComponent struct {
 	Stable       string
 	Port         int
 	HasReadme    bool
+	ProxyLinks   []portalProxyLink
 
 	// Health detail, pre-formatted for display.
 	Running      bool
@@ -131,6 +133,10 @@ type portalComponent struct {
 	ChildPID     int
 	FastCrashes  int
 	ExecFailures int
+}
+
+type portalProxyLink struct {
+	Key string
 }
 
 type portalHomeView struct {
@@ -172,6 +178,7 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		Stable:       c.Stable,
 		Port:         c.Port,
 		HasReadme:    cfg.Readme != "",
+		ProxyLinks:   portalProxyLinks(c.ProxyURLs),
 		Running:      c.ChildPID != 0,
 		CanStart:     !c.External && c.ChildPID == 0,
 		CanStop:      !c.External && c.ChildPID != 0,
@@ -183,6 +190,15 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		FastCrashes:  c.FastCrashes,
 		ExecFailures: c.ExecFailures,
 	}
+}
+
+func portalProxyLinks(proxyURLs map[string]string) []portalProxyLink {
+	links := make([]portalProxyLink, 0, len(proxyURLs))
+	for key := range proxyURLs {
+		links = append(links, portalProxyLink{Key: key})
+	}
+	sort.Slice(links, func(i, j int) bool { return links[i].Key < links[j].Key })
+	return links
 }
 
 // portalDisplayState downgrades the visible component badge when the

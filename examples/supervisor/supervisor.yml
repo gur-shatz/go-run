@@ -91,3 +91,8 @@ components:
       readyz: /readyz
       state: /state
       metrics: /metrics
+    # Named links/proxies shown in the portal and served under
+    # /proxyurls/hello/<key>/...
+    proxy_urls:
+      greet: /greet
+      health-on-port: :18090/healthz

@@ -69,6 +69,25 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring(`<meta http-equiv="refresh" content="20">`))
 	})
 
+	It("renders proxy_url links on cards and component pages", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		sp := stubStateProvider{name: "hello", port: 18090, proxyURLs: map[string]string{"admin": ":18091/admin"}}
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := get(srv.Client(), srv.URL+"/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring(`href="proxyurls/hello/admin/"`))
+
+		code, body = get(srv.Client(), srv.URL+"/components/hello/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring(`href="../../proxyurls/hello/admin/"`))
+	})
+
 	It("renders component lifecycle controls and posts them through the portal", func() {
 		dir := GinkgoT().TempDir()
 		cfg := Config{StateDir: dir}

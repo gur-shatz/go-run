@@ -113,6 +113,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)
+	mountProxyURLs(router, sp, logger)
 
 	// /health: optional health-aggregation console (statekit storage).
 	if obs != nil {
@@ -385,6 +386,101 @@ func mountComponentProxy(router chi.Router, sp stateProvider, logger *log.Logger
 		w.Header().Set("Location", chi.URLParam(r, "name")+"/")
 		w.WriteHeader(http.StatusMovedPermanently)
 	})
+}
+
+func mountProxyURLs(router chi.Router, sp stateProvider, logger *log.Logger) {
+	forward := func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		key := chi.URLParam(r, "key")
+		snap, ok := sp.ComponentSnapshot(name)
+		if !ok {
+			http.Error(w, "no such component: "+name, http.StatusNotFound)
+			return
+		}
+		spec, ok := snap.ProxyURLs[key]
+		if !ok {
+			http.Error(w, "no such proxy url: "+name+"/"+key, http.StatusNotFound)
+			return
+		}
+		baseURL, err := componentProxyBaseURL(snap)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		endpoint, err := resolveEndpoint(baseURL, spec)
+		if err != nil {
+			http.Error(w, "invalid proxy url "+name+"/"+key+": "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		target, err := url.Parse(endpoint.BaseURL)
+		if err != nil {
+			http.Error(w, "invalid proxy url "+name+"/"+key+": "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+			logger.Warn("proxyurl %s/%s -> %s failed: %v", name, key, target.Host, err)
+			http.Error(w, "proxy url "+name+"/"+key+" unreachable: "+err.Error(), http.StatusBadGateway)
+		}
+
+		path, rawQuery := proxyURLRequestURI(endpoint.Path, chi.URLParam(r, "*"), r.URL.RawQuery)
+		r.URL.Path = path
+		r.URL.RawPath = ""
+		r.URL.RawQuery = rawQuery
+		r.Header.Set("X-Forwarded-Prefix", "/proxyurls/"+name+"/"+key)
+		proxy.ServeHTTP(w, r)
+	}
+
+	router.Handle("/proxyurls/{name}/{key}/*", http.HandlerFunc(forward))
+	router.Get("/proxyurls/{name}/{key}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", chi.URLParam(r, "key")+"/")
+		w.WriteHeader(http.StatusMovedPermanently)
+	})
+}
+
+func componentProxyBaseURL(snap ComponentSnapshot) (string, error) {
+	if snap.External {
+		if snap.URL == "" {
+			return "", fmt.Errorf("external component %s has no url", snap.Name)
+		}
+		u, err := url.Parse(snap.URL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return "", fmt.Errorf("external component %s has invalid url", snap.Name)
+		}
+		return u.Scheme + "://" + u.Host, nil
+	}
+	if snap.Port <= 0 {
+		return "", fmt.Errorf("component %s has no port", snap.Name)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", snap.Port), nil
+}
+
+func proxyURLRequestURI(endpointPath, extraPath, requestQuery string) (string, string) {
+	u, err := url.ParseRequestURI(endpointPath)
+	if err != nil {
+		u = &url.URL{Path: endpointPath}
+	}
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	if path == "" {
+		path = "/"
+	}
+	extraPath = strings.TrimLeft(extraPath, "/")
+	if extraPath != "" {
+		if path == "/" {
+			path += extraPath
+		} else {
+			path += "/" + extraPath
+		}
+	}
+	rawQuery := u.RawQuery
+	if requestQuery != "" {
+		if rawQuery != "" {
+			rawQuery += "&"
+		}
+		rawQuery += requestQuery
+	}
+	return path, rawQuery
 }
 
 // componentStateDocument builds a statekit StateDisplayDocument scoped to the

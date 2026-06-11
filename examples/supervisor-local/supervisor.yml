@@ -34,6 +34,9 @@ components:
       readyz: /readyz
       state: /state
       metrics: /metrics
+    proxy_urls:
+      greet: /greet
+      health-on-port: :18091/healthz
 
 external_components:
   - name: external-hello
@@ -44,3 +47,5 @@ external_components:
       readyz: /readyz
       state: /state
       metrics: /metrics
+    proxy_urls:
+      greet: /greet

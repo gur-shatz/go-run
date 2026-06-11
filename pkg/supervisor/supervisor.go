@@ -232,6 +232,7 @@ func (this *Supervisor) externalSnapshot(c ExternalComponentConfig) ComponentSna
 			Metrics:     c.URLs.Metrics,
 			Escalations: c.URLs.Escalations,
 		},
+		ProxyURLs: c.ProxyURLs,
 	}
 }
 

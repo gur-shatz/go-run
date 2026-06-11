@@ -204,6 +204,7 @@ type ComponentConfig struct {
 	Command     string            `yaml:"command"`
 	Env         map[string]string `yaml:"env,omitempty"`
 	URLs        URLsConfig        `yaml:"urls,omitempty"`
+	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`
 
 	// Readme is an optional path to a Markdown file describing this component,
 	// shown on the component's portal page. Relative paths resolve against the
@@ -220,10 +221,11 @@ type ComponentConfig struct {
 // system. The supervisor does not start/stop/restart it, but proxies and
 // scrapes it using URL and URLs.
 type ExternalComponentConfig struct {
-	Name        string     `yaml:"name"`
-	Description string     `yaml:"description,omitempty"`
-	URL         string     `yaml:"url"`
-	URLs        URLsConfig `yaml:"urls,omitempty"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description,omitempty"`
+	URL         string            `yaml:"url"`
+	URLs        URLsConfig        `yaml:"urls,omitempty"`
+	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`
 
 	// Readme is shown on the component portal page, same as managed
 	// components. Relative paths resolve against supervisor.yml.
@@ -485,6 +487,9 @@ func (this *Config) Validate() error {
 		if c.Remote.Enabled && c.Remote.BaseURL == "" {
 			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
 		}
+		if err := validateProxyURLs(c.ProxyURLs); err != nil {
+			return fmt.Errorf("components[%q]: proxy_urls: %w", c.Name, err)
+		}
 		portSeen[c.Port] = c.Name
 	}
 	for i, c := range this.ExternalComponents {
@@ -500,6 +505,24 @@ func (this *Config) Validate() error {
 		}
 		if err := validateHTTPBaseURL(c.URL); err != nil {
 			return fmt.Errorf("external_components[%q]: url: %w", c.Name, err)
+		}
+		if err := validateProxyURLs(c.ProxyURLs); err != nil {
+			return fmt.Errorf("external_components[%q]: proxy_urls: %w", c.Name, err)
+		}
+	}
+	return nil
+}
+
+func validateProxyURLs(proxyURLs map[string]string) error {
+	for key, spec := range proxyURLs {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("key is required")
+		}
+		if strings.Contains(key, "/") {
+			return fmt.Errorf("key %q must not contain /", key)
+		}
+		if strings.TrimSpace(spec) == "" {
+			return fmt.Errorf("%s is required", key)
 		}
 	}
 	return nil

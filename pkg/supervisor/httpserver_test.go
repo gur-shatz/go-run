@@ -30,6 +30,7 @@ type stubStateProvider struct {
 	statusReason string
 	updateState  string
 	updateReason string
+	proxyURLs    map[string]string
 }
 
 func (this stubStateProvider) Snapshot() SupervisorSnapshot {
@@ -60,7 +61,7 @@ func (this stubStateProvider) snap() ComponentSnapshot {
 	if this.external {
 		updateStatus = ""
 	}
-	return ComponentSnapshot{Name: this.name, External: this.external, URL: this.url, Status: status, StatusReason: this.statusReason, GlobalState: globalState, UpdateStatus: updateStatus, UpdateState: updateState, UpdateReason: this.updateReason, Port: this.port}
+	return ComponentSnapshot{Name: this.name, External: this.external, URL: this.url, Status: status, StatusReason: this.statusReason, GlobalState: globalState, UpdateStatus: updateStatus, UpdateState: updateState, UpdateReason: this.updateReason, Port: this.port, ProxyURLs: this.proxyURLs}
 }
 
 var _ = Describe("backoffice version", func() {
@@ -421,6 +422,87 @@ var _ = Describe("component proxy", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+	})
+})
+
+var _ = Describe("proxy urls", func() {
+	It("forwards a named :port/path target with the configured path as a prefix", func() {
+		var gotPath, gotQuery, gotPrefix string
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotQuery = r.URL.RawQuery
+			gotPrefix = r.Header.Get("X-Forwarded-Prefix")
+			_, _ = w.Write([]byte("from-proxy-url"))
+		}))
+		defer backend.Close()
+		port, err := strconv.Atoi(must(url.Parse(backend.URL)).Port())
+		Expect(err).NotTo(HaveOccurred())
+
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{
+			name:      "hello",
+			port:      18090,
+			proxyURLs: map[string]string{"admin": fmt.Sprintf(":%d/base/path?fixed=1", port)},
+		}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/proxyurls/hello/admin/deep/item?x=2")
+		Expect(err).NotTo(HaveOccurred())
+		body := readBody(resp)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(body).To(Equal("from-proxy-url"))
+		Expect(gotPath).To(Equal("/base/path/deep/item"))
+		Expect(gotQuery).To(Equal("fixed=1&x=2"))
+		Expect(gotPrefix).To(Equal("/proxyurls/hello/admin"))
+	})
+
+	It("forwards absolute targets", func() {
+		var gotPath string
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			_, _ = w.Write([]byte("absolute"))
+		}))
+		defer backend.Close()
+
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{
+			name:      "hello",
+			port:      18090,
+			proxyURLs: map[string]string{"app": backend.URL + "/admin"},
+		}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/proxyurls/hello/app/settings")
+		Expect(err).NotTo(HaveOccurred())
+		body := readBody(resp)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(body).To(Equal("absolute"))
+		Expect(gotPath).To(Equal("/admin/settings"))
+	})
+
+	It("404s unknown named proxy urls", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/proxyurls/hello/admin/")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 	})
 })
 

@@ -51,7 +51,8 @@ type ComponentSnapshot struct {
 	// switch, so it survives supervisor restarts). Empty if no version yet.
 	LastUpgrade string `json:"last_upgrade,omitempty"`
 
-	MonitorURLs MonitorURLs `json:"monitor_urls,omitzero"`
+	MonitorURLs MonitorURLs       `json:"monitor_urls,omitzero"`
+	ProxyURLs   map[string]string `json:"proxy_urls,omitempty"`
 }
 
 // MonitorURLs is the snapshot-time copy of the URLsConfig path layout. Lives

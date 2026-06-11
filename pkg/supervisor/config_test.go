@@ -238,6 +238,32 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(Succeed())
 		})
 
+		It("accepts proxy_urls on managed and external components", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "api", Port: 8080, Command: "/bin/api", ProxyURLs: map[string]string{"admin": ":9090/backoffice"}},
+				},
+				ExternalComponents: []supervisor.ExternalComponentConfig{
+					{Name: "docs", URL: "http://docs.internal:8080", ProxyURLs: map[string]string{"app": "https://docs.example.com/app"}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects proxy_urls with invalid keys or empty targets", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "api", Port: 8080, Command: "/bin/api", ProxyURLs: map[string]string{"bad/key": ":9090/backoffice"}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("must not contain /")))
+
+			cfg.Components[0].ProxyURLs = map[string]string{"admin": ""}
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("admin is required")))
+		})
+
 		It("rejects duplicate names across managed and external components", func() {
 			cfg := supervisor.Config{
 				Components:         []supervisor.ComponentConfig{{Name: "docs", Port: 8080, Command: "/bin/docs"}},

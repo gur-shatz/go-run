@@ -185,6 +185,7 @@
         {{end}}
         <div class="actions">
           <a class="btn primary" href="{{$.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
+          {{$component := .}}{{range .ProxyLinks}}<a class="btn" href="{{$.RootRel}}proxyurls/{{$component.Name}}/{{.Key}}/">{{.Key}} &nearr;</a>{{end}}
           <a class="btn" href="{{$.RootRel}}components/{{.Name}}/">Details</a>
           {{if not .External}}
           <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/start">
@@ -261,6 +262,7 @@
 
     <div class="toolbar">
       <a class="btn primary" href="{{.RootRel}}proxy/{{.Name}}/">Open app &nearr;</a>
+      {{range .ProxyLinks}}<a class="btn" href="{{$.RootRel}}proxyurls/{{$.Name}}/{{.Key}}/">{{.Key}} &nearr;</a>{{end}}
       {{if .URLs.Healthz}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Healthz}}">Health</a>{{end}}
       {{if .URLs.State}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.State}}">State</a>{{end}}
       {{if .URLs.Metrics}}<a class="btn" href="{{.RootRel}}proxy/{{.Name}}{{.URLs.Metrics}}">Metrics</a>{{end}}
