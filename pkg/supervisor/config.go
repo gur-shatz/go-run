@@ -256,8 +256,8 @@ type URLsConfig struct {
 // Relative file:// URLs in any remote block are then resolved against the
 // directory holding the config file so the example can ship a relative
 // fixture path.
-func LoadConfig(path string) (*Config, error) {
-	processed, resolvedVars, err := config.ProcessFile(path)
+func LoadConfig(path string, opts ...config.Option) (*Config, error) {
+	processed, resolvedVars, err := config.ProcessFile(path, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("process config %s: %w", path, err)
 	}

@@ -100,6 +100,36 @@ port: "{{ .MY_PORT }}"
 				Expect(string(result)).To(ContainSubstring("password: secret"))
 			})
 
+			It("lenient: required does not fail for missing var", func() {
+				input := []byte(`password: "{{ .DB_PASS | required "DB_PASS must be set" }}"`)
+				_, _, err := config.Process(input,
+					config.WithEnv(map[string]string{}), config.WithLenient())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("lenient: a vars block that required+defaults across vars resolves", func() {
+				// Mirrors supervisor.yml: FRONTEND_PUBLIC_URL is required and
+				// absent at bundle time; BACKEND_PUBLIC_URL defaults to it. The
+				// raw config is consumed later, in-pod, so bundle-time loading
+				// must not fail here.
+				input := []byte(`vars:
+  FRONTEND_PUBLIC_URL: '{{ env "FRONTEND_PUBLIC_URL" | required "FRONTEND_PUBLIC_URL not set" }}'
+  BACKEND_PUBLIC_URL: '{{ env "BACKEND_PUBLIC_URL" | default .FRONTEND_PUBLIC_URL }}'
+name: '{{ .BACKEND_PUBLIC_URL }}'`)
+				_, _, err := config.Process(input,
+					config.WithEnv(map[string]string{}), config.WithLenient())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("strict: that same vars block still fails without lenient", func() {
+				input := []byte(`vars:
+  FRONTEND_PUBLIC_URL: '{{ env "FRONTEND_PUBLIC_URL" | required "FRONTEND_PUBLIC_URL not set" }}'
+  BACKEND_PUBLIC_URL: '{{ env "BACKEND_PUBLIC_URL" | default .FRONTEND_PUBLIC_URL }}'
+name: '{{ .BACKEND_PUBLIC_URL }}'`)
+				_, _, err := config.Process(input, config.WithEnv(map[string]string{}))
+				Expect(err).To(HaveOccurred())
+			})
+
 			It("env function looks up env var directly", func() {
 				input := []byte(`home: '{{ env "MY_HOME" }}'`)
 				result, _, err := config.Process(input, config.WithEnv(map[string]string{"MY_HOME": "/users/test"}))

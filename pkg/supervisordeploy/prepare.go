@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/gur-shatz/go-run/pkg/config"
 	"github.com/gur-shatz/go-run/pkg/supervisor"
 )
 
@@ -75,7 +76,13 @@ type bundleManifest struct {
 	Components []string `json:"components"`
 }
 
-var packageNameRE = regexp.MustCompile(`^([A-Za-z0-9_-]+)_(.+)_([A-Za-z0-9]+_[A-Za-z0-9]+)\.tar\.gz$`)
+// packageNameRE parses <component>_<version>_<goos>_<goarch>.tar.gz.
+//
+// The component group must not contain '_' so that a version carrying
+// underscores (e.g. the default 260622_224159_master stamp) is captured whole
+// by the greedy middle group instead of being eaten by a greedy first group.
+// Component names therefore may use letters, digits, and '-', but not '_'.
+var packageNameRE = regexp.MustCompile(`^([A-Za-z0-9-]+)_(.+)_([A-Za-z0-9]+_[A-Za-z0-9]+)\.tar\.gz$`)
 
 func Prepare(opts PrepareOptions) (string, error) {
 	if opts.TargetPath == "" {
@@ -119,7 +126,11 @@ func Prepare(opts PrepareOptions) (string, error) {
 	if err := copyEmbeddedChart(filepath.Join(stageRoot, "chart")); err != nil {
 		return "", err
 	}
-	cfg, err := supervisor.LoadConfig(opts.ConfigPath)
+	// Load leniently: we only need the component names here. supervisor.yml is
+	// copied verbatim (below) and its {{ env ... | required }} vars are resolved
+	// in-pod at boot, where the real environment exists. Enforcing `required`
+	// at bundle time would fail on values that are intentionally absent now.
+	cfg, err := supervisor.LoadConfig(opts.ConfigPath, config.WithLenient())
 	if err != nil {
 		return "", fmt.Errorf("load supervisor config: %w", err)
 	}

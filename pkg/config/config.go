@@ -19,8 +19,9 @@ const (
 type Option func(*options)
 
 type options struct {
-	vars map[string]string // additional template vars (below env priority)
-	env  map[string]string // override env source (default: os.Environ())
+	vars    map[string]string // additional template vars (below env priority)
+	env     map[string]string // override env source (default: os.Environ())
+	lenient bool              // tolerate unresolved/required vars (best-effort)
 }
 
 // WithVars provides additional template variables.
@@ -37,6 +38,22 @@ func WithVars(vars map[string]string) Option {
 func WithEnv(env map[string]string) Option {
 	return func(o *options) {
 		o.env = env
+	}
+}
+
+// WithLenient makes template processing best-effort instead of strict:
+//   - `required` does not error on a missing value (returns empty)
+//   - vars that cannot be resolved are left as-is rather than failing
+//   - leftover `<no value>` placeholders do not error
+//
+// Use this when the goal is to read structural fields (e.g. component names)
+// from a config whose runtime values are only available later, in a different
+// environment. The supervisor bundle step uses it: it copies supervisor.yml
+// verbatim and the {{ env ... }} vars are resolved in-pod at boot, so enforcing
+// `required` at bundle time is both unnecessary and wrong.
+func WithLenient() Option {
+	return func(o *options) {
+		o.lenient = true
 	}
 }
 
@@ -83,7 +100,7 @@ func Process(data []byte, opts ...Option) ([]byte, map[string]string, error) {
 		env = merged
 	}
 
-	result, err := processRawConfig(data, env)
+	result, err := processRawConfig(data, env, o.lenient)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -108,11 +125,11 @@ func Process(data []byte, opts ...Option) ([]byte, map[string]string, error) {
 // It resolves the vars section first (iteratively, to handle inter-var
 // dependencies), then applies the fully-resolved vars to the rest of
 // the config in a single pass.
-func processRawConfig(data []byte, env map[string]string) ([]byte, error) {
+func processRawConfig(data []byte, env map[string]string, lenient bool) ([]byte, error) {
 	original := data
 
 	// Phase 1: resolve vars iteratively.
-	resolvedVars, err := resolveVars(data, env)
+	resolvedVars, err := resolveVars(data, env, lenient)
 	if err != nil {
 		return nil, err
 	}
@@ -129,17 +146,19 @@ func processRawConfig(data []byte, env map[string]string) ([]byte, error) {
 
 	result := data
 
-	result, err = executeTemplate(result, templateData, "[[", "]]", env)
+	result, err = executeTemplate(result, templateData, "[[", "]]", env, lenient)
 	if err != nil {
 		return nil, fmt.Errorf("template error (using [[ ]]): %w", err)
 	}
 
-	result, err = executeTemplate(result, templateData, "{{", "}}", env)
+	result, err = executeTemplate(result, templateData, "{{", "}}", env, lenient)
 	if err != nil {
 		return nil, fmt.Errorf("template error (using {{ }}): %w", err)
 	}
 
-	if bytes.Contains(result, []byte(noValuePlaceholder)) {
+	// In lenient mode, leftover placeholders are expected (runtime values are
+	// resolved later, elsewhere) and must not fail the parse.
+	if !lenient && bytes.Contains(result, []byte(noValuePlaceholder)) {
 		resultLines := bytes.Split(result, []byte("\n"))
 		originalLines := bytes.Split(original, []byte("\n"))
 		var problemLines []string
@@ -161,7 +180,7 @@ func processRawConfig(data []byte, env map[string]string) ([]byte, error) {
 // resolveVars extracts the vars section from YAML and resolves template
 // expressions iteratively. Each pass resolves vars whose dependencies
 // are already resolved, until all vars are stable or max iterations reached.
-func resolveVars(data []byte, env map[string]string) (map[string]string, error) {
+func resolveVars(data []byte, env map[string]string, lenient bool) (map[string]string, error) {
 	var rawCfg struct {
 		Vars map[string]any `yaml:"vars"`
 	}
@@ -195,7 +214,7 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 			}
 
 			// Try to resolve this var's expression
-			val, err := ResolveExpr(expr, td, env)
+			val, err := resolveExpr(expr, td, env, lenient)
 			if err != nil {
 				continue // dependency not yet resolved
 			}
@@ -226,6 +245,14 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 			td[k] = v
 		}
 		for k, expr := range unresolved {
+			// Lenient mode keeps whatever resolved and drops the rest, rather
+			// than failing: the caller only wants structure, not runtime values.
+			if lenient {
+				if val, err := resolveExpr(expr, td, env, true); err == nil {
+					resolved[k] = val
+				}
+				continue
+			}
 			_, err := ResolveExpr(expr, td, env)
 			if err != nil {
 				return nil, fmt.Errorf("var %q: %w", k, err)
@@ -240,10 +267,16 @@ func resolveVars(data []byte, env map[string]string) (map[string]string, error) 
 // ResolveExpr evaluates a single template expression string, trying
 // both [[ ]] and {{ }} delimiters.
 func ResolveExpr(expr string, templateData map[string]any, env map[string]string) (string, error) {
+	return resolveExpr(expr, templateData, env, false)
+}
+
+// resolveExpr is ResolveExpr with a lenient toggle. When lenient, `required`
+// does not error on missing values.
+func resolveExpr(expr string, templateData map[string]any, env map[string]string, lenient bool) (string, error) {
 	result := expr
 
 	if strings.Contains(result, "[[") {
-		out, err := executeTemplate([]byte(result), templateData, "[[", "]]", env)
+		out, err := executeTemplate([]byte(result), templateData, "[[", "]]", env, lenient)
 		if err != nil {
 			return "", err
 		}
@@ -251,7 +284,7 @@ func ResolveExpr(expr string, templateData map[string]any, env map[string]string
 	}
 
 	if strings.Contains(result, "{{") {
-		out, err := executeTemplate([]byte(result), templateData, "{{", "}}", env)
+		out, err := executeTemplate([]byte(result), templateData, "{{", "}}", env, lenient)
 		if err != nil {
 			return "", err
 		}
@@ -262,11 +295,11 @@ func ResolveExpr(expr string, templateData map[string]any, env map[string]string
 }
 
 // executeTemplate runs Go template substitution with the given delimiters.
-func executeTemplate(data []byte, templateData map[string]any, leftDelim, rightDelim string, env map[string]string) ([]byte, error) {
+func executeTemplate(data []byte, templateData map[string]any, leftDelim, rightDelim string, env map[string]string, lenient bool) ([]byte, error) {
 	tmpl, err := template.New("config").
 		Delims(leftDelim, rightDelim).
 		Option("missingkey=zero").
-		Funcs(templateFuncs(env)).
+		Funcs(templateFuncs(env, lenient)).
 		Parse(string(data))
 	if err != nil {
 		return nil, err
@@ -280,8 +313,10 @@ func executeTemplate(data []byte, templateData map[string]any, leftDelim, rightD
 	return buf.Bytes(), nil
 }
 
-// templateFuncs returns custom functions available in templates.
-func templateFuncs(env map[string]string) template.FuncMap {
+// templateFuncs returns custom functions available in templates. When lenient,
+// `required` does not error on a missing value (it passes the value through),
+// so a config can be parsed for its structure without supplying runtime values.
+func templateFuncs(env map[string]string, lenient bool) template.FuncMap {
 	return template.FuncMap{
 		"default": func(def, val any) any {
 			if val == nil {
@@ -298,6 +333,9 @@ func templateFuncs(env map[string]string) template.FuncMap {
 		},
 
 		"required": func(msg string, val any) (any, error) {
+			if lenient {
+				return val, nil
+			}
 			if val == nil {
 				return nil, fmt.Errorf("%s", msg)
 			}
