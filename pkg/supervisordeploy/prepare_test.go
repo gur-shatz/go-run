@@ -1,6 +1,12 @@
 package supervisordeploy
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
 
 // TestPackageNameRE locks in that a version containing underscores (the default
 // 260622_224159_master stamp) is captured whole, rather than being eaten by a
@@ -27,4 +33,63 @@ func TestPackageNameRE(t *testing.T) {
 				c.name, m[1], m[2], m[3], c.comp, c.ver, c.platfm)
 		}
 	}
+}
+
+func TestWriteValuesUsesDefaultResources(t *testing.T) {
+	dir := t.TempDir()
+	target := Target{Target: "dev", Namespace: "safeapi"}
+
+	if err := writeValues(dir, target); err != nil {
+		t.Fatalf("writeValues: %v", err)
+	}
+
+	values := readValuesForTest(t, dir)
+	resources := values["resources"].(map[string]any)
+	limits := resources["limits"].(map[string]any)
+	requests := resources["requests"].(map[string]any)
+
+	if got, want := limits["memory"], "512Mi"; got != want {
+		t.Fatalf("limits.memory = %v, want %v", got, want)
+	}
+	if got, want := requests["memory"], "64Mi"; got != want {
+		t.Fatalf("requests.memory = %v, want %v", got, want)
+	}
+}
+
+func TestWriteValuesUsesTargetResources(t *testing.T) {
+	dir := t.TempDir()
+	target := Target{Target: "prod", Namespace: "safeapi"}
+	target.Supervisor.Resources = Resources{
+		Requests: map[string]string{"cpu": "100m", "memory": "256Mi"},
+		Limits:   map[string]string{"cpu": "1", "memory": "2Gi"},
+	}
+
+	if err := writeValues(dir, target); err != nil {
+		t.Fatalf("writeValues: %v", err)
+	}
+
+	values := readValuesForTest(t, dir)
+	resources := values["resources"].(map[string]any)
+	limits := resources["limits"].(map[string]any)
+	requests := resources["requests"].(map[string]any)
+
+	if got, want := limits["memory"], "2Gi"; got != want {
+		t.Fatalf("limits.memory = %v, want %v", got, want)
+	}
+	if got, want := requests["memory"], "256Mi"; got != want {
+		t.Fatalf("requests.memory = %v, want %v", got, want)
+	}
+}
+
+func readValuesForTest(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values map[string]any
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		t.Fatalf("parse values.yaml: %v", err)
+	}
+	return values
 }

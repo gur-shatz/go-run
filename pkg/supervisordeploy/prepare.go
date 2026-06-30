@@ -51,7 +51,7 @@ type Target struct {
 		BackofficePort int     `yaml:"backoffice_port"`
 		PublicPort     int     `yaml:"public_port"`
 		Routes         []Route `yaml:"routes"`
-		Resources      Resources
+		Resources      Resources `yaml:"resources"`
 	} `yaml:"supervisor"`
 	// Env is committed, per-target pod environment, projected into
 	// .Values.env at bundle time. It is the lowest-priority env layer: the
