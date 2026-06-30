@@ -86,18 +86,22 @@ metadata:
   name: {{ $.Values.app }}-{{ .name }}
   namespace: {{ $.Values.namespace }}
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    {{- if ne .tls "none" }}
+    cert-manager.io/cluster-issuer: {{ if eq .tls "selfsigned" }}selfsigned-issuer{{ else }}letsencrypt-prod{{ end }}
+    {{- end }}
     {{- if $.Values.access.allowedCIDRs }}
     traefik.ingress.kubernetes.io/router.middlewares: {{ $.Values.namespace }}-{{ $.Values.app }}-ip-allowlist@kubernetescrd
     {{- end }}
 spec:
   ingressClassName: traefik
+  {{- if ne .tls "none" }}
   tls:
     - hosts:
-        - {{ .host }}
+        - {{ .host | quote }}
       secretName: {{ $.Values.app }}-{{ .name }}-tls
+  {{- end }}
   rules:
-    - host: {{ .host }}
+    - host: {{ .host | quote }}
       http:
         paths:
           - path: /

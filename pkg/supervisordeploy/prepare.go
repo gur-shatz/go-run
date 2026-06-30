@@ -65,6 +65,13 @@ type Route struct {
 	Name string `yaml:"name" json:"name"`
 	Host string `yaml:"host" json:"host"`
 	Port int    `yaml:"port" json:"port"`
+	// TLS selects origin-cert behavior for this route's Ingress:
+	//   "" / "acme"  -> cert-manager letsencrypt-prod (default, public ACME cert)
+	//   "selfsigned" -> cert-manager selfsigned-issuer; no ACME challenge, so it
+	//                   works for wildcard hosts. Cloudflare Full (not strict)
+	//                   accepts the self-signed origin cert.
+	//   "none"       -> no tls block; plaintext origin behind Cloudflare.
+	TLS string `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 type bundleManifest struct {
@@ -219,6 +226,11 @@ func readTarget(path string) (Target, error) {
 		}
 		if route.Port == 0 {
 			return Target{}, fmt.Errorf("supervisor.routes[%d].port is required", i)
+		}
+		switch route.TLS {
+		case "", "acme", "selfsigned", "none":
+		default:
+			return Target{}, fmt.Errorf("supervisor.routes[%d].tls invalid: %q (want acme, selfsigned, or none)", i, route.TLS)
 		}
 	}
 	return target, nil
