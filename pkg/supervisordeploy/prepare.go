@@ -358,10 +358,7 @@ func writeValues(stageRoot string, target Target) error {
 	for k, v := range target.Env {
 		env[k] = v
 	}
-	resources := target.Supervisor.Resources
-	if resources.Empty() {
-		resources = defaultResources()
-	}
+	resources := resourcesWithDefaults(target.Supervisor.Resources)
 	values := map[string]any{
 		"app":       "supervisor",
 		"namespace": target.Namespace,
@@ -398,6 +395,17 @@ func writeValues(stageRoot string, target Target) error {
 
 func (this Resources) Empty() bool {
 	return len(this.Requests) == 0 && len(this.Limits) == 0
+}
+
+func resourcesWithDefaults(overrides Resources) Resources {
+	resources := defaultResources()
+	for k, v := range overrides.Requests {
+		resources.Requests[k] = v
+	}
+	for k, v := range overrides.Limits {
+		resources.Limits[k] = v
+	}
+	return resources
 }
 
 func defaultResources() Resources {

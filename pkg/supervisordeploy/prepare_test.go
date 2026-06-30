@@ -81,6 +81,33 @@ func TestWriteValuesUsesTargetResources(t *testing.T) {
 	}
 }
 
+func TestWriteValuesMergesPartialTargetResourcesWithDefaults(t *testing.T) {
+	dir := t.TempDir()
+	target := Target{Target: "prod", Namespace: "safeapi"}
+	target.Supervisor.Resources = Resources{
+		Limits: map[string]string{"memory": "2Gi"},
+	}
+
+	if err := writeValues(dir, target); err != nil {
+		t.Fatalf("writeValues: %v", err)
+	}
+
+	values := readValuesForTest(t, dir)
+	resources := values["resources"].(map[string]any)
+	limits := resources["limits"].(map[string]any)
+	requests := resources["requests"].(map[string]any)
+
+	if got, want := limits["memory"], "2Gi"; got != want {
+		t.Fatalf("limits.memory = %v, want %v", got, want)
+	}
+	if got, want := limits["cpu"], "500m"; got != want {
+		t.Fatalf("limits.cpu = %v, want %v", got, want)
+	}
+	if got, want := requests["memory"], "64Mi"; got != want {
+		t.Fatalf("requests.memory = %v, want %v", got, want)
+	}
+}
+
 func readValuesForTest(t *testing.T, dir string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "values.yaml"))
