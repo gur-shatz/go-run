@@ -62,6 +62,13 @@ type Config struct {
 	Updates    UpdatesConfig    `yaml:"updates,omitempty"`
 	Remote     RemoteConfig     `yaml:"remote"`
 
+	// Memory configures the per-component memory tracking subsystem. When nil
+	// or disabled the supervisor behaves exactly as it does without it: no
+	// sampling, no persistence, no memory fields on any surface. This first
+	// iteration only collects, assesses, and displays usage — it does not
+	// enforce limits.
+	Memory *MemoryConfig `yaml:"memory,omitempty"`
+
 	// StateMonitor configures the supervisor's component-monitoring role, in
 	// two independently toggleable parts:
 	//
@@ -83,6 +90,87 @@ type Config struct {
 	// ExternalComponents are workloads the supervisor does not launch or
 	// update, but still exposes in the portal, proxies to, and scrapes.
 	ExternalComponents []ExternalComponentConfig `yaml:"external_components,omitempty"`
+}
+
+// MemoryConfig is the top-level memory subsystem block. Budgets are never
+// written as absolute byte values: the global limit is injected into the
+// environment (or read from the cgroup) and supervisor.yml carries only the
+// partition policy — the share of that global budget each component may use.
+// Resizing the pod rescales every component automatically.
+//
+// In this iteration the derived soft/hard budgets are used purely for
+// assessment and display (the "state" of each component and the at-a-glance
+// limits); they are not written to the kernel as memory.high/memory.max.
+type MemoryConfig struct {
+	// Enabled is a pointer so an absent value defaults to on: the supervisor
+	// measures per-component memory out of the box, even with no memory block
+	// at all. Set `enabled: false` to turn the subsystem off entirely.
+	Enabled *bool `yaml:"enabled,omitempty"`
+
+	// LimitEnvVar names the environment variable carrying the pod memory
+	// limit in bytes. Default "MEMORY_LIMIT_BYTES". Populated via the
+	// Kubernetes Downward API (resourceFieldRef: limits.memory).
+	LimitEnvVar string `yaml:"limit_env_var,omitempty"`
+
+	// LimitBytes is an explicit pod-limit override in bytes, used only as a
+	// fallback when the env var is absent (and before the cgroup). It exists
+	// for dev/local where there is no Downward API or cgroup to read; a real
+	// pod should leave it unset and rely on the env var so the value always
+	// matches the live pod spec. 0 means unset.
+	LimitBytes int64 `yaml:"limit_bytes,omitempty"`
+
+	// SupervisorReserve / CacheHeadroom are fractions of the global limit L
+	// held back before partitioning. hard_pool = L*(1-reserve);
+	// soft_pool = L*(1-reserve-headroom). Defaults 0.08 and 0.10.
+	SupervisorReserve float64 `yaml:"supervisor_reserve,omitempty"`
+	CacheHeadroom     float64 `yaml:"cache_headroom,omitempty"`
+
+	// SampleInterval is the cheap-sample cadence. Default 5s.
+	SampleInterval time.Duration `yaml:"sample_interval,omitempty"`
+
+	// RawWindow bounds the in-memory history kept for the live view and the
+	// detail-page sparkline. Default 1h.
+	RawWindow time.Duration `yaml:"raw_window,omitempty"`
+
+	// Retention bounds how long persisted NDJSON sample files are kept on
+	// disk under <state_dir>/memory/. Default 72h.
+	Retention time.Duration `yaml:"retention,omitempty"`
+
+	// IncidentSamples is how many recent samples are snapshotted into an
+	// incident file on an abnormal child exit. Default 60 (~5m at 5s).
+	IncidentSamples int `yaml:"incident_samples,omitempty"`
+}
+
+// IsEnabled reports whether the memory subsystem should run. Measuring is on by
+// default: a nil block or an unset enabled flag means on; only an explicit
+// enabled:false turns it off.
+func (this *MemoryConfig) IsEnabled() bool {
+	if this == nil {
+		return true
+	}
+	return this.Enabled == nil || *this.Enabled
+}
+
+// ComponentMemoryConfig is the per-component slice of the workload budget plus
+// its tracking flag. Enforcement-policy fields are deliberately omitted in this
+// tracking-only iteration.
+type ComponentMemoryConfig struct {
+	// Share is the fraction of the workload budget this component may use.
+	// Shares across components must sum to at most 1. A component without a
+	// share is tracked but unbudgeted (no derived soft/hard limit).
+	Share float64 `yaml:"share,omitempty"`
+
+	// Tracking enables/disables per-component sampling. Pointer so an absent
+	// value defaults to on when the subsystem is enabled.
+	Tracking *bool `yaml:"tracking,omitempty"`
+}
+
+// IsTracked reports whether this component should be sampled. Absent means on.
+func (this *ComponentMemoryConfig) IsTracked() bool {
+	if this == nil {
+		return true
+	}
+	return this.Tracking == nil || *this.Tracking
 }
 
 // StateMonitorConfig groups the two component-monitoring sub-roles.
@@ -215,6 +303,10 @@ type ComponentConfig struct {
 	// Remote overrides the top-level remote block for this component. Zero-valued
 	// fields fall back to the top-level remote.
 	Remote RemoteConfig `yaml:"remote,omitempty"`
+
+	// Memory is this component's slice of the workload budget plus its
+	// tracking flag. nil leaves the component tracked but unbudgeted.
+	Memory *ComponentMemoryConfig `yaml:"memory,omitempty"`
 }
 
 // ExternalComponentConfig describes a component owned by another process or
@@ -407,6 +499,8 @@ func (this *Config) ApplyDefaults() {
 		}
 	}
 
+	this.applyMemoryDefaults()
+
 	for i := range this.Components {
 		this.Components[i].Remote = mergeRemote(this.Remote, this.Components[i].Remote)
 		if this.Components[i].Remote.BaseURL != "" && this.Updates.Enabled == nil {
@@ -416,6 +510,40 @@ func (this *Config) ApplyDefaults() {
 	}
 	for i := range this.ExternalComponents {
 		this.ExternalComponents[i].URLs = applyExternalURLDefaults(this.ExternalComponents[i].URLs)
+	}
+}
+
+// applyMemoryDefaults fills the memory subsystem defaults when the block is
+// present. A nil block is left nil (subsystem off). Per-component defaults are
+// only material when the subsystem is enabled.
+func (this *Config) applyMemoryDefaults() {
+	// Instantiate an empty block when absent so measuring is on by default and
+	// the monitor never dereferences a nil config. An explicit enabled:false
+	// still resolves the subsystem to disabled via IsEnabled.
+	if this.Memory == nil {
+		this.Memory = &MemoryConfig{}
+	}
+	m := this.Memory
+	if m.LimitEnvVar == "" {
+		m.LimitEnvVar = "MEMORY_LIMIT_BYTES"
+	}
+	if m.SupervisorReserve == 0 {
+		m.SupervisorReserve = 0.08
+	}
+	if m.CacheHeadroom == 0 {
+		m.CacheHeadroom = 0.10
+	}
+	if m.SampleInterval == 0 {
+		m.SampleInterval = 5 * time.Second
+	}
+	if m.RawWindow == 0 {
+		m.RawWindow = time.Hour
+	}
+	if m.Retention == 0 {
+		m.Retention = 72 * time.Hour
+	}
+	if m.IncidentSamples == 0 {
+		m.IncidentSamples = 60
 	}
 }
 
@@ -461,6 +589,9 @@ func (this *Config) Validate() error {
 		if ba.Username == "" || ba.Password == "" {
 			return fmt.Errorf("supervisor.basic_auth: username and password are required when enabled")
 		}
+	}
+	if err := this.validateMemory(); err != nil {
+		return err
 	}
 	if len(this.Components) == 0 && len(this.ExternalComponents) == 0 {
 		return nil
@@ -509,6 +640,38 @@ func (this *Config) Validate() error {
 		if err := validateProxyURLs(c.ProxyURLs); err != nil {
 			return fmt.Errorf("external_components[%q]: proxy_urls: %w", c.Name, err)
 		}
+	}
+	return nil
+}
+
+// validateMemory checks the memory subsystem's partition policy is internally
+// consistent: reserves leave a positive budget and component shares do not
+// over-subscribe the workload pool. A small epsilon absorbs float rounding.
+func (this *Config) validateMemory() error {
+	m := this.Memory
+	if !m.IsEnabled() {
+		return nil
+	}
+	const epsilon = 1e-9
+	if m.SupervisorReserve < 0 || m.CacheHeadroom < 0 {
+		return fmt.Errorf("memory: supervisor_reserve and cache_headroom must be non-negative")
+	}
+	if m.SupervisorReserve+m.CacheHeadroom >= 1 {
+		return fmt.Errorf("memory: supervisor_reserve + cache_headroom must be < 1 (got %.3f)",
+			m.SupervisorReserve+m.CacheHeadroom)
+	}
+	var sumShares float64
+	for _, c := range this.Components {
+		if c.Memory == nil {
+			continue
+		}
+		if c.Memory.Share < 0 {
+			return fmt.Errorf("components[%q]: memory.share must be non-negative", c.Name)
+		}
+		sumShares += c.Memory.Share
+	}
+	if sumShares > 1+epsilon {
+		return fmt.Errorf("memory: component shares must sum to <= 1 (got %.3f)", sumShares)
 	}
 	return nil
 }

@@ -33,8 +33,15 @@
   .card h2 a { color: var(--text); }
   .card .desc { color: var(--muted); font-size: 13.5px; min-height: 1.2em; }
   .card .meta { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-  .card .statline { display: flex; gap: 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .card .statline { display: flex; gap: 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
   .card .statline b { color: var(--text); font-weight: 600; }
+  .card .statline b.mem-soft { color: var(--warn); }
+  .card .statline b.mem-fail { color: var(--fail); }
+
+  /* memory history sparkline (component page) */
+  .memchart { margin: 4px 0 24px; }
+  .memchart .k { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+  .memchart svg { display: block; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
   .card .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 8px; flex-wrap: wrap; }
   .statuslines { display: grid; gap: 5px; }
   .statusline {
@@ -181,6 +188,7 @@
           <span>up <b>{{.Uptime}}</b></span>
           <span><b>{{.RunCount}}</b> runs</span>
           <span>upgraded <b>{{.LastUpgrade}}</b></span>
+          {{if .MemoryTracked}}<span>mem <b class="{{if eq .MemoryState "soft"}}mem-soft{{else if eq .MemoryState "hard"}}mem-fail{{end}}">{{.MemoryCurrent}}</b>{{if .MemoryBudgeted}} / {{.MemoryLimit}}{{end}}</span>{{end}}
         </div>
         {{end}}
         <div class="actions">
@@ -257,7 +265,19 @@
       {{if .Running}}<div class="stat"><div class="k">PID</div><div class="v">{{.ChildPID}}</div></div>{{end}}
       <div class="stat"><div class="k">Fast crashes</div><div class="v{{if .FastCrashes}} warn{{end}}">{{.FastCrashes}}</div></div>
       <div class="stat"><div class="k">Exec failures</div><div class="v{{if .ExecFailures}} fail{{end}}">{{.ExecFailures}}</div></div>
+      {{if .MemoryTracked}}
+      <div class="stat"><div class="k">Memory</div><div class="v{{if eq .MemoryState "soft"}} warn{{else if eq .MemoryState "hard"}} fail{{end}}">{{.MemoryCurrent}}</div></div>
+      {{if .MemoryBudgeted}}
+      <div class="stat"><div class="k">Soft limit</div><div class="v">{{.MemoryHigh}}</div></div>
+      <div class="stat"><div class="k">Hard limit</div><div class="v">{{.MemoryLimit}}</div></div>
+      <div class="stat"><div class="k">Pressure</div><div class="v{{if eq .MemoryState "soft"}} warn{{else if eq .MemoryState "hard"}} fail{{end}}">{{.MemoryPressure}}</div></div>
+      {{end}}
+      {{end}}
+      {{if .MemoryLastEvent}}<div class="stat"><div class="k">Last mem event</div><div class="v" style="font-size:12px">{{.MemoryLastEvent}}</div></div>{{end}}
     </div>
+    {{if .MemorySparkline}}
+    <div class="memchart"><div class="k">Memory history</div>{{.MemorySparkline}}</div>
+    {{end}}
     {{end}}
 
     <div class="toolbar">

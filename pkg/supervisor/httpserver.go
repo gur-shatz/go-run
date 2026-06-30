@@ -63,6 +63,8 @@ type componentSummaryEntry struct {
 	Port          int    `yaml:"port,omitempty"`
 	FastCrashes   int    `yaml:"fast_crashes"`
 	ExecFailures  int    `yaml:"exec_failures"`
+	MemoryBytes   int64  `yaml:"memory_bytes,omitempty"`
+	MemoryState   string `yaml:"memory_state,omitempty"`
 }
 
 type supervisorSummary struct {
@@ -86,7 +88,7 @@ type supervisorEnv struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, externalCfgs []ExternalComponentConfig, obs *observer, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, externalCfgs []ExternalComponentConfig, obs *observer, mem *memoryMonitor, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -109,7 +111,7 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
-	newPortal(sp, ca, componentCfgs, externalCfgs, obs != nil, logger).mount(router)
+	newPortal(sp, ca, componentCfgs, externalCfgs, obs != nil, mem, logger).mount(router)
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)
@@ -159,6 +161,22 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 	bo.GetDesc("/summary", "YAML summary of each managed component (current, stable, pid, uptime, counters).",
 		func(w http.ResponseWriter, _ *http.Request) {
 			writeYAML(w, buildSummary(sp.Snapshot()))
+		})
+
+	// /memory: the one-screen "where is the memory going right now" view. Pod
+	// totals (resolved limit + source, mode, workload/container current) plus a
+	// per-component current/high/limit/share/state list. The page to open during
+	// an OOM. Omits memory detail when the subsystem is disabled.
+	bo.GetDesc("/memory", "YAML memory overview: pod totals + per-component current/high/limit/state.",
+		func(w http.ResponseWriter, _ *http.Request) {
+			writeYAML(w, buildMemorySummary(mem, sp.Snapshot()))
+		})
+
+	// /memory/incidents: snapshots captured on abnormal child exits (newest
+	// first), each pointing at a file under <state_dir>/memory/incidents/.
+	bo.GetDesc("/memory/incidents", "YAML list of memory incidents captured on abnormal child exits.",
+		func(w http.ResponseWriter, _ *http.Request) {
+			writeYAML(w, buildIncidentList(mem))
 		})
 
 	bo.GetDesc("/env", "YAML process environment. Variables with SECRET, PASSWORD, or KEY in the name are redacted.",
@@ -261,6 +279,18 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 			// proxy prefix and miss.
 			w.Header().Set("Location", "../../logs/"+name+"/"+current+"/")
 			w.WriteHeader(http.StatusFound)
+		})
+
+		// /memory: the in-memory per-component series as JSON, bounded by an
+		// optional ?window= duration (default 1h). Empty series when the memory
+		// subsystem is disabled. For tooling and ad-hoc graphing.
+		r.Get("/memory", func(w http.ResponseWriter, r *http.Request) {
+			name := chi.URLParam(r, "name")
+			if _, ok := sp.ComponentSnapshot(name); !ok {
+				http.Error(w, "no such component", http.StatusNotFound)
+				return
+			}
+			writeComponentMemoryJSON(w, mem, name, r.URL.Query().Get("window"))
 		})
 	}).Title("Components").Description("Per-component info + scraped state view.")
 
@@ -538,6 +568,8 @@ func buildSummary(snap SupervisorSnapshot) supervisorSummary {
 			Port:          c.Port,
 			FastCrashes:   c.FastCrashes,
 			ExecFailures:  c.ExecFailures,
+			MemoryBytes:   c.MemoryCurrentBytes,
+			MemoryState:   c.MemoryState,
 		})
 	}
 	return out

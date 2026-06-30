@@ -67,6 +67,11 @@ type Component struct {
 	// Forced overrides snapshot accessor — read each Updater tick.
 	getForced func() ForcedOverride
 
+	// memIncident, when set, captures a memory incident (a snapshot of recent
+	// samples) on an abnormal child exit. nil when the memory subsystem is off.
+	// Set after construction via SetMemoryIncidentHook.
+	memIncident func(component, kind, reason string)
+
 	// Channel from Updater → Lifecycle. Coalescing: at most one pending
 	// switch at a time; signalSwitch replaces an older queued value.
 	switchCh chan string
@@ -144,6 +149,21 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 
 // Name returns the component's name.
 func (this *Component) Name() string { return this.cfg.Name }
+
+// PID returns the running child's process ID, or 0 if no child is currently
+// running. Read by the memory monitor each sample tick.
+func (this *Component) PID() int {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	return this.pid
+}
+
+// SetMemoryIncidentHook wires the memory monitor's incident capture, invoked on
+// an abnormal child exit. A nil hook (memory subsystem off) leaves exit handling
+// unchanged.
+func (this *Component) SetMemoryIncidentHook(fn func(component, kind, reason string)) {
+	this.memIncident = fn
+}
 
 // Snapshot returns a JSON/YAML-friendly snapshot of the current state.
 func (this *Component) Snapshot() ComponentSnapshot {
@@ -931,10 +951,15 @@ func (this *Component) HandleChildExit(rc *runningChild, exit childExit) time.Du
 	this.logger.Warn("[%s] child %s exited after %s (err=%v)",
 		this.cfg.Name, rc.version,
 		exit.at.Sub(rc.launchedAt).Truncate(time.Millisecond), exit.err)
+	exitReason := fmt.Sprintf("child exited after %s (err=%v)", exit.at.Sub(rc.launchedAt).Truncate(time.Millisecond), exit.err)
 	if this.bundle != nil {
-		this.bundle.incidentCrash(this.cfg.Name, rc.version,
-			fmt.Sprintf("child exited after %s (err=%v)", exit.at.Sub(rc.launchedAt).Truncate(time.Millisecond), exit.err),
+		this.bundle.incidentCrash(this.cfg.Name, rc.version, exitReason,
 			map[string]any{"version": rc.version, "fast_crashes": this.counters.FastCrashes})
+	}
+	// Snapshot recent memory samples so a post-restart reader can see which
+	// component grew and whether it climbed or spiked before the exit.
+	if this.memIncident != nil {
+		this.memIncident(this.cfg.Name, memIncidentChildExit, exitReason)
 	}
 
 	if this.counters.ShouldReject() {

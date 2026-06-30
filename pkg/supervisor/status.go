@@ -51,6 +51,20 @@ type ComponentSnapshot struct {
 	// switch, so it survives supervisor restarts). Empty if no version yet.
 	LastUpgrade string `json:"last_upgrade,omitempty"`
 
+	// Memory fields, populated by the memory monitor when the subsystem is
+	// enabled. All omitempty so an unsupported platform or disabled subsystem
+	// renders the snapshot exactly as before. MemoryHigh/Max are empty in
+	// tracking-only modes (no derivable budget); MemoryState is "ok"/"soft"/
+	// "hard" only when a budget is known.
+	MemoryCurrentBytes  int64   `json:"memory_current_bytes,omitempty"`
+	MemoryHighBytes     int64   `json:"memory_high_bytes,omitempty"`
+	MemoryLimitBytes    int64   `json:"memory_limit_bytes,omitempty"`
+	MemoryPressureRatio float64 `json:"memory_pressure_ratio,omitempty"`
+	MemoryState         string  `json:"memory_state,omitempty"`
+	// MemoryLastEvent is the kind+timestamp of the last memory incident for
+	// this component (e.g. "child_exit at 2026-06-30T05:36:55Z"), empty if none.
+	MemoryLastEvent string `json:"memory_last_event,omitempty"`
+
 	MonitorURLs MonitorURLs       `json:"monitor_urls,omitzero"`
 	ProxyURLs   map[string]string `json:"proxy_urls,omitempty"`
 }

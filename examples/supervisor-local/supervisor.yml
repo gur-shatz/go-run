@@ -18,6 +18,16 @@ supervisor:
 vars:
   GREETING: "Hello from local supervisor snapshot"
 
+# Memory tracking is on by default. On a Kubernetes pod the limit comes from the
+# Downward API env var or the cgroup; this dev box has neither, so limit_bytes
+# provides an explicit pod limit (256Mi) just for the example, letting the
+# supervisor derive per-component soft/hard budgets. A real pod leaves
+# limit_bytes unset and relies on the env var / cgroup.
+memory:
+  enabled: true
+  limit_bytes: 268435456   # 256Mi — dev-only explicit pod limit
+  sample_interval: 2s
+
 remote:
   base_url: file://./fixture
   target: required.txt
@@ -29,6 +39,8 @@ components:
     description: "Local snapshot hello app"
     port: 18091
     command: "./hello.bin --port=18091"
+    memory:
+      share: 0.40              # 40% of the workload budget (lower this to see warn/fail)
     urls:
       healthz: /healthz
       readyz: /readyz

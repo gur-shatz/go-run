@@ -38,6 +38,7 @@ type portal struct {
 	controls      controlAPI
 	configs       map[string]portalConfig
 	healthEnabled bool // observer role on -> show links to the /health console
+	mem           *memoryMonitor
 	logger        *log.Logger
 }
 
@@ -46,7 +47,7 @@ type portalConfig struct {
 	Readme      string
 }
 
-func newPortal(sp stateProvider, controls controlAPI, components []ComponentConfig, external []ExternalComponentConfig, healthEnabled bool, logger *log.Logger) *portal {
+func newPortal(sp stateProvider, controls controlAPI, components []ComponentConfig, external []ExternalComponentConfig, healthEnabled bool, mem *memoryMonitor, logger *log.Logger) *portal {
 	m := make(map[string]portalConfig, len(components)+len(external))
 	for _, c := range components {
 		m[c.Name] = portalConfig{Description: c.Description, Readme: c.Readme}
@@ -54,7 +55,7 @@ func newPortal(sp stateProvider, controls controlAPI, components []ComponentConf
 	for _, c := range external {
 		m[c.Name] = portalConfig{Description: c.Description, Readme: c.Readme}
 	}
-	return &portal{sp: sp, controls: controls, configs: m, healthEnabled: healthEnabled, logger: logger}
+	return &portal{sp: sp, controls: controls, configs: m, healthEnabled: healthEnabled, mem: mem, logger: logger}
 }
 
 // mount wires the portal routes on the root router. Links inside the rendered
@@ -133,6 +134,20 @@ type portalComponent struct {
 	ChildPID     int
 	FastCrashes  int
 	ExecFailures int
+
+	// Memory, pre-formatted for display. MemoryTracked is false when the
+	// subsystem is off / the component has no sample yet, in which case the
+	// templates omit every memory element. MemoryBudgeted is true only when a
+	// derived hard limit exists (so the "/ max" half and pressure show).
+	MemoryTracked   bool
+	MemoryBudgeted  bool
+	MemoryCurrent   string // "168.0 MiB"
+	MemoryHigh      string // soft limit, "" when unbudgeted
+	MemoryLimit     string // hard limit, "" when unbudgeted
+	MemoryState     string // ok / soft / hard / ""
+	MemoryPressure  string // "89%" / ""
+	MemoryLastEvent string // "child_exit at 2026-06-30T05:36:55Z" / ""
+	MemorySparkline template.HTML
 }
 
 type portalProxyLink struct {
@@ -163,12 +178,12 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 	if desc == "" {
 		desc = cfg.Description
 	}
-	return portalComponent{
+	pc := portalComponent{
 		Name:         c.Name,
 		Description:  desc,
 		External:     c.External,
 		GlobalState:  c.GlobalState,
-		DisplayState: portalDisplayState(c.GlobalState, c.Status, c.UpdateState),
+		DisplayState: portalDisplayState(c.GlobalState, c.Status, c.UpdateState, c.MemoryState),
 		UpdateStatus: c.UpdateStatus,
 		UpdateState:  c.UpdateState,
 		UpdateReason: c.UpdateReason,
@@ -190,6 +205,28 @@ func (this *portal) card(c ComponentSnapshot) portalComponent {
 		FastCrashes:  c.FastCrashes,
 		ExecFailures: c.ExecFailures,
 	}
+	pc.fillMemory(c)
+	pc.MemoryLastEvent = c.MemoryLastEvent
+	return pc
+}
+
+// fillMemory pre-formats the memory fields from a snapshot. A component with no
+// sample (subsystem off, not running, unsupported platform) stays MemoryTracked
+// false so every memory element is omitted.
+func (this *portalComponent) fillMemory(c ComponentSnapshot) {
+	tracked := c.MemoryCurrentBytes > 0 || c.MemoryState != ""
+	if !tracked {
+		return
+	}
+	this.MemoryTracked = true
+	this.MemoryCurrent = humanBytes(c.MemoryCurrentBytes)
+	this.MemoryState = c.MemoryState
+	if c.MemoryLimitBytes > 0 {
+		this.MemoryBudgeted = true
+		this.MemoryHigh = humanBytes(c.MemoryHighBytes)
+		this.MemoryLimit = humanBytes(c.MemoryLimitBytes)
+		this.MemoryPressure = fmt.Sprintf("%.0f%%", c.MemoryPressureRatio*100)
+	}
 }
 
 func portalProxyLinks(proxyURLs map[string]string) []portalProxyLink {
@@ -205,7 +242,7 @@ func portalProxyLinks(proxyURLs map[string]string) []portalProxyLink {
 // supervisor knows updates are blocked/degraded. Updater trouble is capped at
 // warn because the update leaf is informational; a bad vendor poll should not
 // hide a child-reported fail/down, and should not turn a healthy child red.
-func portalDisplayState(global, run, update string) string {
+func portalDisplayState(global, run, update, memory string) string {
 	if global == "" {
 		global = "down"
 	}
@@ -216,7 +253,24 @@ func portalDisplayState(global, run, update string) string {
 	if update != "" && update != "pass" && statusRank(display) < statusRank("warn") {
 		display = "warn"
 	}
+	// Memory pressure escalates the badge: soft -> warn, hard -> fail.
+	if sev := memStateSeverity(memory); sev != "" && statusRank(display) < statusRank(sev) {
+		display = sev
+	}
 	return display
+}
+
+// memStateSeverity maps a memory assessment state to the portal's pass/warn/
+// fail vocabulary. ok and tracking-only ("") do not escalate the badge.
+func memStateSeverity(state string) string {
+	switch state {
+	case memStateSoft:
+		return "warn"
+	case memStateHard:
+		return "fail"
+	default:
+		return ""
+	}
 }
 
 func statusRank(status string) int {
@@ -300,6 +354,9 @@ func (this *portal) component(w http.ResponseWriter, r *http.Request) {
 		HealthEnabled:    this.healthEnabled,
 		ReadmeConfigured: cfg.Readme != "",
 		URLs:             snap.MonitorURLs,
+	}
+	if view.MemoryTracked {
+		view.MemorySparkline = memorySparkline(this.mem.componentSeries(name, 0))
 	}
 	if cfg.Readme != "" {
 		if md, err := os.ReadFile(cfg.Readme); err != nil {

@@ -42,7 +42,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		cfgs := []ComponentConfig{{Name: "hello", Description: "A simple HTTP server", Port: 18090, Readme: readme}}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, &recordingControls{}, NewPaths(dir), bundle, cfgs, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, &recordingControls{}, NewPaths(dir), bundle, cfgs, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		client := srv.Client()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -75,7 +75,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		sp := stubStateProvider{name: "hello", port: 18090, proxyURLs: map[string]string{"admin": ":18091/admin"}}
-		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -94,7 +94,7 @@ var _ = Describe("portal", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 		controls := &recordingControls{}
-		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, controls, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello", port: 18090}, nil, controls, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 		client := srv.Client()
@@ -123,7 +123,7 @@ var _ = Describe("portal", func() {
 			stubStateProvider{name: "docs", external: true, url: "http://docs.internal:8080", globalState: "pass", status: "pass", statusReason: "ok"},
 			nil, &recordingControls{}, NewPaths(dir), bundle, nil,
 			[]ExternalComponentConfig{{Name: "docs", Description: "Docs service", URL: "http://docs.internal:8080"}},
-			nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+			nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -199,7 +199,7 @@ var _ = Describe("portal", func() {
 			updateState:  "warn",
 			updateReason: "target v3 is rejected; holding current",
 		}
-		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
@@ -261,7 +261,7 @@ var _ = Describe("portal", func() {
 
 	DescribeTable("portalDisplayState downgrades only",
 		func(global, run, update, want string) {
-			Expect(portalDisplayState(global, run, update)).To(Equal(want))
+			Expect(portalDisplayState(global, run, update, "")).To(Equal(want))
 		},
 		Entry("healthy app, run, and updater", "pass", "pass", "pass", "pass"),
 		Entry("healthy app and rejected target", "pass", "pass", "warn", "warn"),
@@ -270,6 +270,16 @@ var _ = Describe("portal", func() {
 		Entry("fail app is not softened", "fail", "pass", "warn", "fail"),
 		Entry("down app is not softened", "down", "pass", "warn", "down"),
 		Entry("update failure is capped at warn", "pass", "pass", "fail", "warn"),
+	)
+
+	DescribeTable("portalDisplayState escalates on memory pressure",
+		func(memory, want string) {
+			Expect(portalDisplayState("pass", "pass", "pass", memory)).To(Equal(want))
+		},
+		Entry("ok does not escalate", "ok", "pass"),
+		Entry("tracking-only does not escalate", "", "pass"),
+		Entry("soft escalates to warn", "soft", "warn"),
+		Entry("hard escalates to fail", "hard", "fail"),
 	)
 })
 

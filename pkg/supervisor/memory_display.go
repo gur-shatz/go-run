@@ -1,0 +1,129 @@
+package supervisor
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+)
+
+// memorySummary is the /backoffice/memory YAML shape: pod totals plus a
+// per-component current/high/limit/share/state list. Byte counts carry a
+// human-readable twin so the page is readable without conversion.
+type memorySummary struct {
+	Mode       MemoryMode               `yaml:"mode"`
+	Pod        memoryPodSummary         `yaml:"pod"`
+	Components []memoryComponentSummary `yaml:"components"`
+}
+
+type memoryPodSummary struct {
+	LimitBytes           int64  `yaml:"limit_bytes,omitempty"`
+	Limit                string `yaml:"limit,omitempty"`
+	LimitSource          string `yaml:"limit_source,omitempty"`
+	MachineTotalBytes    int64  `yaml:"machine_total_bytes,omitempty"`
+	MachineTotal         string `yaml:"machine_total,omitempty"`
+	CgroupLimitBytes     int64  `yaml:"cgroup_limit_bytes,omitempty"`
+	CgroupLimit          string `yaml:"cgroup_limit,omitempty"`
+	CurrentBytes         int64  `yaml:"current_bytes,omitempty"`
+	Current              string `yaml:"current,omitempty"`
+	WorkloadCurrentBytes int64  `yaml:"workload_current_bytes,omitempty"`
+	WorkloadCurrent      string `yaml:"workload_current,omitempty"`
+}
+
+type memoryComponentSummary struct {
+	Name         string  `yaml:"name"`
+	CurrentBytes int64   `yaml:"current_bytes"`
+	Current      string  `yaml:"current"`
+	HighBytes    int64   `yaml:"high_bytes,omitempty"`
+	High         string  `yaml:"high,omitempty"`
+	LimitBytes   int64   `yaml:"limit_bytes,omitempty"`
+	Limit        string  `yaml:"limit,omitempty"`
+	Share        float64 `yaml:"share,omitempty"`
+	State        string  `yaml:"state,omitempty"`
+}
+
+// buildMemorySummary renders the one-screen overview from the monitor's latest
+// sample. A nil monitor (subsystem off) yields a minimal disabled document.
+func buildMemorySummary(mem *memoryMonitor, _ SupervisorSnapshot) memorySummary {
+	if mem == nil {
+		return memorySummary{Mode: MemoryModeDisabled}
+	}
+	sample := mem.latestSample()
+	out := memorySummary{
+		Mode: sample.Mode,
+		Pod: memoryPodSummary{
+			LimitBytes:           sample.Pod.LimitBytes,
+			Limit:                humanBytes(sample.Pod.LimitBytes),
+			LimitSource:          sample.Pod.LimitSource,
+			MachineTotalBytes:    sample.Pod.MachineTotalBytes,
+			MachineTotal:         humanBytes(sample.Pod.MachineTotalBytes),
+			CgroupLimitBytes:     sample.Pod.CgroupLimitBytes,
+			CgroupLimit:          humanBytes(sample.Pod.CgroupLimitBytes),
+			CurrentBytes:         sample.Pod.CurrentBytes,
+			Current:              humanBytes(sample.Pod.CurrentBytes),
+			WorkloadCurrentBytes: sample.Pod.WorkloadCurrentBytes,
+			WorkloadCurrent:      humanBytes(sample.Pod.WorkloadCurrentBytes),
+		},
+		Components: make([]memoryComponentSummary, 0, len(sample.Components)),
+	}
+	if out.Mode == "" {
+		out.Mode = mem.mode
+	}
+	for _, c := range sample.Components {
+		out.Components = append(out.Components, memoryComponentSummary{
+			Name:         c.Name,
+			CurrentBytes: c.CurrentBytes,
+			Current:      humanBytes(c.CurrentBytes),
+			HighBytes:    c.HighBytes,
+			High:         humanBytes(c.HighBytes),
+			LimitBytes:   c.LimitBytes,
+			Limit:        humanBytes(c.LimitBytes),
+			Share:        c.Share,
+			State:        c.State,
+		})
+	}
+	return out
+}
+
+// memoryIncidentList is the /backoffice/memory/incidents YAML shape.
+type memoryIncidentList struct {
+	Incidents []incidentMeta `yaml:"incidents"`
+}
+
+// buildIncidentList returns the captured incidents, newest first. A nil monitor
+// yields an empty list.
+func buildIncidentList(mem *memoryMonitor) memoryIncidentList {
+	out := memoryIncidentList{Incidents: mem.listIncidents()}
+	if out.Incidents == nil {
+		out.Incidents = []incidentMeta{}
+	}
+	return out
+}
+
+// componentMemorySeries is the /backoffice/components/{name}/memory JSON shape.
+type componentMemorySeries struct {
+	Name   string        `json:"name"`
+	Window string        `json:"window"`
+	Series []seriesPoint `json:"series"`
+}
+
+// writeComponentMemoryJSON serializes one component's bounded history. The
+// window defaults to 1h and is clamped to a parseable duration; an unparseable
+// value falls back to the default rather than erroring.
+func writeComponentMemoryJSON(w http.ResponseWriter, mem *memoryMonitor, name, windowParam string) {
+	window := time.Hour
+	if windowParam != "" {
+		if d, err := time.ParseDuration(windowParam); err == nil && d > 0 {
+			window = d
+		}
+	}
+	out := componentMemorySeries{
+		Name:   name,
+		Window: window.String(),
+		Series: mem.componentSeries(name, window),
+	}
+	if out.Series == nil {
+		out.Series = []seriesPoint{}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(out)
+}

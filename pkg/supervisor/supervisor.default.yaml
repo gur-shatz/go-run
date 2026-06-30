@@ -36,6 +36,28 @@ supervisor:
   #   password: changeme   # template with env to avoid hard-coding a secret
   #   hint: "demo login: admin / changeme"  # shown under the form; demos only
 
+# memory: per-component memory tracking. This first iteration collects,
+# assesses, and DISPLAYS usage — it does not enforce limits. Tracking is ON BY
+# DEFAULT: with no block at all the supervisor measures each component's usage.
+# Set `enabled: false` to turn it off entirely.
+#
+# Budgets are never absolute bytes. The pod limit is read automatically — from
+# MEMORY_LIMIT_BYTES if set (Kubernetes Downward API, resourceFieldRef:
+# limits.memory), otherwise from the container cgroup. On a dev box with no pod
+# limit, the supervisor just measures (no soft/hard budgets). When a limit is
+# known, each component's relative share is partitioned into soft/hard budgets,
+# so resizing the pod rescales every component automatically. Per-component
+# shares go under each component's own memory:.
+# memory:
+#   enabled: true                       # on by default; set false to disable
+#   limit_env_var: MEMORY_LIMIT_BYTES   # override the pod-limit env var name
+#   limit_bytes: 0                      # dev-only explicit pod limit (fallback after the env var)
+#   supervisor_reserve: 0.08            # fraction of the limit held for the supervisor
+#   cache_headroom: 0.10               # extra slack below the hard pool for page cache/slab
+#   sample_interval: 5s                # cheap-sample cadence
+#   raw_window: 1h                     # in-memory history for the live view + sparkline
+#   retention: 72h                     # how long on-disk NDJSON sample files are kept
+
 updates:
   enabled: true
 

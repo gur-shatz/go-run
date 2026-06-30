@@ -56,7 +56,8 @@ type Supervisor struct {
 	httpServer *httpServer
 	bundle     *statekitBundle
 	scraper    *componentScraper
-	observer   *observer // optional health-aggregation role; nil when disabled
+	observer   *observer      // optional health-aggregation role; nil when disabled
+	memory     *memoryMonitor // optional memory tracking; nil when disabled/unsupported
 
 	// Forced overrides snapshot, refreshed on every polling tick.
 	forcedMu sync.RWMutex
@@ -149,8 +150,18 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 		this.scraper = sc
 	}
 
+	// Memory tracking (optional). Builds the monitor when the subsystem is
+	// enabled and the platform can sample; nil otherwise. Strictly additive —
+	// it never affects launch or supervision.
+	this.memory = newMemoryMonitor(cfg, paths, this.bundle, this.components, logger)
+	if this.memory != nil {
+		for _, comp := range this.components {
+			comp.SetMemoryIncidentHook(this.memory.captureIncident)
+		}
+	}
+
 	// Wire the HTTP server (constructed but not started until Run).
-	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, cfg.ExternalComponents, this.observer, this.buildInfo, cfg.Supervisor.BasicAuth, cfg.Supervisor.Favicon, logger)
+	this.httpServer = newHTTPServer(cfg.Supervisor.BindAddress, this, this, this, this.paths, this.bundle, cfg.Components, cfg.ExternalComponents, this.observer, this.memory, this.buildInfo, cfg.Supervisor.BasicAuth, cfg.Supervisor.Favicon, logger)
 
 	return this, nil
 }
@@ -186,7 +197,9 @@ func (this *Supervisor) Snapshot() SupervisorSnapshot {
 	}
 	this.forcedMu.RUnlock()
 	for _, c := range this.components {
-		snap.Components = append(snap.Components, c.Snapshot())
+		cs := c.Snapshot()
+		this.memory.enrichSnapshot(&cs)
+		snap.Components = append(snap.Components, cs)
 	}
 	for _, c := range this.cfg.ExternalComponents {
 		snap.Components = append(snap.Components, this.externalSnapshot(c))
@@ -199,7 +212,9 @@ func (this *Supervisor) Snapshot() SupervisorSnapshot {
 func (this *Supervisor) ComponentSnapshot(name string) (ComponentSnapshot, bool) {
 	for _, c := range this.components {
 		if c.Name() == name {
-			return c.Snapshot(), true
+			cs := c.Snapshot()
+			this.memory.enrichSnapshot(&cs)
+			return cs, true
 		}
 	}
 	for _, c := range this.cfg.ExternalComponents {
@@ -317,6 +332,12 @@ func (this *Supervisor) Run(ctx context.Context) error {
 	// the /health console has current state + transition events.
 	if this.observer != nil {
 		wg.Go(func() { this.observer.Run(ctx) })
+	}
+
+	// Memory monitor (optional): samples per-component and pod memory, persists
+	// a rolling series, and feeds the display surfaces and metrics.
+	if this.memory != nil {
+		wg.Go(func() { this.memory.Run(ctx) })
 	}
 
 	// HTTP server.
