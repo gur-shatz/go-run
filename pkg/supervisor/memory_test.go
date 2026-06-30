@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -179,7 +180,7 @@ var _ = Describe("Memory subsystem", func() {
 	Describe("persistence", func() {
 		It("writes current.json and an NDJSON line, then prunes old files", func() {
 			dir := GinkgoT().TempDir()
-			p := newMemoryPersister(dir, 72*time.Hour, nil)
+			p := newMemoryPersister(dir, time.Hour, 72*time.Hour, nil)
 
 			now := time.Date(2026, 6, 30, 5, 36, 50, 0, time.UTC)
 			sample := memorySample{TS: now.Format(time.RFC3339), Mode: MemoryModeHost,
@@ -221,7 +222,7 @@ var _ = Describe("Memory subsystem", func() {
 				ringMax:         8,
 				incidentSamples: 3,
 				now:             time.Now,
-				persist:         newMemoryPersister(filepath.Join(dir, "memory"), 72*time.Hour, nil),
+				persist:         newMemoryPersister(filepath.Join(dir, "memory"), time.Hour, 72*time.Hour, nil),
 			}
 		}
 
@@ -271,6 +272,76 @@ var _ = Describe("Memory subsystem", func() {
 			var mon *memoryMonitor
 			Expect(func() { mon.captureIncident("x", memIncidentChildExit, "r") }).NotTo(Panic())
 			Expect(mon.listIncidents()).To(BeNil())
+		})
+	})
+
+	Describe("rollup tier", func() {
+		gw := func(cur int64) memorySample {
+			return memorySample{Components: []componentMemory{{Name: "g", CurrentBytes: cur, HighBytes: 1000, LimitBytes: 2000, State: memStateOK}}}
+		}
+
+		It("folds a completed minute into a rollup with min/mean/max", func() {
+			dir := GinkgoT().TempDir()
+			p := newMemoryPersister(dir, time.Hour, 72*time.Hour, nil)
+			t0 := time.Date(2026, 6, 30, 5, 36, 10, 0, time.UTC)
+			p.write(gw(100), t0)
+			p.write(gw(300), t0.Add(20*time.Second)) // same minute 05:36
+			p.write(gw(200), t0.Add(70*time.Second)) // minute 05:37 -> flushes 05:36
+
+			raw, err := os.ReadFile(filepath.Join(dir, "rollups-2026-06-30.ndjson"))
+			Expect(err).NotTo(HaveOccurred())
+			var r minuteRollup
+			Expect(json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &r)).To(Succeed())
+			Expect(r.Minute).To(Equal("2026-06-30T05:36:00Z"))
+			Expect(r.Components).To(HaveLen(1))
+			Expect(r.Components[0].MinBytes).To(Equal(int64(100)))
+			Expect(r.Components[0].MeanBytes).To(Equal(int64(200)))
+			Expect(r.Components[0].MaxBytes).To(Equal(int64(300)))
+			Expect(r.Components[0].LimitBytes).To(Equal(int64(2000)))
+
+			// readRollupSeries surfaces the minute's peak as the representative.
+			pts := readRollupSeries(dir, "g", time.Time{})
+			Expect(pts).To(HaveLen(1))
+			Expect(pts[0].CurrentBytes).To(Equal(int64(300)))
+		})
+
+		It("merges older rollups with the recent raw ring, gap-free and ordered", func() {
+			dir := GinkgoT().TempDir()
+			mon := &memoryMonitor{ringMax: 8, persist: newMemoryPersister(dir, time.Hour, 72*time.Hour, nil)}
+
+			// An old minute (01:00) folded to a rollup.
+			old := time.Date(2026, 6, 30, 1, 0, 5, 0, time.UTC)
+			mon.persist.write(gw(100), old)
+			mon.persist.write(gw(100), old.Add(70*time.Second)) // flush 01:00
+
+			// Recent raw points in the ring.
+			mon.store(memorySample{TS: "2026-06-30T05:00:00Z", Components: []componentMemory{{Name: "g", CurrentBytes: 500}}})
+
+			pts := mon.componentSeries("g", 0)
+			Expect(len(pts)).To(BeNumerically(">=", 2))
+			Expect(pts[0].TS).To(ContainSubstring("01:00"))            // rollup point first
+			Expect(pts[len(pts)-1].CurrentBytes).To(Equal(int64(500))) // ring point last
+		})
+	})
+
+	Describe("tiered pruning", func() {
+		It("prunes raw at raw_window but keeps rollups to retention", func() {
+			dir := GinkgoT().TempDir()
+			Expect(os.MkdirAll(dir, 0755)).To(Succeed())
+			write := func(n string) { Expect(os.WriteFile(filepath.Join(dir, n), []byte("{}\n"), 0644)).To(Succeed()) }
+			write("samples-2026-06-28.ndjson") // old raw -> pruned (raw_window 1h)
+			write("samples-2026-06-30.ndjson") // today raw -> kept
+			write("rollups-2026-06-25.ndjson") // 5d old rollup -> pruned (retention 48h)
+			write("rollups-2026-06-30.ndjson") // today rollup -> kept
+
+			p := newMemoryPersister(dir, time.Hour, 48*time.Hour, nil)
+			p.pruneExpired(time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC))
+
+			exists := func(n string) bool { _, err := os.Stat(filepath.Join(dir, n)); return err == nil }
+			Expect(exists("samples-2026-06-28.ndjson")).To(BeFalse())
+			Expect(exists("samples-2026-06-30.ndjson")).To(BeTrue())
+			Expect(exists("rollups-2026-06-25.ndjson")).To(BeFalse())
+			Expect(exists("rollups-2026-06-30.ndjson")).To(BeTrue())
 		})
 	})
 

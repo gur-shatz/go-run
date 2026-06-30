@@ -119,7 +119,7 @@ func newMemoryMonitor(cfg Config, paths Paths, bundle *statekitBundle, comps []*
 		comps:           comps,
 		bundle:          bundle,
 		logger:          logger,
-		persist:         newMemoryPersister(memoryDir(paths), cfg.Memory.Retention, logger),
+		persist:         newMemoryPersister(memoryDir(paths), cfg.Memory.RawWindow, cfg.Memory.Retention, logger),
 		now:             time.Now,
 		ringMax:         ringMax,
 		incidentSamples: cfg.Memory.IncidentSamples,
@@ -274,34 +274,41 @@ type seriesPoint struct {
 	State        string `json:"state,omitempty"`
 }
 
-// componentSeries returns the in-memory history for one component within the
-// window (counted back from the latest sample). A zero window returns all
-// retained points.
+// componentSeries returns a component's history within the window (counted back
+// from the latest sample), merging the two persistence tiers: the in-memory
+// ring supplies fine-grained recent raw points (within raw_window), and the
+// rollup tier on disk supplies 1-minute points for everything older, so a
+// long-range view stays cheap and gap-free. A zero window returns everything
+// retained.
 func (this *memoryMonitor) componentSeries(name string, window time.Duration) []seriesPoint {
 	if this == nil {
 		return nil
 	}
-	this.mu.RLock()
-	defer this.mu.RUnlock()
 
-	var cutoff time.Time
-	if window > 0 && len(this.ring) > 0 {
-		if last, err := time.Parse(time.RFC3339, this.ring[len(this.ring)-1].TS); err == nil {
-			cutoff = last.Add(-window)
-		}
+	this.mu.RLock()
+	var lastTS time.Time
+	if n := len(this.ring); n > 0 {
+		lastTS, _ = time.Parse(time.RFC3339, this.ring[n-1].TS)
 	}
-	out := make([]seriesPoint, 0, len(this.ring))
+	var cutoff time.Time
+	if window > 0 && !lastTS.IsZero() {
+		cutoff = lastTS.Add(-window)
+	}
+	ringPts := make([]seriesPoint, 0, len(this.ring))
+	var oldestRing time.Time
 	for _, s := range this.ring {
-		if !cutoff.IsZero() {
-			if t, err := time.Parse(time.RFC3339, s.TS); err == nil && t.Before(cutoff) {
-				continue
-			}
+		t, err := time.Parse(time.RFC3339, s.TS)
+		if err == nil && !cutoff.IsZero() && t.Before(cutoff) {
+			continue
 		}
 		for _, c := range s.Components {
 			if c.Name != name {
 				continue
 			}
-			out = append(out, seriesPoint{
+			if err == nil && (oldestRing.IsZero() || t.Before(oldestRing)) {
+				oldestRing = t
+			}
+			ringPts = append(ringPts, seriesPoint{
 				TS:           s.TS,
 				CurrentBytes: c.CurrentBytes,
 				HighBytes:    c.HighBytes,
@@ -310,7 +317,22 @@ func (this *memoryMonitor) componentSeries(name string, window time.Duration) []
 			})
 		}
 	}
-	return out
+	this.mu.RUnlock()
+
+	// Fill the older portion from the rollup tier (minute granularity), keeping
+	// only points the ring doesn't already cover. Read outside the lock.
+	var older []seriesPoint
+	for _, p := range this.persist.readRollupSeries(name, cutoff) {
+		t, err := time.Parse(time.RFC3339, p.TS)
+		if err != nil {
+			continue
+		}
+		if !oldestRing.IsZero() && !t.Before(oldestRing) {
+			continue // the ring already covers this minute at finer granularity
+		}
+		older = append(older, p)
+	}
+	return append(older, ringPts...)
 }
 
 // enrichSnapshot fills the memory fields on a component snapshot from the latest

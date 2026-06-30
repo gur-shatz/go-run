@@ -46,11 +46,11 @@ type Target struct {
 		MountPath string `yaml:"mount_path"`
 	} `yaml:"global"`
 	Supervisor struct {
-		ImageRepo      string  `yaml:"image_repo"`
-		ImageTag       string  `yaml:"image_tag"`
-		BackofficePort int     `yaml:"backoffice_port"`
-		PublicPort     int     `yaml:"public_port"`
-		Routes         []Route `yaml:"routes"`
+		ImageRepo      string    `yaml:"image_repo"`
+		ImageTag       string    `yaml:"image_tag"`
+		BackofficePort int       `yaml:"backoffice_port"`
+		PublicPort     int       `yaml:"public_port"`
+		Routes         []Route   `yaml:"routes"`
 		Resources      Resources `yaml:"resources"`
 	} `yaml:"supervisor"`
 	// Env is committed, per-target pod environment, projected into
@@ -386,7 +386,7 @@ func writeValues(stageRoot string, target Target) error {
 			"allowedCIDRs":      target.Access.AllowedCIDRs,
 			"trustedProxyCIDRs": target.Access.TrustedProxyCIDRs,
 		},
-		"env": env,
+		"env":       env,
 		"resources": resources,
 	}
 	data, err := yaml.Marshal(values)

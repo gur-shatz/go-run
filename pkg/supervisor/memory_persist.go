@@ -16,23 +16,27 @@ import (
 // directory. It reuses state_dir rather than a separate path.
 func memoryDir(paths Paths) string { return filepath.Join(paths.StateDir, "memory") }
 
-// memoryPersister writes the rolling memory series to disk. The hot path stays
-// cheap: current.json is replaced atomically each sample, and historical
-// samples are appended as compact NDJSON to a per-day file. Old day files are
-// pruned past the retention window. Every error is logged and swallowed —
-// persistence must never disrupt sampling or supervision.
+// memoryPersister writes the rolling memory series to disk in two tiers. The
+// hot path stays cheap: current.json is replaced atomically each sample, raw
+// samples are appended as compact NDJSON to a per-day file, and each completed
+// wall-clock minute is folded into a 1-minute rollup line. Raw files are pruned
+// at raw_window (the live view and incidents read raw); rollup files are kept to
+// retention (the sparkline and longer-range queries read rollups). Every error
+// is logged and swallowed — persistence must never disrupt supervision.
 type memoryPersister struct {
 	dir       string
+	rawWindow time.Duration
 	retention time.Duration
 	logger    *log.Logger
 
 	mu     sync.Mutex
-	day    string   // YYYY-MM-DD of the currently open append file
-	append *os.File // append handle for today's NDJSON, lazily (re)opened
+	day    string   // YYYY-MM-DD of the currently open raw append file
+	append *os.File // append handle for today's raw NDJSON, lazily (re)opened
+	acc    *minuteAccumulator
 }
 
-func newMemoryPersister(dir string, retention time.Duration, logger *log.Logger) *memoryPersister {
-	return &memoryPersister{dir: dir, retention: retention, logger: logger}
+func newMemoryPersister(dir string, rawWindow, retention time.Duration, logger *log.Logger) *memoryPersister {
+	return &memoryPersister{dir: dir, rawWindow: rawWindow, retention: retention, logger: logger}
 }
 
 // write replaces current.json and appends one NDJSON line for the sample. now
@@ -63,6 +67,61 @@ func (this *memoryPersister) write(sample memorySample, now time.Time) {
 			this.warn("append memory sample: %v", err)
 		}
 	}
+
+	this.accumulateLocked(sample, now)
+}
+
+// accumulateLocked folds the sample into the current minute, flushing the
+// previous minute's rollup when the wall-clock minute rolls over. Caller holds
+// mu. The hot path only appends; the fold is in-memory until the minute closes.
+func (this *memoryPersister) accumulateLocked(sample memorySample, now time.Time) {
+	minute := now.UTC().Truncate(time.Minute)
+	if this.acc != nil && !this.acc.minute.Equal(minute) {
+		this.flushRollupLocked()
+	}
+	if this.acc == nil {
+		this.acc = newMinuteAccumulator(minute)
+	}
+	this.acc.add(sample)
+}
+
+// flushRollupLocked appends the accumulated minute as a rollup line and clears
+// the accumulator. Caller holds mu.
+func (this *memoryPersister) flushRollupLocked() {
+	if this.acc == nil {
+		return
+	}
+	rollup := this.acc.rollup()
+	this.acc = nil
+
+	line, err := json.Marshal(rollup)
+	if err != nil {
+		this.warn("marshal rollup: %v", err)
+		return
+	}
+	if err := os.MkdirAll(this.dir, 0755); err != nil {
+		this.warn("mkdir %s: %v", this.dir, err)
+		return
+	}
+	day, _, _ := strings.Cut(rollup.Minute, "T")
+	path := filepath.Join(this.dir, "rollups-"+day+".ndjson")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		this.warn("open %s: %v", path, err)
+		return
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		this.warn("append rollup: %v", err)
+	}
+	_ = f.Close()
+}
+
+// readRollupSeries reads the rollup tier for one component at or after since.
+func (this *memoryPersister) readRollupSeries(name string, since time.Time) []seriesPoint {
+	if this == nil {
+		return nil
+	}
+	return readRollupSeries(this.dir, name, since)
 }
 
 // rotateLocked closes the previous day's file, opens today's, and prunes
@@ -98,30 +157,40 @@ func (this *memoryPersister) pruneExpired(now time.Time) {
 	this.pruneLocked(now)
 }
 
+// pruneLocked enforces the two retention tiers: raw sample files are kept for
+// raw_window, rollup files for the full retention. Caller holds mu.
 func (this *memoryPersister) pruneLocked(now time.Time) {
-	if this.retention <= 0 {
-		return
-	}
 	entries, err := os.ReadDir(this.dir)
 	if err != nil {
 		return // dir not created yet — nothing to prune
 	}
-	cutoff := now.UTC().Add(-this.retention)
+	rawCutoff := now.UTC().Add(-this.rawWindow)
+	rollupCutoff := now.UTC().Add(-this.retention)
 	for _, e := range entries {
 		name := e.Name()
-		datePart, ok := strings.CutPrefix(name, "samples-")
-		if !ok || !strings.HasSuffix(datePart, ".ndjson") {
-			continue
+		switch {
+		case this.rawWindow > 0 && strings.HasPrefix(name, "samples-"):
+			this.pruneDayFile(name, "samples-", rawCutoff)
+		case this.retention > 0 && strings.HasPrefix(name, "rollups-"):
+			this.pruneDayFile(name, "rollups-", rollupCutoff)
 		}
-		datePart = strings.TrimSuffix(datePart, ".ndjson")
-		day, err := time.Parse("2006-01-02", datePart)
-		if err != nil {
-			continue
-		}
-		// Compare against the end of that day so a same-day boundary is kept.
-		if day.AddDate(0, 0, 1).Before(cutoff) {
-			_ = os.Remove(filepath.Join(this.dir, name))
-		}
+	}
+}
+
+// pruneDayFile removes a per-day NDJSON file whose day ends before cutoff.
+func (this *memoryPersister) pruneDayFile(name, prefix string, cutoff time.Time) {
+	datePart, ok := strings.CutPrefix(name, prefix)
+	if !ok || !strings.HasSuffix(datePart, ".ndjson") {
+		return
+	}
+	datePart = strings.TrimSuffix(datePart, ".ndjson")
+	day, err := time.Parse("2006-01-02", datePart)
+	if err != nil {
+		return
+	}
+	// Compare against the end of that day so a same-day boundary is kept.
+	if day.AddDate(0, 0, 1).Before(cutoff) {
+		_ = os.Remove(filepath.Join(this.dir, name))
 	}
 }
 
