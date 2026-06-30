@@ -51,6 +51,7 @@ type Target struct {
 		BackofficePort int     `yaml:"backoffice_port"`
 		PublicPort     int     `yaml:"public_port"`
 		Routes         []Route `yaml:"routes"`
+		Resources      Resources
 	} `yaml:"supervisor"`
 	// Env is committed, per-target pod environment, projected into
 	// .Values.env at bundle time. It is the lowest-priority env layer: the
@@ -72,6 +73,11 @@ type Route struct {
 	//                   accepts the self-signed origin cert.
 	//   "none"       -> no tls block; plaintext origin behind Cloudflare.
 	TLS string `yaml:"tls,omitempty" json:"tls,omitempty"`
+}
+
+type Resources struct {
+	Requests map[string]string `yaml:"requests,omitempty" json:"requests,omitempty"`
+	Limits   map[string]string `yaml:"limits,omitempty" json:"limits,omitempty"`
 }
 
 type bundleManifest struct {
@@ -352,6 +358,10 @@ func writeValues(stageRoot string, target Target) error {
 	for k, v := range target.Env {
 		env[k] = v
 	}
+	resources := target.Supervisor.Resources
+	if resources.Empty() {
+		resources = defaultResources()
+	}
 	values := map[string]any{
 		"app":       "supervisor",
 		"namespace": target.Namespace,
@@ -377,16 +387,24 @@ func writeValues(stageRoot string, target Target) error {
 			"trustedProxyCIDRs": target.Access.TrustedProxyCIDRs,
 		},
 		"env": env,
-		"resources": map[string]any{
-			"requests": map[string]any{"cpu": "25m", "memory": "64Mi"},
-			"limits":   map[string]any{"cpu": "500m", "memory": "512Mi"},
-		},
+		"resources": resources,
 	}
 	data, err := yaml.Marshal(values)
 	if err != nil {
 		return fmt.Errorf("marshal values: %w", err)
 	}
 	return os.WriteFile(filepath.Join(stageRoot, "values.yaml"), data, 0644)
+}
+
+func (this Resources) Empty() bool {
+	return len(this.Requests) == 0 && len(this.Limits) == 0
+}
+
+func defaultResources() Resources {
+	return Resources{
+		Requests: map[string]string{"cpu": "25m", "memory": "64Mi"},
+		Limits:   map[string]string{"cpu": "500m", "memory": "512Mi"},
+	}
 }
 
 func writeDeployScript(stageRoot string, target Target) error {
