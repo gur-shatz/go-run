@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gur-shatz/statekit"
+	"github.com/gur-shatz/statekit/console"
 	"github.com/gur-shatz/statekit/storage"
 
 	"github.com/gur-shatz/go-run/internal/log"
@@ -14,7 +15,7 @@ import (
 
 // observer is the supervisor's optional health-aggregation role. It owns a
 // statekit storage fed from the supervisor's own registry on a ticker, and
-// serves the storage console + API at /health.
+// serves the fleet state console + API at /health.
 //
 // This deliberately reuses the existing scraper path: the scraper already
 // mirrors every component's /state into the registry, so the observer just
@@ -50,10 +51,10 @@ func newObserver(cfg ObserveConfig, registry *statekit.Registry, logger *log.Log
 // console works behind a path-stripping reverse proxy.
 func (this *observer) mount(router chi.Router) {
 	api := storage.NewAPI(this.store)
-	ui := storage.UIHandler(storage.UIOptions{APIBase: "api"})
+	ui := console.Handler(console.Options{Title: "supervisor health", APIBase: "api"})
 
 	// One inner mux dispatches /api/* to the storage API and everything else
-	// (/, /ui.css, /ui.js) to the console, so the chi router needs only a
+	// (/, /app.css, /app.js) to the console, so the chi router needs only a
 	// single /health/* catch-all (no overlapping wildcards).
 	inner := http.NewServeMux()
 	inner.Handle("/api/", http.StripPrefix("/api", api.Handler()))
