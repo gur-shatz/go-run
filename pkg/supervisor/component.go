@@ -72,6 +72,12 @@ type Component struct {
 	// Set after construction via SetMemoryIncidentHook.
 	memIncident func(component, kind, reason string)
 
+	// cgroupAttach, when set, charges a launched child into this component's
+	// cgroup v2 leaf. It is called inside LaunchChild with the prepared *exec.Cmd
+	// before Start and returns a post-Start func invoked with the child pid. nil
+	// when there are no leaves (non-cgroup2 platform or enforcement disabled).
+	cgroupAttach func(cmd *exec.Cmd) func(pid int)
+
 	// Channel from Updater → Lifecycle. Coalescing: at most one pending
 	// switch at a time; signalSwitch replaces an older queued value.
 	switchCh chan string
@@ -158,11 +164,54 @@ func (this *Component) PID() int {
 	return this.pid
 }
 
+// UptimeSeconds returns the running child's uptime in seconds, or 0 if no child
+// is currently running. Read by the memory enforcer to honor min_uptime.
+func (this *Component) UptimeSeconds() int64 {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if this.launchedAt.IsZero() || this.pid == 0 {
+		return 0
+	}
+	return int64(time.Since(this.launchedAt).Seconds())
+}
+
 // SetMemoryIncidentHook wires the memory monitor's incident capture, invoked on
 // an abnormal child exit. A nil hook (memory subsystem off) leaves exit handling
 // unchanged.
 func (this *Component) SetMemoryIncidentHook(fn func(component, kind, reason string)) {
 	this.memIncident = fn
+}
+
+// SetCgroupAttach wires the cgroup-leaf charging hook used at child launch. A
+// nil hook (no leaves) leaves launch unchanged.
+func (this *Component) SetCgroupAttach(fn func(cmd *exec.Cmd) func(pid int)) {
+	this.cgroupAttach = fn
+}
+
+// TerminateForMemory kills the running child because it breached its memory
+// budget. It signals the child's process group (SIGTERM, then SIGKILL after
+// kill_grace_period), and the resulting exit flows through the normal lifecycle
+// exit path — so a memory kill is handled exactly like the process crashing on
+// its own: fast-crash accounting, backoff, and bad-version rollback all apply.
+// It does NOT go through the control channel (which would be a clean restart, not
+// a crash). No-op when no child is running. Called from the memory sampling
+// goroutine; safe to race with the lifecycle's own exit handling.
+func (this *Component) TerminateForMemory(reason string) {
+	this.mu.Lock()
+	pid := this.pid
+	this.mu.Unlock()
+	if pid <= 0 {
+		return
+	}
+	this.logger.Warn("[%s] memory kill (%s); pid=%d — terminating, counts as a crash", this.cfg.Name, reason, pid)
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	// Escalate to SIGKILL after the grace window in case the child ignores
+	// SIGTERM. Signalling a dead/relaunched group is a harmless ESRCH.
+	grace := this.killGracePeriod
+	go func(pid int) {
+		time.Sleep(grace)
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}(pid)
 }
 
 // Snapshot returns a JSON/YAML-friendly snapshot of the current state.
@@ -868,12 +917,23 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// Charge the child into its cgroup leaf. The hook may prepare cmd before
+	// Start and returns a post-Start func run with the child pid. Strictly
+	// additive: a nil hook (no leaves) leaves launch untouched.
+	var chargeLeaf func(pid int)
+	if this.cgroupAttach != nil {
+		chargeLeaf = this.cgroupAttach(cmd)
+	}
+
 	this.logger.Status("[%s] launching %s port=%d (logs=%s)", this.cfg.Name, version, port, logDir)
 	if err := cmd.Start(); err != nil {
 		_ = stdoutLog.Close()
 		_ = stderrLog.Close()
 		_ = ks.Close()
 		return nil, err
+	}
+	if chargeLeaf != nil {
+		chargeLeaf(cmd.Process.Pid)
 	}
 
 	rc := &runningChild{
@@ -939,6 +999,10 @@ func (this *Component) StopChild(rc *runningChild) {
 // Returns the backoff delay the caller should sleep before relaunching;
 // computing it here keeps the status-string and the actual delay in sync.
 func (this *Component) HandleChildExit(rc *runningChild, exit childExit) time.Duration {
+	// A memory kill (supervisor-terminated or kernel OOM) arrives here as an
+	// ordinary child exit and is handled identically to the process crashing on
+	// its own — the memory subsystem does not special-case it. The attribution
+	// (which component, why) is captured separately as a memory incident.
 	before := this.counters.FastCrashes
 	this.counters.OnExit(rc.launchedAt, exit.at)
 	if this.bundle != nil && this.counters.FastCrashes > before {

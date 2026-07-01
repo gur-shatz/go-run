@@ -36,10 +36,9 @@ supervisor:
   #   password: changeme   # template with env to avoid hard-coding a secret
   #   hint: "demo login: admin / changeme"  # shown under the form; demos only
 
-# memory: per-component memory tracking. This first iteration collects,
-# assesses, and DISPLAYS usage — it does not enforce limits. Tracking is ON BY
-# DEFAULT: with no block at all the supervisor measures each component's usage.
-# Set `enabled: false` to turn it off entirely.
+# memory: per-component memory tracking and (on Linux + cgroup v2) enforcement.
+# Tracking is ON BY DEFAULT: with no block at all the supervisor measures each
+# component's usage. Set `enabled: false` to turn it off entirely.
 #
 # Budgets are never absolute bytes. The pod limit is read automatically — from
 # MEMORY_LIMIT_BYTES if set (Kubernetes Downward API, resourceFieldRef:
@@ -48,15 +47,45 @@ supervisor:
 # known, each component's relative share is partitioned into soft/hard budgets,
 # so resizing the pod rescales every component automatically. Per-component
 # shares go under each component's own memory:.
+#
+# Enforcement has two independent axes:
+#   A) Kernel enforcement (cgroup v2 only): the supervisor builds a leaf per
+#      component under workload/, charges each child into its leaf, and writes
+#      memory.high/memory.max/memory.oom.group so the KERNEL throttles and
+#      OOM-kills the leaf. Auto-on on a writable cgroup v2 node.
+#   B) Supervisor "choose" actions (any mode): an enforcer watches each
+#      component's memory STATE (warn = over soft threshold, fail = over hard
+#      threshold) and, once a component is fail for `sustained_for`, terminates
+#      it. A memory kill is treated exactly like the process crashing on its own
+#      — fast-crash accounting, backoff, and bad-version rollback all apply. This
+#      is platform-independent (exact leaf figure under cgroup v2, else RSS), so
+#      it runs (and is testable) on the macOS dev box. Gated by `memory.enforce`
+#      (default on); a component sets `monitor_only: true` to opt out of killing.
+# In cgroup v2 both run: the supervisor pre-empts and the kernel is the backstop.
+# In host/cgroup1 only axis B runs (best-effort, no backstop).
 # memory:
-#   enabled: true                       # on by default; set false to disable
+#   enabled: true                       # master switch; on by default
+#   enforce: true                       # global switch for supervisor memory kills; on by default
 #   limit_env_var: MEMORY_LIMIT_BYTES   # override the pod-limit env var name
 #   limit_bytes: 0                      # dev-only explicit pod limit (fallback after the env var)
 #   supervisor_reserve: 0.08            # fraction of the limit held for the supervisor
 #   cache_headroom: 0.10               # extra slack below the hard pool for page cache/slab
 #   sample_interval: 5s                # cheap-sample cadence
+#   pss_interval: 60s                  # slower PSS (smaps_rollup) cadence; 0 disables
 #   raw_window: 1h                     # in-memory history for the live view + sparkline
 #   retention: 72h                     # how long on-disk NDJSON sample files are kept
+#   sustained_for: 60s                 # time in the fail state before a kill (global)
+#   pod_pressure_high: 0.90            # container-current / limit ratio that trips pod pressure
+#   pod_pressure_psi: 0.10             # pod PSI 'some' ratio that trips pod pressure
+# ...and per component, under its own memory: (budget + the one enforcement knob)
+#   memory:
+#     share: 0.40                      # fraction of the workload budget, OR:
+#     hardlimit: 40m                   # absolute hard cap in bytes (k/m/g/t units);
+#                                      #   alternative to share, needs no pod limit
+#     softlimit: 32m                   # optional absolute warn band paired with hardlimit
+#                                      #   (default: derived ~10% below the hard cap)
+#     monitor_only: false              # true = track + warn/fail state but never kill
+#     tracking: true                   # per-component sampling on/off
 
 updates:
   enabled: true

@@ -301,6 +301,103 @@ var _ = Describe("Config", func() {
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(MatchError(ContainSubstring("supervisor.favicon.name")))
 		})
+
+		It("rejects setting both memory.share and memory.hardlimit", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "leaker", Port: 8080, Command: "/bin/l",
+						Memory: &supervisor.ComponentMemoryConfig{Share: 0.4, HardLimit: 50 << 20}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("mutually exclusive")))
+		})
+
+		It("rejects a softlimit greater than the hardlimit", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "leaker", Port: 8080, Command: "/bin/l",
+						Memory: &supervisor.ComponentMemoryConfig{SoftLimit: 60 << 20, HardLimit: 40 << 20}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("softlimit")))
+		})
+
+		It("accepts an explicit soft + hard limit pair", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "leaker", Port: 8080, Command: "/bin/l",
+						Memory: &supervisor.ComponentMemoryConfig{SoftLimit: 30 << 20, HardLimit: 40 << 20}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts a component with only a hardlimit (no share, no global limit)", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "leaker", Port: 8080, Command: "/bin/l",
+						Memory: &supervisor.ComponentMemoryConfig{HardLimit: 50 << 20}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects a pod_pressure_high outside [0,1]", func() {
+			cfg := supervisor.Config{
+				Memory: &supervisor.MemoryConfig{PodPressureHigh: 1.5},
+			}
+			cfg.ApplyDefaults()
+			cfg.Memory.PodPressureHigh = 1.5 // re-assert after defaults
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("pod_pressure_high")))
+		})
+	})
+
+	Describe("memory defaults", func() {
+		It("fills the global enforcement defaults", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "gateway", Port: 8080, Command: "/bin/g",
+						Memory: &supervisor.ComponentMemoryConfig{Share: 0.4}},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Memory.SustainedFor).To(Equal(60 * time.Second))
+			Expect(cfg.Memory.PodPressureHigh).To(BeNumerically("~", 0.90, 1e-9))
+			Expect(cfg.Memory.PodPressurePSI).To(BeNumerically("~", 0.10, 1e-9))
+			Expect(cfg.Memory.PSSInterval).To(Equal(60 * time.Second))
+		})
+
+		It("defaults monitor_only to false (the component is enforced)", func() {
+			cm := &supervisor.ComponentMemoryConfig{HardLimit: 40 << 20}
+			Expect(cm.IsMonitorOnly()).To(BeFalse())
+		})
+
+		It("honors an explicit monitor_only: true (tracked but never killed)", func() {
+			on := true
+			cm := &supervisor.ComponentMemoryConfig{HardLimit: 40 << 20, MonitorOnly: &on}
+			Expect(cm.IsMonitorOnly()).To(BeTrue())
+		})
+
+		It("defaults supervisor enforcement (memory.enforce) to on, independent of cgroups", func() {
+			m := &supervisor.MemoryConfig{} // nil Enforce
+			Expect(m.IsEnforcing()).To(BeTrue())
+		})
+
+		It("honors an explicit enforce: false (tracking + state, no supervisor actions)", func() {
+			off := false
+			m := &supervisor.MemoryConfig{Enforce: &off}
+			Expect(m.IsEnforcing()).To(BeFalse())
+		})
+
+		It("reports not enforcing when the whole subsystem is disabled", func() {
+			disabled, on := false, true
+			m := &supervisor.MemoryConfig{Enabled: &disabled, Enforce: &on}
+			Expect(m.IsEnforcing()).To(BeFalse())
+		})
 	})
 
 	Describe("LoadConfig", func() {

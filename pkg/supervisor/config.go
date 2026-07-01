@@ -107,6 +107,19 @@ type MemoryConfig struct {
 	// at all. Set `enabled: false` to turn the subsystem off entirely.
 	Enabled *bool `yaml:"enabled,omitempty"`
 
+	// Enforce controls the supervisor's own "choose" actions: reacting to a
+	// component's memory state (warn = soft breach, fail = hard breach) with its
+	// pressure_action (graceful_restart / kill / stop) and pod-pressure shedding.
+	// This is a SEPARATE axis from the cgroup2 kernel primitives
+	// (memory.high/max/oom.group): it is platform-independent, acts on whatever
+	// per-component figure is available (exact leaf memory.current under cgroup2,
+	// process RSS otherwise), and only needs a resolved global limit so budgets
+	// exist. Because it does not depend on cgroups it runs — and can be tested —
+	// on the macOS dev box in host mode. Pointer so an absent value defaults to
+	// on; set `enforce: false` to keep tracking + state but take no action (rely
+	// on the kernel backstop under cgroup2, or on alerts elsewhere).
+	Enforce *bool `yaml:"enforce,omitempty"`
+
 	// LimitEnvVar names the environment variable carrying the pod memory
 	// limit in bytes. Default "MEMORY_LIMIT_BYTES". Populated via the
 	// Kubernetes Downward API (resourceFieldRef: limits.memory).
@@ -139,6 +152,28 @@ type MemoryConfig struct {
 	// IncidentSamples is how many recent samples are snapshotted into an
 	// incident file on an abnormal child exit. Default 60 (~5m at 5s).
 	IncidentSamples int `yaml:"incident_samples,omitempty"`
+
+	// --- Phase 2 (cgroup v2 enforcement) ---
+
+	// PSSInterval is the slower cadence for the expensive PSS read from
+	// /proc/<pid>/smaps_rollup. Default 60s; 0 disables PSS sampling entirely.
+	// Only honored on Linux; ignored in host/disabled modes.
+	PSSInterval time.Duration `yaml:"pss_interval,omitempty"`
+
+	// PodPressureHigh is the container-current / global-limit ratio above which
+	// the supervisor enters pod-pressure handling (the aggregate safety net).
+	// Fraction of L, default 0.90.
+	PodPressureHigh float64 `yaml:"pod_pressure_high,omitempty"`
+
+	// PodPressurePSI is the pod-level PSI "some" stall ratio above which the
+	// supervisor enters pod-pressure handling, as a leading indicator ahead of
+	// the absolute threshold. Default 0.10.
+	PodPressurePSI float64 `yaml:"pod_pressure_psi,omitempty"`
+
+	// SustainedFor is how long a component's memory state must stay fail (over
+	// the hard threshold) before the supervisor terminates it. Global, not
+	// per-component — the "X seconds" of the enforce rule. Default 60s.
+	SustainedFor time.Duration `yaml:"sustained_for,omitempty"`
 }
 
 // IsEnabled reports whether the memory subsystem should run. Measuring is on by
@@ -151,18 +186,56 @@ func (this *MemoryConfig) IsEnabled() bool {
 	return this.Enabled == nil || *this.Enabled
 }
 
+// IsEnforcing reports whether the supervisor should take its own memory actions
+// (react to the per-component memory state with pressure_action / pod-pressure
+// shedding). Independent of cgroup mode; defaults to on when the subsystem is
+// enabled. Actual acting additionally requires a resolved global limit so
+// budgets — and therefore the warn/fail states — exist.
+func (this *MemoryConfig) IsEnforcing() bool {
+	if !this.IsEnabled() {
+		return false
+	}
+	if this == nil {
+		return true
+	}
+	return this.Enforce == nil || *this.Enforce
+}
+
 // ComponentMemoryConfig is the per-component slice of the workload budget plus
-// its tracking flag. Enforcement-policy fields are deliberately omitted in this
-// tracking-only iteration.
+// its tracking and (phase 2) enforcement policy.
 type ComponentMemoryConfig struct {
 	// Share is the fraction of the workload budget this component may use.
 	// Shares across components must sum to at most 1. A component without a
-	// share is tracked but unbudgeted (no derived soft/hard limit).
+	// share (and without a hardlimit) is tracked but unbudgeted (no derived
+	// soft/hard limit). Mutually exclusive with HardLimit.
 	Share float64 `yaml:"share,omitempty"`
+
+	// HardLimit is an ABSOLUTE hard budget in bytes (the fail threshold), an
+	// alternative to the relative Share. Unlike Share it does not depend on a
+	// resolved global limit — `hardlimit: 10m` means this component may use 10
+	// MiB regardless of the pod size — so it is the simple way to bound one
+	// component (and it makes enforcement testable on a dev box with no pod
+	// limit). Mutually exclusive with Share; 0 means unset.
+	HardLimit ByteSize `yaml:"hardlimit,omitempty"`
+
+	// SoftLimit is an ABSOLUTE soft budget in bytes (the warn threshold), the
+	// companion to HardLimit. When set it fixes the warn band directly; when
+	// unset (but HardLimit is set) the warn band is derived just below the hard
+	// cap (hard * (1 - cache_headroom)). Must be <= HardLimit. Mutually exclusive
+	// with Share. 0 means unset.
+	SoftLimit ByteSize `yaml:"softlimit,omitempty"`
 
 	// Tracking enables/disables per-component sampling. Pointer so an absent
 	// value defaults to on when the subsystem is enabled.
 	Tracking *bool `yaml:"tracking,omitempty"`
+
+	// MonitorOnly, when true, exempts this component from being killed for
+	// memory: it is still tracked and its warn/fail state still shows, but the
+	// supervisor never terminates it (and it is never shed under pod pressure).
+	// This is the ONLY per-component enforcement knob; everything else (how long
+	// to wait in fail before acting, etc.) is a global default. Pointer so an
+	// absent value defaults to false (i.e. the component IS enforced).
+	MonitorOnly *bool `yaml:"monitor_only,omitempty"`
 }
 
 // IsTracked reports whether this component should be sampled. Absent means on.
@@ -171,6 +244,15 @@ func (this *ComponentMemoryConfig) IsTracked() bool {
 		return true
 	}
 	return this.Tracking == nil || *this.Tracking
+}
+
+// IsMonitorOnly reports whether this component is exempt from memory kills.
+// Absent means false (the component is enforced).
+func (this *ComponentMemoryConfig) IsMonitorOnly() bool {
+	if this == nil {
+		return false
+	}
+	return this.MonitorOnly != nil && *this.MonitorOnly
 }
 
 // StateMonitorConfig groups the two component-monitoring sub-roles.
@@ -545,6 +627,18 @@ func (this *Config) applyMemoryDefaults() {
 	if m.IncidentSamples == 0 {
 		m.IncidentSamples = 60
 	}
+	if m.PSSInterval == 0 {
+		m.PSSInterval = 60 * time.Second
+	}
+	if m.PodPressureHigh == 0 {
+		m.PodPressureHigh = 0.90
+	}
+	if m.PodPressurePSI == 0 {
+		m.PodPressurePSI = 0.10
+	}
+	if m.SustainedFor == 0 {
+		m.SustainedFor = 60 * time.Second
+	}
 }
 
 // applyURLDefaults fills in any unset URL paths with the conventional values.
@@ -668,7 +762,23 @@ func (this *Config) validateMemory() error {
 		if c.Memory.Share < 0 {
 			return fmt.Errorf("components[%q]: memory.share must be non-negative", c.Name)
 		}
+		if c.Memory.HardLimit < 0 || c.Memory.SoftLimit < 0 {
+			return fmt.Errorf("components[%q]: memory.hardlimit/softlimit must be non-negative", c.Name)
+		}
+		if c.Memory.Share > 0 && (c.Memory.HardLimit > 0 || c.Memory.SoftLimit > 0) {
+			return fmt.Errorf("components[%q]: memory.share is mutually exclusive with hardlimit/softlimit", c.Name)
+		}
+		if c.Memory.SoftLimit > 0 && c.Memory.HardLimit > 0 && c.Memory.SoftLimit > c.Memory.HardLimit {
+			return fmt.Errorf("components[%q]: memory.softlimit (%d) must be <= hardlimit (%d)",
+				c.Name, int64(c.Memory.SoftLimit), int64(c.Memory.HardLimit))
+		}
 		sumShares += c.Memory.Share
+	}
+	if m.PodPressureHigh < 0 || m.PodPressureHigh > 1 {
+		return fmt.Errorf("memory: pod_pressure_high must be in [0,1] (got %.3f)", m.PodPressureHigh)
+	}
+	if m.PodPressurePSI < 0 || m.PodPressurePSI > 1 {
+		return fmt.Errorf("memory: pod_pressure_psi must be in [0,1] (got %.3f)", m.PodPressurePSI)
 	}
 	if sumShares > 1+epsilon {
 		return fmt.Errorf("memory: component shares must sum to <= 1 (got %.3f)", sumShares)

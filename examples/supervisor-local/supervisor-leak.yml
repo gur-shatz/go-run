@@ -1,0 +1,59 @@
+# Self-contained memory-enforcement demo: one Python component that leaks memory
+# until the supervisor kills it. Run it with ./run-leak-demo.sh, then open
+# http://127.0.0.1:9191/ (and /backoffice/memory, /backoffice/memory/incidents).
+#
+# No cgroups and no pod limit are involved. The component declares an ABSOLUTE
+# per-component memory.hardlimit, so the supervisor can derive its warn/fail
+# state and enforce it purely from process RSS — which is why this works on a
+# macOS dev box. This is "axis B" (supervisor 'choose' actions), independent of
+# the cgroup2 kernel primitives.
+
+state_dir: ./build-leak
+
+stability_time: 30s
+crash_window: 120s     # an exit within this of launch is a "fast crash"
+crash_threshold: 3     # 3 fast crashes -> bad version (reject / roll back to last good)
+kill_grace_period: 2s
+version_folder_retention: 0
+
+supervisor:
+  bind_address: 127.0.0.1:9191
+  favicon:
+    name: LK
+  metric_labels:
+    source: example-leak-demo
+
+# Purely local: no update polling, run whatever current.txt points at.
+updates:
+  enabled: false
+
+# The Python component serves plain 200s, not statekit /state or /metrics, so
+# turn the scraper off to keep the logs focused on the memory behaviour.
+state_monitor:
+  scrape:
+    enabled: false
+
+memory:
+  enabled: true
+  enforce: true        # global switch for supervisor-driven memory kills
+  sample_interval: 1s  # snappy sampling so the climb is easy to watch
+  sustained_for: 2s    # kill once the state has been fail for 2s (global, not per-component)
+
+# A memory kill is treated exactly like the process crashing on its own. So if a
+# component is killed for memory repeatedly and quickly (each within crash_window
+# of its launch), it trips the crash breaker and is treated as a bad version —
+# rejected / rolled back to the last known good — just like any crash loop. A
+# component that fills slowly and only dies after a long, healthy uptime is not a
+# fast crash and simply restarts under backoff.
+components:
+  - name: leaker
+    description: "Python component that leaks memory until killed"
+    port: 18093
+    command: "python3 ./leaker.py --port=18093"
+    memory:
+      softlimit: 32m       # absolute warn threshold (optional; else derived ~90% of hard)
+      hardlimit: 40m       # absolute hard cap (fail threshold); ~20MiB above python's baseline
+      # monitor_only: true # the ONLY per-component knob: track + warn/fail but never kill
+    urls:
+      healthz: /healthz
+      readyz: /readyz

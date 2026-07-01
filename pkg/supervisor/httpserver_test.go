@@ -253,6 +253,42 @@ var _ = Describe("component controls", func() {
 	})
 })
 
+var _ = Describe("component supervisorstate endpoint", func() {
+	newServer := func() *httptest.Server {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir, Components: []ComponentConfig{
+			{Name: "hello", Port: 18090, Command: "/bin/hello"},
+		}}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		return httptest.NewServer(hs.server.Handler)
+	}
+
+	It("serves just the component's supervisorstate aggregate", func() {
+		srv := newServer()
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/components/hello/supervisorstate")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(ContainSubstring("hello.supervisorstate"))
+	})
+
+	It("404s for an unknown component", func() {
+		srv := newServer()
+		defer srv.Close()
+
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/components/nope/supervisorstate")
+		Expect(err).NotTo(HaveOccurred())
+		_ = resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+	})
+})
+
 var _ = Describe("favicon", func() {
 	newFaviconServer := func(status string, auth BasicAuthConfig) (*httptest.Server, *http.Client) {
 		dir := GinkgoT().TempDir()

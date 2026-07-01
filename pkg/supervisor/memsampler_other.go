@@ -30,3 +30,7 @@ func readProcessRSS(pid int) (int64, bool) {
 	}
 	return kb * 1024, true
 }
+
+// readProcessPSS has no cheap equivalent on macOS (no smaps_rollup), so PSS is
+// simply unavailable in host mode. The caller omits the field.
+func readProcessPSS(_ int) (int64, bool) { return 0, false }

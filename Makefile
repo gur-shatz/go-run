@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -29,6 +29,7 @@ clean:
 	rm -rf examples/supervisor-local/build/logs examples/supervisor-local/build/supervisor.lock
 	rm -f examples/supervisor-local/build/hello/hello.bin examples/supervisor-local/build/hello/stable.txt
 	rm -f examples/supervisor-local/build/hello/rejects.txt examples/supervisor-local/build/hello/kill.sock
+	rm -rf examples/supervisor-local/build-leak
 	go clean
 
 install:
@@ -73,6 +74,12 @@ example-supervisor-local:
 
 example-supervisor-local-external:
 	LDFLAGS="$(LDFLAGS)" examples/supervisor-local/run-with-external.sh
+
+# Memory-enforcement demo: a Python component that leaks memory until the
+# supervisor kills and restarts it (host mode, no cgroups needed). Watch it at
+# http://127.0.0.1:9191/ and /backoffice/memory/incidents.
+example-supervisor-leak:
+	LDFLAGS="$(LDFLAGS)" examples/supervisor-local/run-leak-demo.sh
 
 package-supervisor:
 	./deploy/supervisor/package.sh

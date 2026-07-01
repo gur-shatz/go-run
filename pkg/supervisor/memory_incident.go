@@ -9,7 +9,13 @@ import (
 // abnormal child exit; enforcement phases add soft_restart/hard_restart/
 // oom_kill, and a pod_oom_reconstructed kind written on the next start after a
 // whole-pod OOM (which needs the cgroup oom_kill counter, deferred to Track A).
-const memIncidentChildExit = "child_exit"
+const (
+	memIncidentChildExit   = "child_exit"
+	memIncidentHardRestart = "hard_restart" // memory state fail sustained -> terminated
+	memIncidentOOMKill     = "oom_kill"     // cgroup2 leaf OOM kill observed
+	memIncidentPodPressure = "pod_pressure"
+	memIncidentPodOOMRecon = "pod_oom_reconstructed"
+)
 
 // memoryIncident wraps the trigger and the preceding samples, so post-restart
 // diagnosis is possible even after Kubernetes events have expired. It shares

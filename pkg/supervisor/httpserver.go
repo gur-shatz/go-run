@@ -216,6 +216,24 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 			writeYAML(w, doc)
 		})
 
+		// /supervisorstate: just this component's supervisorstate aggregate —
+		// the supervisor's own local view (uptime/update/memory leaves), without
+		// the mirrored scraped child states that /state also includes. Same YAML
+		// shape and ?format handling as /state.
+		r.Get("/supervisorstate", func(w http.ResponseWriter, r *http.Request) {
+			name := chi.URLParam(r, "name")
+			if _, ok := sp.ComponentSnapshot(name); !ok {
+				http.Error(w, "no such component", http.StatusNotFound)
+				return
+			}
+			doc, err := statekit.ApplyDisplayFormat(componentSupervisorStateDocument(bundle, name), r.URL.Query().Get("format"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeYAML(w, doc)
+		})
+
 		if ra != nil {
 			r.Post("/reject", func(w http.ResponseWriter, r *http.Request) {
 				name := chi.URLParam(r, "name")
@@ -526,6 +544,23 @@ func componentStateDocument(bundle *statekitBundle, component string) statekit.S
 	filtered := make([]statekit.Snapshot, 0, len(full.States))
 	for _, s := range full.States {
 		if s.ScrapedFrom == component {
+			filtered = append(filtered, s)
+		}
+	}
+	full.States = filtered
+	return full
+}
+
+// componentSupervisorStateDocument narrows the state document to a single entry:
+// this component's "<name>.supervisorstate" aggregate — the supervisor's own
+// local view (the uptime/update/memory leaves), without the mirrored scraped
+// child states that componentStateDocument also carries.
+func componentSupervisorStateDocument(bundle *statekitBundle, component string) statekit.StateDisplayDocument {
+	full := bundle.registry.StateDisplay()
+	want := component + ".supervisorstate"
+	filtered := make([]statekit.Snapshot, 0, 1)
+	for _, s := range full.States {
+		if s.Name == want {
 			filtered = append(filtered, s)
 		}
 	}

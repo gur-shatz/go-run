@@ -124,6 +124,68 @@ func (this *memoryPersister) readRollupSeries(name string, since time.Time) []se
 	return readRollupSeries(this.dir, name, since)
 }
 
+// loadLastSample reads the most recently persisted sample (current.json), which
+// on startup is the last sample of the previous supervisor run. ok is false when
+// no prior series exists. Used for pod-OOM reconstruction.
+func (this *memoryPersister) loadLastSample() (memorySample, bool) {
+	if this == nil {
+		return memorySample{}, false
+	}
+	raw, err := os.ReadFile(filepath.Join(this.dir, "current.json"))
+	if err != nil {
+		return memorySample{}, false
+	}
+	var s memorySample
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return memorySample{}, false
+	}
+	return s, true
+}
+
+// loadRecentRawSamples returns up to n most-recent raw samples from the newest
+// per-day file, oldest first. It rebuilds the incident payload for a whole-pod
+// OOM, where no live exit handler ran to snapshot the ring in memory.
+func (this *memoryPersister) loadRecentRawSamples(n int) []memorySample {
+	if this == nil || n <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(this.dir)
+	if err != nil {
+		return nil
+	}
+	var newest string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "samples-") && strings.HasSuffix(e.Name(), ".ndjson") {
+			if e.Name() > newest {
+				newest = e.Name()
+			}
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(this.dir, newest))
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]memorySample, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var s memorySample
+		if err := json.Unmarshal([]byte(line), &s); err != nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // rotateLocked closes the previous day's file, opens today's, and prunes
 // expired files. Caller holds mu.
 func (this *memoryPersister) rotateLocked(day string, now time.Time) {

@@ -157,6 +157,9 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	if this.memory != nil {
 		for _, comp := range this.components {
 			comp.SetMemoryIncidentHook(this.memory.captureIncident)
+			if attach := this.memory.leafAttacher(comp.Name()); attach != nil {
+				comp.SetCgroupAttach(attach)
+			}
 		}
 	}
 

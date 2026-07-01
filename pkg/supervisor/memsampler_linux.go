@@ -38,3 +38,35 @@ func readProcessRSS(pid int) (int64, bool) {
 	}
 	return 0, false
 }
+
+// readProcessPSS returns the proportional set size of a process in bytes from
+// /proc/<pid>/smaps_rollup (the Pss field, in kB). PSS shares each page's cost
+// across the processes mapping it, so it is better than RSS for diagnosis when
+// components share runtime or library pages, but it is more expensive to read —
+// hence the separate, slower pss_interval cadence. ok is false if the process
+// is gone or the kernel lacks smaps_rollup.
+func readProcessPSS(pid int) (int64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/smaps_rollup")
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		rest, ok := strings.CutPrefix(line, "Pss:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest) // "<kb> kB"
+		if len(fields) == 0 {
+			return 0, false
+		}
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return kb * 1024, true
+	}
+	return 0, false
+}

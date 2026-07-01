@@ -111,19 +111,50 @@ func derivePools(L int64, m *MemoryConfig) memoryPools {
 // just with zero byte budgets.
 func deriveBudgets(L int64, m *MemoryConfig, comps []ComponentConfig) map[string]componentBudget {
 	pools := derivePools(L, m)
+	// Soft-below-hard ratio for an absolute hardlimit: the same page-cache
+	// headroom the pool math reserves, so the warn band sits just under the hard
+	// cap (default 10% below). Falls back to no band if headroom is >= 1.
+	softRatio := 1 - m.CacheHeadroom
+	if softRatio < 0 {
+		softRatio = 0
+	}
+
 	out := make(map[string]componentBudget, len(comps))
 	for _, c := range comps {
 		if c.Memory == nil {
 			continue
 		}
 		b := componentBudget{Share: c.Memory.Share}
-		if pools.SoftPool > 0 && c.Memory.Share > 0 {
+		switch {
+		case c.Memory.HardLimit > 0 || c.Memory.SoftLimit > 0:
+			// Absolute budget: independent of the resolved global limit.
+			b.LimitBytes = int64(c.Memory.HardLimit)
+			switch {
+			case c.Memory.SoftLimit > 0:
+				b.HighBytes = int64(c.Memory.SoftLimit) // explicit warn band
+			case b.LimitBytes > 0:
+				b.HighBytes = int64(float64(b.LimitBytes) * softRatio) // derived just below hard
+			}
+		case pools.SoftPool > 0 && c.Memory.Share > 0:
+			// Relative budget: a slice of the workload pools (needs a resolved L).
 			b.HighBytes = int64(float64(pools.SoftPool) * c.Memory.Share)
 			b.LimitBytes = int64(float64(pools.HardPool) * c.Memory.Share)
 		}
 		out[c.Name] = b
 	}
 	return out
+}
+
+// anyBudgeted reports whether at least one component has a real hard budget
+// (from a share + resolved limit, or an absolute hardlimit). Without one there
+// are no warn/fail states for the enforcer to react to.
+func anyBudgeted(budgets map[string]componentBudget) bool {
+	for _, b := range budgets {
+		if b.LimitBytes > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Memory assessment states, mirroring the (future) enforcement vocabulary.

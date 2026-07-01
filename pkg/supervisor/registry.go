@@ -75,6 +75,20 @@ type statekitBundle struct {
 	podCurrent    *statekit.Gauge
 	workloadCur   *statekit.Gauge
 	memorySampleT *statekit.Gauge
+	// Phase-2 enforcement metrics. RSS per component, the leaf event and
+	// memory-restart counters, and the supervisor's own RSS. Share and PSI are
+	// sub-1.0 fractions that an int64 gauge cannot represent, so they live on
+	// the sample JSON and the /backoffice/memory view instead of as gauges.
+	memoryRSS      *statekit.GaugeVec
+	memoryEvents   *statekit.CounterVec
+	memoryRestarts *statekit.CounterVec
+	supervisorRSS  *statekit.Gauge
+	// memorySubsystem is a supervisor-scoped statekit state for the memory
+	// subsystem's own health (distinct from any component's memory pressure).
+	// It is pass while the subsystem does what its mode promised and warn when it
+	// runs degraded (fail-open). nil when the subsystem is disabled. Registered
+	// as a top-level state so it appears in /state and emits state_level.
+	memorySubsystem *statekit.ManualState
 
 	// Per-component scalar metrics attached to the "uptime" leaf via
 	// AddMetric — they appear inside the leaf's "metrics:" block in /state.
@@ -90,6 +104,12 @@ type componentStates struct {
 	lifecycle *statekit.ManualState // the "uptime" leaf
 	update    *statekit.ManualState // the "update" leaf
 	memory    *statekit.ManualState // the "memory" leaf (nil when subsystem off)
+	// Per-leaf memory metrics attached to the memory leaf, so the state document
+	// carries the numbers behind the pass/warn/fail, not just the verdict. nil
+	// when the subsystem is off.
+	memCurrent *statekit.Gauge
+	memHigh    *statekit.Gauge
+	memLimit   *statekit.Gauge
 }
 
 func newStatekitBundle(cfg Config) *statekitBundle {
@@ -122,24 +142,39 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		runCount:                 statekit.NewCounterVec("component_runcount_total", "Child launches since the supervisor started.", "component"),
 		uptimeSeconds:            statekit.NewGaugeVec("component_uptime_seconds", "Current child uptime in seconds.", "component"),
 		monitorPort:              statekit.NewGaugeVec("component_monitor_port", "Configured monitor port for the component.", "component"),
-		memoryCurrent:            statekit.NewGaugeVec("component_memory_current_bytes", "Current memory usage of the component (process RSS in tracking mode).", "component"),
-		memoryHigh:               statekit.NewGaugeVec("component_memory_high_bytes", "Derived soft memory budget for the component (0 if unbudgeted).", "component"),
-		memoryLimit:              statekit.NewGaugeVec("component_memory_limit_bytes", "Derived hard memory budget for the component (0 if unbudgeted).", "component"),
+		memoryCurrent:            statekit.NewGaugeVec("component_memory_current_mbytes", "Current memory usage of the component in MiB (process RSS in tracking mode).", "component"),
+		memoryHigh:               statekit.NewGaugeVec("component_memory_high_mbytes", "Derived soft memory budget for the component in MiB (0 if unbudgeted).", "component"),
+		memoryLimit:              statekit.NewGaugeVec("component_memory_limit_mbytes", "Derived hard memory budget for the component in MiB (0 if unbudgeted).", "component"),
 		memoryMode:               statekit.NewGaugeVec("memory_mode", "Resolved memory subsystem mode; 1 for the active mode.", "mode"),
-		podLimit:                 statekit.NewGauge("pod_memory_global_limit_bytes", "Resolved pod memory limit in bytes (0 if unresolved)."),
-		machineTotal:             statekit.NewGauge("machine_memory_total_bytes", "Host total physical RAM in bytes (context only; not the pod budget)."),
-		cgroupLimit:              statekit.NewGauge("cgroup_memory_limit_bytes", "Container cgroup memory.max in bytes (0 if none/unknown)."),
-		podCurrent:               statekit.NewGauge("pod_memory_current_bytes", "Container cgroup current memory in bytes (summed RSS in host mode)."),
-		workloadCur:              statekit.NewGauge("workload_memory_current_bytes", "Summed current memory across tracked components in bytes."),
+		podLimit:                 statekit.NewGauge("pod_memory_global_limit_mbytes", "Resolved pod memory limit in MiB (0 if unresolved)."),
+		machineTotal:             statekit.NewGauge("machine_memory_total_mbytes", "Host total physical RAM in MiB (context only; not the pod budget)."),
+		cgroupLimit:              statekit.NewGauge("cgroup_memory_limit_mbytes", "Container cgroup memory.max in MiB (0 if none/unknown)."),
+		podCurrent:               statekit.NewGauge("pod_memory_current_mbytes", "Container cgroup current memory in MiB (summed RSS in host mode)."),
+		workloadCur:              statekit.NewGauge("workload_memory_current_mbytes", "Summed current memory across tracked components in MiB."),
 		memorySampleT:            statekit.NewGauge("memory_last_sample_timestamp_seconds", "Unix time of the last memory sample."),
+		memoryRSS:                statekit.NewGaugeVec("component_memory_rss_mbytes", "Process RSS of the component in MiB (cheap per-process signal alongside the leaf charge).", "component"),
+		memoryEvents:             statekit.NewCounterVec("component_memory_events_total", "Leaf memory.events increments observed by the supervisor.", "component", "event"),
+		memoryRestarts:           statekit.NewCounterVec("component_memory_restarts_total", "Memory-driven restarts/stops the supervisor performed.", "component", "reason"),
+		supervisorRSS:            statekit.NewGauge("supervisor_self_memory_rss_mbytes", "The supervisor process's own RSS in MiB."),
 		perComponentRunCount:     make(map[string]*statekit.Counter, len(cfg.Components)),
 		perComponentUptime:       make(map[string]*statekit.Gauge, len(cfg.Components)),
 		perComponentFastCrashes:  make(map[string]*statekit.Gauge, len(cfg.Components)),
 		perComponentExecFailures: make(map[string]*statekit.Gauge, len(cfg.Components)),
 	}
 	_ = reg.RegisterCollectors(b.fastCrashes, b.execFailures, b.runCount, b.uptimeSeconds, b.monitorPort,
-		b.memoryCurrent, b.memoryHigh, b.memoryLimit, b.memoryMode, b.podLimit, b.machineTotal, b.cgroupLimit, b.podCurrent, b.workloadCur, b.memorySampleT)
+		b.memoryCurrent, b.memoryHigh, b.memoryLimit, b.memoryMode, b.podLimit, b.machineTotal, b.cgroupLimit, b.podCurrent, b.workloadCur, b.memorySampleT,
+		b.memoryRSS, b.memoryEvents, b.memoryRestarts, b.supervisorRSS)
 	reg.RegisterEscalations(b.escalations)
+
+	// Memory-subsystem health leaf — a supervisor-scoped state, separate from any
+	// component's memory pressure. Pass while the subsystem does what its mode
+	// promised; warn when it runs degraded (fail-open). Registered top-level so
+	// it shows in /state as memory.subsystem and emits a state_level metric.
+	if cfg.Memory.IsEnabled() {
+		b.memorySubsystem = statekit.NewManualState("memory.subsystem")
+		b.memorySubsystem.Pass("initializing", nil)
+		_ = reg.Register(&taggedState{underlying: b.memorySubsystem, scrapedFrom: "supervisor"})
+	}
 
 	for _, c := range cfg.Components {
 		// Lifecycle leaf — Important. Mirrors the supervisor's local view of
@@ -161,10 +196,19 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 
 		// Memory leaf — Important, only when the subsystem is enabled. Memory
 		// pressure escalates the component: soft -> warn, hard -> fail, so the
-		// aggregate (and the portal badge) reflect a component eating memory.
+		// aggregate (and the portal badge) reflect a component eating memory. The
+		// leaf carries the current/high/limit figures as metrics so the state
+		// document shows the numbers behind the verdict.
 		var memory *statekit.ManualState
+		var memCurrent, memHigh, memLimit *statekit.Gauge
 		if cfg.Memory.IsEnabled() {
 			memory = statekit.NewManualState("memory")
+			// Expressed in MiB so the state document reads at a glance (40, not
+			// 41943040), matching every other memory metric.
+			memCurrent = statekit.NewGauge("current_mbytes", "Current memory charged to the component in MiB (leaf memory.current under cgroup2, else RSS).")
+			memHigh = statekit.NewGauge("high_mbytes", "Soft memory threshold (warn) in MiB; 0 when unbudgeted.")
+			memLimit = statekit.NewGauge("limit_mbytes", "Hard memory threshold (fail) in MiB; 0 when unbudgeted.")
+			memory.AddMetric(memCurrent, memHigh, memLimit)
 			memory.Pass("no data yet", nil)
 		}
 
@@ -179,7 +223,10 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 			agg.AddCheck(&taggedState{underlying: memory, scrapedFrom: c.Name})
 		}
 
-		b.components[c.Name] = &componentStates{lifecycle: lifecycle, update: update, memory: memory}
+		b.components[c.Name] = &componentStates{
+			lifecycle: lifecycle, update: update, memory: memory,
+			memCurrent: memCurrent, memHigh: memHigh, memLimit: memLimit,
+		}
 		b.perComponentRunCount[c.Name] = runCount
 		b.perComponentUptime[c.Name] = uptimeMetric
 		b.perComponentFastCrashes[c.Name] = fast
@@ -494,14 +541,18 @@ func (this *statekitBundle) observeUptime(name string, since time.Time) {
 // drives the memory state leaf: soft -> warn, hard -> fail, otherwise pass.
 // Called each memory sample; the high/max gauges read 0 in tracking-only modes.
 func (this *statekitBundle) observeMemory(name string, current, high, limit int64, state string) {
-	this.memoryCurrent.WithLabelValues(name).Set(current)
-	this.memoryHigh.WithLabelValues(name).Set(high)
-	this.memoryLimit.WithLabelValues(name).Set(limit)
+	this.memoryCurrent.WithLabelValues(name).Set(bytesToMiB(current))
+	this.memoryHigh.WithLabelValues(name).Set(bytesToMiB(high))
+	this.memoryLimit.WithLabelValues(name).Set(bytesToMiB(limit))
 
 	cs, ok := this.components[name]
 	if !ok || cs.memory == nil {
 		return
 	}
+	// Carry the numbers on the leaf (in MiB) so the state document shows them.
+	cs.memCurrent.Set(bytesToMiB(current))
+	cs.memHigh.Set(bytesToMiB(high))
+	cs.memLimit.Set(bytesToMiB(limit))
 	switch state {
 	case memStateSoft:
 		cs.memory.Warn(fmt.Sprintf("%s over soft limit %s", humanBytes(current), humanBytes(high)), nil)
@@ -515,12 +566,30 @@ func (this *statekitBundle) observeMemory(name string, current, high, limit int6
 	}
 }
 
+// observeMemorySubsystemHealthy marks the memory-subsystem state pass, with a
+// short detail (typically the resolved mode). A no-op when the subsystem is
+// disabled (leaf not registered).
+func (this *statekitBundle) observeMemorySubsystemHealthy(detail string) {
+	if this.memorySubsystem != nil {
+		this.memorySubsystem.Pass(detail, nil)
+	}
+}
+
+// observeMemorySubsystemDegraded raises the memory-subsystem state to warn with
+// the reason it could not do what its mode promised. Fail-open: this reports the
+// degradation, it never changes supervision.
+func (this *statekitBundle) observeMemorySubsystemDegraded(reason string) {
+	if this.memorySubsystem != nil {
+		this.memorySubsystem.Warn(reason, nil)
+	}
+}
+
 // observePodMemory records the pod-level limit, container current, and workload
-// total in bytes.
+// total (all in MiB on the gauges).
 func (this *statekitBundle) observePodMemory(limit, current, workload int64) {
-	this.podLimit.Set(limit)
-	this.podCurrent.Set(current)
-	this.workloadCur.Set(workload)
+	this.podLimit.Set(bytesToMiB(limit))
+	this.podCurrent.Set(bytesToMiB(current))
+	this.workloadCur.Set(bytesToMiB(workload))
 }
 
 // observeMemoryMode marks the active mode (the labelled gauge reads 1 for the
@@ -532,18 +601,42 @@ func (this *statekitBundle) observeMemoryMode(mode MemoryMode) {
 // observeGlobalLimit records the resolved pod limit early, before the first
 // sample, so /metrics shows it from boot.
 func (this *statekitBundle) observeGlobalLimit(limit int64) {
-	this.podLimit.Set(limit)
+	this.podLimit.Set(bytesToMiB(limit))
 }
 
 // observeMemoryContext records the static host/cgroup context figures once at
 // startup so /metrics shows machine capacity and the cgroup limit from boot.
 func (this *statekitBundle) observeMemoryContext(machineTotal, cgroupLimit int64) {
-	this.machineTotal.Set(machineTotal)
-	this.cgroupLimit.Set(cgroupLimit)
+	this.machineTotal.Set(bytesToMiB(machineTotal))
+	this.cgroupLimit.Set(bytesToMiB(cgroupLimit))
 }
 
 // observeMemorySampleTime records the wall-clock time of the latest sample, so
 // staleness alerts can fire when sampling stops.
 func (this *statekitBundle) observeMemorySampleTime(t time.Time) {
 	this.memorySampleT.Set(t.Unix())
+}
+
+// observeMemoryDetail records the per-component process RSS (in MiB) alongside
+// the exact leaf charge. Share and PSI are sub-1.0 fractions carried on the
+// sample JSON instead. Called each sample.
+func (this *statekitBundle) observeMemoryDetail(name string, rss int64) {
+	this.memoryRSS.WithLabelValues(name).Set(bytesToMiB(rss))
+}
+
+// observeMemoryEvent bumps the leaf-events counter for one component and event
+// kind (high|max|oom_kill) when the supervisor sees the counter rise.
+func (this *statekitBundle) observeMemoryEvent(name, event string) {
+	this.memoryEvents.WithLabelValues(name, event).Inc()
+}
+
+// observeMemoryRestart bumps the memory-restart counter for one component and
+// reason (soft_restart|hard_limit|pod_pressure|stop_escalated|...).
+func (this *statekitBundle) observeMemoryRestart(name, reason string) {
+	this.memoryRestarts.WithLabelValues(name, reason).Inc()
+}
+
+// observeSupervisorRSS records the supervisor process's own RSS (in MiB).
+func (this *statekitBundle) observeSupervisorRSS(rss int64) {
+	this.supervisorRSS.Set(bytesToMiB(rss))
 }
