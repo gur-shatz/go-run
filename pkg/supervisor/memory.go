@@ -245,7 +245,16 @@ func newMemoryMonitor(cfg Config, paths Paths, bundle *statekitBundle, comps []*
 	// does without enforcement — the only effect is the memory.subsystem state
 	// shows warn, so an operator sees the promised enforcement is not active.
 	if mode == MemoryModeCgroup2 && cgroup == nil {
-		this.markDegraded("cgroup2 detected but leaf hierarchy unavailable; tracking only, no enforcement")
+		// The kernel backstop (memory.high/max on leaves) is gone, but Axis B —
+		// the supervisor's own RSS-driven reactions — still runs if it was
+		// enabled and a budget exists, so this is not "no enforcement".
+		reason := "cgroup2 detected but leaf hierarchy unavailable; "
+		if this.enforce != nil {
+			reason += "no kernel backstop, supervisor reactions only"
+		} else {
+			reason += "tracking only, no enforcement"
+		}
+		this.markDegraded(reason)
 	}
 	return this
 }

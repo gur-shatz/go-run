@@ -217,7 +217,7 @@ func startStreamTee(fd int, label, path string) (*streamTee, error) {
 		return nil, fmt.Errorf("open %s log %s: %w", label, path, err)
 	}
 
-	if err := syscall.Dup2(int(writer.Fd()), fd); err != nil {
+	if err := dupFD(int(writer.Fd()), fd); err != nil {
 		_ = logFile.Close()
 		_ = reader.Close()
 		_ = writer.Close()
@@ -246,7 +246,7 @@ func (this *streamTee) Close() error {
 		return nil
 	}
 	var first error
-	if err := syscall.Dup2(int(this.original.Fd()), this.fd); err != nil && first == nil {
+	if err := dupFD(int(this.original.Fd()), this.fd); err != nil && first == nil {
 		first = fmt.Errorf("restore fd %d: %w", this.fd, err)
 	}
 	if err := <-this.done; err != nil && first == nil {
