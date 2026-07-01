@@ -65,6 +65,8 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring(`href="components/hello/"`)) // drill-down (relative)
 		Expect(body).To(ContainSubstring(`href="proxy/hello/"`))      // open app
 		Expect(body).To(ContainSubstring(`href="backoffice/"`))       // backoffice
+		Expect(body).To(ContainSubstring(`href="backoffice/logs/_supervisor/"`))
+		Expect(body).To(ContainSubstring(`href="backoffice/components/hello/current_version_logs"`))
 		Expect(body).To(ContainSubstring(`badge pass`))               // status badge
 		Expect(body).To(ContainSubstring(`<meta http-equiv="refresh" content="20">`))
 	})
@@ -157,6 +159,7 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring("<td>greeting</td>"))
 		// Links from the component page climb back to the root (../../).
 		Expect(body).To(ContainSubstring(`href="../../proxy/hello/"`))
+		Expect(body).To(ContainSubstring(`href="../../backoffice/components/hello/current_version_logs"`))
 	})
 
 	It("shows health detail (uptime, runs, last upgrade) on the component page", func() {

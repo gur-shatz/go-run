@@ -144,6 +144,7 @@
       </div>
       <nav class="topnav">
         {{if .HealthEnabled}}<a href="{{.RootRel}}health/">Health &rarr;</a>{{end}}
+        <a href="{{.RootRel}}backoffice/logs/_supervisor/">Supervisor logs &rarr;</a>
         <a href="{{.RootRel}}backoffice/">Backoffice &rarr;</a>
       </nav>
     </header>
@@ -196,6 +197,7 @@
           {{$component := .}}{{range .ProxyLinks}}<a class="btn" href="{{$.RootRel}}proxyurls/{{$component.Name}}/{{.Key}}/">{{.Key}} &nearr;</a>{{end}}
           <a class="btn" href="{{$.RootRel}}components/{{.Name}}/">Details</a>
           {{if not .External}}
+          <a class="btn" href="{{$.RootRel}}backoffice/components/{{.Name}}/current_version_logs">Logs &rarr;</a>
           <form class="inline" method="post" action="{{$.RootRel}}components/{{.Name}}/start">
             <input type="hidden" name="next" value="/">
             <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
@@ -289,6 +291,7 @@
       {{if .HealthEnabled}}<a class="btn" href="{{.RootRel}}health/">Health &amp; events</a>{{end}}
       <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/">Backoffice &rarr;</a>
       {{if not .External}}
+      <a class="btn" href="{{.RootRel}}backoffice/components/{{.Name}}/current_version_logs">Logs &rarr;</a>
       <form class="inline" method="post" action="{{.RootRel}}components/{{.Name}}/start">
         <input type="hidden" name="next" value="/components/{{.Name}}/">
         <button class="btn" type="submit"{{if not .CanStart}} disabled{{end}}>Start</button>
