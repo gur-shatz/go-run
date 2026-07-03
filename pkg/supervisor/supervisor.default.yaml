@@ -108,5 +108,7 @@ remote:
 # Optionally:
 #   - urls:    {healthz,readyz,state,metrics} path overrides (default: /healthz etc.)
 #   - env:     extra environment variables passed to the child
+#   - onoverflow: command run before a supervisor memory kill, in the version dir,
+#                 with OP_OVERFLOW_PID/OP_OVERFLOW_REASON in env
 #   - remote:  per-component override of the top-level remote block
 components: []

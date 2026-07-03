@@ -492,6 +492,22 @@ components:
 			Expect(cfg.Components[0].Command).To(Equal("${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"))
 		})
 
+		It("parses a component onoverflow hook", func() {
+			writeYAML(`
+state_dir: ./state
+remote:
+  base_url: https://x
+components:
+  - name: hello
+    port: 18090
+    command: "./bin/hello"
+    onoverflow: "./dump.sh"
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Components[0].OnOverflow).To(Equal("./dump.sh"))
+		})
+
 		It("returns an error for an undefined template variable", func() {
 			writeYAML(`
 state_dir: ./state

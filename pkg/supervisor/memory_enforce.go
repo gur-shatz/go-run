@@ -146,7 +146,7 @@ func (this *memoryEnforcer) terminate(name string, pid int, kind, reason string)
 		}
 	}
 	this.logger.Status("memory: terminating %s (pid=%d) — %s; handled as a crash", name, pid, reason)
-	live.TerminateForMemory(reason)
+	go live.TerminateForMemory(reason)
 }
 
 // evaluatePodPressure is the aggregate safety net: when the whole pod is near
@@ -157,7 +157,7 @@ func (this *memoryEnforcer) evaluatePodPressure(sample memorySample, byName map[
 	if L <= 0 {
 		return // no resolved limit; nothing to measure pressure against.
 	}
-	ratio := float64(sample.Pod.CurrentBytes) / float64(L)
+	ratio := float64(sample.Pod.pressureBytes()) / float64(L)
 	overUsage := ratio > this.cfg.PodPressureHigh
 	overPSI := sample.Pod.PSISomeRatio > 0 && sample.Pod.PSISomeRatio > this.cfg.PodPressurePSI
 	if !overUsage && !overPSI {
@@ -196,7 +196,7 @@ func (this *memoryEnforcer) largestKillable(byName map[string]componentMemory) (
 		if cm.PID == 0 || this.killedPID[name] == cm.PID {
 			continue // no live child, or already killed this one — wait for the replacement
 		}
-		targets = append(targets, killTarget{name: name, pid: cm.PID, cur: cm.CurrentBytes})
+		targets = append(targets, killTarget{name: name, pid: cm.PID, cur: cm.pressureBytes()})
 	}
 	t, ok := pickLargest(targets)
 	return t.name, t.pid, ok

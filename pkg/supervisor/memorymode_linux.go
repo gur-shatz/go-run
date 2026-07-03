@@ -15,9 +15,11 @@ const (
 	cgroup2Controllers   = cgroupRoot + "/cgroup.controllers"
 	cgroup2MemoryMax     = cgroupRoot + "/memory.max"
 	cgroup2MemoryCurrent = cgroupRoot + "/memory.current"
+	cgroup2MemoryStat    = cgroupRoot + "/memory.stat"
 	cgroup1MemoryDir     = cgroupRoot + "/memory"
 	cgroup1MemoryLimit   = cgroup1MemoryDir + "/memory.limit_in_bytes"
 	cgroup1MemoryUsage   = cgroup1MemoryDir + "/memory.usage_in_bytes"
+	cgroup1MemoryStat    = cgroup1MemoryDir + "/memory.stat"
 )
 
 // cgroup1UnlimitedThreshold filters the v1 "unlimited" sentinel (a value close
@@ -69,6 +71,16 @@ func readContainerCurrentBytes() (int64, bool) {
 		return readCgroupUintFile(cgroup1MemoryUsage)
 	}
 	return 0, false
+}
+
+func readContainerMemoryStat() (memStat, bool) {
+	switch detectCgroupMode() {
+	case MemoryModeCgroup2:
+		return readMemoryStat(cgroup2MemoryStat)
+	case MemoryModeCgroup1:
+		return readMemoryStat(cgroup1MemoryStat)
+	}
+	return memStat{}, false
 }
 
 // readMachineTotalBytes returns the host's total physical RAM from

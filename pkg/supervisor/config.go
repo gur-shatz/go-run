@@ -372,6 +372,7 @@ type ComponentConfig struct {
 	Description string            `yaml:"description,omitempty"`
 	Port        int               `yaml:"port"`
 	Command     string            `yaml:"command"`
+	OnOverflow  string            `yaml:"onoverflow,omitempty"`
 	Env         map[string]string `yaml:"env,omitempty"`
 	URLs        URLsConfig        `yaml:"urls,omitempty"`
 	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`

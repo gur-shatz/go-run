@@ -65,16 +65,18 @@ type statekitBundle struct {
 	// Per-component memory gauges (current/derived budgets/share), plus
 	// pod-level scalars and the resolved mode. Populated by the memory monitor
 	// each sample; absent entirely when the subsystem is disabled.
-	memoryCurrent *statekit.GaugeVec
-	memoryHigh    *statekit.GaugeVec
-	memoryLimit   *statekit.GaugeVec
-	memoryMode    *statekit.GaugeVec
-	podLimit      *statekit.Gauge
-	machineTotal  *statekit.Gauge
-	cgroupLimit   *statekit.Gauge
-	podCurrent    *statekit.Gauge
-	workloadCur   *statekit.Gauge
-	memorySampleT *statekit.Gauge
+	memoryCurrent      *statekit.GaugeVec
+	memoryHigh         *statekit.GaugeVec
+	memoryLimit        *statekit.GaugeVec
+	memoryMode         *statekit.GaugeVec
+	podLimit           *statekit.Gauge
+	machineTotal       *statekit.Gauge
+	cgroupLimit        *statekit.Gauge
+	podCurrent         *statekit.Gauge
+	podWorkingSet      *statekit.Gauge
+	workloadCur        *statekit.Gauge
+	workloadWorkingSet *statekit.Gauge
+	memorySampleT      *statekit.Gauge
 	// Phase-2 enforcement metrics. RSS per component, the leaf event and
 	// memory-restart counters, and the supervisor's own RSS. Share and PSI are
 	// sub-1.0 fractions that an int64 gauge cannot represent, so they live on
@@ -149,8 +151,10 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		podLimit:                 statekit.NewGauge("pod_memory_global_limit_mbytes", "Resolved pod memory limit in MiB (0 if unresolved)."),
 		machineTotal:             statekit.NewGauge("machine_memory_total_mbytes", "Host total physical RAM in MiB (context only; not the pod budget)."),
 		cgroupLimit:              statekit.NewGauge("cgroup_memory_limit_mbytes", "Container cgroup memory.max in MiB (0 if none/unknown)."),
-		podCurrent:               statekit.NewGauge("pod_memory_current_mbytes", "Container cgroup current memory in MiB (summed RSS in host mode)."),
-		workloadCur:              statekit.NewGauge("workload_memory_current_mbytes", "Summed current memory across tracked components in MiB."),
+		podCurrent:               statekit.NewGauge("pod_memory_current_mbytes", "Raw container cgroup current memory in MiB (summed RSS in host mode)."),
+		podWorkingSet:            statekit.NewGauge("pod_memory_working_set_mbytes", "Container memory working set in MiB: current minus inactive_file where available."),
+		workloadCur:              statekit.NewGauge("workload_memory_current_mbytes", "Raw workload memory across tracked components in MiB."),
+		workloadWorkingSet:       statekit.NewGauge("workload_memory_working_set_mbytes", "Workload memory working set in MiB: current minus inactive_file where available."),
 		memorySampleT:            statekit.NewGauge("memory_last_sample_timestamp_seconds", "Unix time of the last memory sample."),
 		memoryRSS:                statekit.NewGaugeVec("component_memory_rss_mbytes", "Process RSS of the component in MiB (cheap per-process signal alongside the leaf charge).", "component"),
 		memoryEvents:             statekit.NewCounterVec("component_memory_events_total", "Leaf memory.events increments observed by the supervisor.", "component", "event"),
@@ -162,7 +166,7 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		perComponentExecFailures: make(map[string]*statekit.Gauge, len(cfg.Components)),
 	}
 	_ = reg.RegisterCollectors(b.fastCrashes, b.execFailures, b.runCount, b.uptimeSeconds, b.monitorPort,
-		b.memoryCurrent, b.memoryHigh, b.memoryLimit, b.memoryMode, b.podLimit, b.machineTotal, b.cgroupLimit, b.podCurrent, b.workloadCur, b.memorySampleT,
+		b.memoryCurrent, b.memoryHigh, b.memoryLimit, b.memoryMode, b.podLimit, b.machineTotal, b.cgroupLimit, b.podCurrent, b.podWorkingSet, b.workloadCur, b.workloadWorkingSet, b.memorySampleT,
 		b.memoryRSS, b.memoryEvents, b.memoryRestarts, b.supervisorRSS)
 	reg.RegisterEscalations(b.escalations)
 
@@ -584,12 +588,14 @@ func (this *statekitBundle) observeMemorySubsystemDegraded(reason string) {
 	}
 }
 
-// observePodMemory records the pod-level limit, container current, and workload
-// total (all in MiB on the gauges).
-func (this *statekitBundle) observePodMemory(limit, current, workload int64) {
+// observePodMemory records pod/workload raw current and working-set totals (all
+// in MiB on the gauges).
+func (this *statekitBundle) observePodMemory(limit, current, workingSet, workload, workloadWorkingSet int64) {
 	this.podLimit.Set(bytesToMiB(limit))
 	this.podCurrent.Set(bytesToMiB(current))
+	this.podWorkingSet.Set(bytesToMiB(workingSet))
 	this.workloadCur.Set(bytesToMiB(workload))
+	this.workloadWorkingSet.Set(bytesToMiB(workloadWorkingSet))
 }
 
 // observeMemoryMode marks the active mode (the labelled gauge reads 1 for the

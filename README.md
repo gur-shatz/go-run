@@ -15,6 +15,7 @@ Additionally, provides helper packages so a go application can work even better 
 | Library      | Package          | Description                                                                      |
 | ------------ | ---------------- | -------------------------------------------------------------------------------- |
 | `backoffice` | `pkg/backoffice` | Embeddable admin/debug HTTP server with service status, env, info, pprof         |
+| `pprofdump`  | `pkg/pprofdump`  | On-demand pprof dump HTTP handler for pre-OOM diagnostics                        |
 | `chiutil`    | `pkg/chiutil`    | Self-documenting route folders for chi routers with auto-generated navigation UI |
 
 ## Start With The Examples
@@ -581,6 +582,71 @@ Child processes (build steps, exec commands, compiled binaries) receive vars in 
 
 ---
 
+## Supervisor OOM Hooks
+
+The supervisor can track and enforce memory budgets for managed components. When a component stays above its hard memory threshold, or when pod-level pressure requires shedding a component, the supervisor treats the termination as a crash so normal restart, backoff, and rollback behavior still apply.
+
+For Go services, the recommended pre-kill path is:
+
+1. The component registers an HTTP pprof dump endpoint.
+2. The supervisor component config sets `onoverflow` to call that endpoint.
+3. On memory overflow, the supervisor invokes `onoverflow`, waits up to `kill_grace_period`, then terminates the component.
+
+Component example:
+
+```go
+package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/gur-shatz/go-run/pkg/pprofdump"
+)
+
+func main() {
+	r := chi.NewRouter()
+	pprofdump.RegisterChi(r, "/debug/pprof/dump", pprofdump.Options{
+		Dir: "/var/lib/myapp/pprof-dumps",
+	})
+	_ = http.ListenAndServe(":8080", r)
+}
+```
+
+Supervisor config example:
+
+```yaml
+kill_grace_period: 10s
+
+memory:
+  enabled: true
+  enforce: true
+  limit_env_var: MEMORY_LIMIT_BYTES
+  sustained_for: 30s
+  pod_pressure_high: 0.90
+
+components:
+  - name: api
+    port: 8080
+    command: "./api"
+    onoverflow: "curl -fsS -XPOST http://127.0.0.1:8080/debug/pprof/dump"
+    memory:
+      hardlimit: 512m
+      softlimit: 420m
+```
+
+The dump handler writes a timestamped directory containing heap, allocs, goroutine, threadcreate, block, and mutex profiles. The supervisor passes these extra environment variables to `onoverflow`:
+
+| Variable                | Description                       |
+| ----------------------- | --------------------------------- |
+| `OP_OVERFLOW_PID`       | PID of the child being terminated |
+| `OP_OVERFLOW_CHILD_PID` | Alias for `OP_OVERFLOW_PID`       |
+| `OP_OVERFLOW_REASON`    | Human-readable memory kill reason |
+
+Memory accounting keeps raw cgroup charge and working set separate. Raw `memory.current` is still reported for visibility, but pod-pressure decisions use working set (`memory.current - inactive_file`) when the kernel exposes it, so reclaimable file cache does not trigger avoidable restarts.
+
+---
+
 ## Backoffice
 
 `pkg/backoffice` — an embeddable admin/debug HTTP server for Go services. Provides built-in endpoints for health status, environment inspection, runtime info, and pprof profiling, plus an extensible route folder for custom endpoints.
@@ -666,6 +732,38 @@ All registered routes automatically appear in the HTML navigation UI.
 ### Panic Recovery
 
 The backoffice router includes `chi/middleware.Recoverer`. Handler panics return HTTP 500 without crashing the process.
+
+---
+
+## pprofdump
+
+`pkg/pprofdump` provides a small `POST` handler for writing pprof files to disk on demand. It is intended for last-chance diagnostics, especially from supervisor `onoverflow`.
+
+Standard library mux:
+
+```go
+mux := http.NewServeMux()
+pprofdump.Register(mux, "/debug/pprof/dump", pprofdump.Options{
+	Dir: "/var/lib/myapp/pprof-dumps",
+})
+```
+
+chi router:
+
+```go
+r := chi.NewRouter()
+pprofdump.RegisterChi(r, "/debug/pprof/dump", pprofdump.Options{
+	Dir: "/var/lib/myapp/pprof-dumps",
+})
+```
+
+Invoke it with:
+
+```bash
+curl -fsS -XPOST http://127.0.0.1:8080/debug/pprof/dump
+```
+
+The JSON response includes the dump directory and file names.
 
 ---
 

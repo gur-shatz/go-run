@@ -11,10 +11,11 @@ import "os/exec"
 // memStat is the memory.stat breakdown for one leaf, the part that explains a
 // kill where process RSS looked fine. Bytes; zero when a field is absent.
 type memStat struct {
-	Anon int64
-	File int64
-	Slab int64
-	Sock int64
+	Anon         int64
+	File         int64
+	Slab         int64
+	Sock         int64
+	InactiveFile int64
 }
 
 // memEvents is the memory.events counters for one leaf. They are monotonic

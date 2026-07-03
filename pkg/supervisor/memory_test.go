@@ -152,6 +152,15 @@ var _ = Describe("Memory subsystem", func() {
 		})
 	})
 
+	Describe("working set pressure", func() {
+		It("subtracts inactive file cache and clamps at zero", func() {
+			Expect(workingSetBytes(1000, 300)).To(Equal(int64(700)))
+			Expect(workingSetBytes(1000, 1000)).To(BeZero())
+			Expect(workingSetBytes(1000, 1200)).To(BeZero())
+			Expect(workingSetBytes(1000, 0)).To(Equal(int64(1000)))
+		})
+	})
+
 	Describe("componentSeries ring", func() {
 		It("returns the per-component points in order", func() {
 			mon := &memoryMonitor{ringMax: 4}

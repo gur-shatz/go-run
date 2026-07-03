@@ -85,7 +85,7 @@ func newMinuteAccumulator(minute time.Time) *minuteAccumulator {
 
 // add folds one sample into the accumulator.
 func (this *minuteAccumulator) add(s memorySample) {
-	this.pod.add(s.Pod.CurrentBytes)
+	this.pod.add(s.Pod.pressureBytes())
 	for _, c := range s.Components {
 		ca := this.comps[c.Name]
 		if ca == nil {
@@ -93,7 +93,7 @@ func (this *minuteAccumulator) add(s memorySample) {
 			this.comps[c.Name] = ca
 			this.order = append(this.order, c.Name)
 		}
-		ca.val.add(c.CurrentBytes)
+		ca.val.add(c.pressureBytes())
 		ca.high = c.HighBytes
 		ca.limit = c.LimitBytes
 		if memStateRank(c.State) > memStateRank(ca.worstState) {
@@ -174,11 +174,12 @@ func readRollupSeries(dir, name string, since time.Time) []seriesPoint {
 					continue
 				}
 				out = append(out, seriesPoint{
-					TS:           r.Minute,
-					CurrentBytes: c.MaxBytes,
-					HighBytes:    c.HighBytes,
-					LimitBytes:   c.LimitBytes,
-					State:        c.WorstState,
+					TS:              r.Minute,
+					CurrentBytes:    c.MaxBytes,
+					WorkingSetBytes: c.MaxBytes,
+					HighBytes:       c.HighBytes,
+					LimitBytes:      c.LimitBytes,
+					State:           c.WorstState,
 				})
 			}
 		}

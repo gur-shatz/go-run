@@ -24,14 +24,22 @@ var _ = Describe("cgroup v2 file parsers", func() {
 	})
 
 	Describe("readMemoryStat", func() {
-		It("parses the anon/file/slab/sock split and ignores other keys", func() {
-			path := writeFile("memory.stat", "anon 1048576\nfile 2097152\nkernel 4096\nslab 65536\nsock 8192\n")
+		It("parses the anon/file/inactive_file/slab/sock split and ignores other keys", func() {
+			path := writeFile("memory.stat", "anon 1048576\nfile 2097152\ninactive_file 524288\nkernel 4096\nslab 65536\nsock 8192\n")
 			st, ok := readMemoryStat(path)
 			Expect(ok).To(BeTrue())
 			Expect(st.Anon).To(Equal(int64(1048576)))
 			Expect(st.File).To(Equal(int64(2097152)))
+			Expect(st.InactiveFile).To(Equal(int64(524288)))
 			Expect(st.Slab).To(Equal(int64(65536)))
 			Expect(st.Sock).To(Equal(int64(8192)))
+		})
+
+		It("accepts the cgroup v1 total_inactive_file key", func() {
+			path := writeFile("memory.stat", "total_inactive_file 1024\n")
+			st, ok := readMemoryStat(path)
+			Expect(ok).To(BeTrue())
+			Expect(st.InactiveFile).To(Equal(int64(1024)))
 		})
 
 		It("reports not-ok when the file is missing", func() {

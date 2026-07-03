@@ -1,7 +1,11 @@
 package supervisor
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,6 +28,27 @@ var _ = Describe("Memory enforcement", func() {
 			})
 			Expect(ok).To(BeTrue())
 			Expect(best.name).To(Equal("backend"))
+		})
+
+		It("uses pod working set, not raw memory.current, for pod pressure", func() {
+			e := &memoryEnforcer{
+				cfg:         &MemoryConfig{PodPressureHigh: 0.90},
+				monitorOnly: map[string]bool{},
+				comp:        map[string]*Component{},
+				order:       []string{"backend"},
+				killedPID:   map[string]int{},
+				logger:      log.New("[t]", false),
+			}
+			now := time.Now()
+			e.evaluatePodPressure(memorySample{
+				Pod: podMemory{
+					LimitBytes:        1000,
+					CurrentBytes:      950,
+					WorkingSetBytes:   600,
+					InactiveFileBytes: 350,
+				},
+			}, map[string]componentMemory{"backend": {Name: "backend", PID: 123, CurrentBytes: 950}}, now)
+			Expect(e.podSettleUntil.IsZero()).To(BeTrue())
 		})
 	})
 
@@ -58,6 +83,41 @@ var _ = Describe("Memory enforcement", func() {
 			off := false
 			mon := buildMonitor(cfgWithLimit(&off))
 			Expect(mon.enforce).To(BeNil())
+		})
+	})
+
+	Describe("onoverflow hook", func() {
+		It("runs in the component version dir with overflow context", func() {
+			root := GinkgoT().TempDir()
+			paths := NewPaths(root).Component("api")
+			Expect(paths.EnsureDirs()).To(Succeed())
+			versionDir := paths.VersionDir("v1")
+			Expect(os.MkdirAll(versionDir, 0755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(versionDir, "run.sh"), []byte("#!/bin/sh\n"), 0755)).To(Succeed())
+
+			c := &Component{
+				cfg: ComponentConfig{
+					Name:       "api",
+					Port:       18090,
+					Command:    "/bin/sh ./run.sh",
+					OnOverflow: `/bin/sh -c 'printf "%s|%s|%s" "$OP_OVERFLOW_PID" "$OP_OVERFLOW_REASON" "$PWD" > overflow.out'`,
+				},
+				paths:           paths,
+				killGracePeriod: time.Second,
+				logger:          log.New("[t]", false),
+			}
+
+			c.runOverflowHook("v1", 12345, "memory state fail")
+
+			raw, err := os.ReadFile(filepath.Join(versionDir, "overflow.out"))
+			Expect(err).NotTo(HaveOccurred())
+			parts := strings.Split(string(raw), "|")
+			Expect(parts).To(HaveLen(3))
+			Expect(parts[0]).To(Equal("12345"))
+			Expect(parts[1]).To(Equal("memory state fail"))
+			realVersionDir, err := filepath.EvalSymlinks(versionDir)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parts[2]).To(Equal(realVersionDir))
 		})
 	})
 

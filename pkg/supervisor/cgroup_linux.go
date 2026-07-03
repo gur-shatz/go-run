@@ -260,7 +260,7 @@ func parseCgroupKV(path string, assign func(key string, v int64)) bool {
 }
 
 // readMemoryStat parses the key/value memory.stat file into the anon/file/slab/
-// sock split. Missing keys stay zero.
+// sock split plus inactive_file. Missing keys stay zero.
 func readMemoryStat(path string) (memStat, bool) {
 	var st memStat
 	ok := parseCgroupKV(path, func(key string, v int64) {
@@ -273,6 +273,8 @@ func readMemoryStat(path string) (memStat, bool) {
 			st.Slab = v
 		case "sock":
 			st.Sock = v
+		case "inactive_file", "total_inactive_file":
+			st.InactiveFile = v
 		}
 	})
 	return st, ok

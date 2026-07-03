@@ -12,21 +12,24 @@ import (
 	"github.com/gur-shatz/go-run/internal/log"
 )
 
-// podMemory is the pod-level view in one sample. CurrentBytes is the container
-// cgroup charge when available (the source of truth for a pod-level decision),
-// otherwise the summed component current as a host-mode approximation.
+// podMemory is the pod-level view in one sample. CurrentBytes is the raw
+// container cgroup charge when available; WorkingSetBytes subtracts reclaimable
+// inactive file cache and is the source of truth for pod-pressure decisions.
 type podMemory struct {
 	// LimitBytes/LimitSource are the resolved pod budget and which source won
 	// (env var or cgroup). MachineTotalBytes and CgroupLimitBytes are shown
 	// alongside for context: the whole host's RAM, and the cgroup's own
 	// memory.max even when the env var wins the resolved limit.
-	LimitBytes           int64   `json:"limit_bytes,omitempty"`
-	LimitSource          string  `json:"limit_source,omitempty"`
-	MachineTotalBytes    int64   `json:"machine_total_bytes,omitempty"`
-	CgroupLimitBytes     int64   `json:"cgroup_limit_bytes,omitempty"`
-	CurrentBytes         int64   `json:"current_bytes,omitempty"`
-	WorkloadCurrentBytes int64   `json:"workload_current_bytes,omitempty"`
-	PSISomeRatio         float64 `json:"psi_some_ratio,omitempty"` // pod-level PSI (cgroup2)
+	LimitBytes              int64   `json:"limit_bytes,omitempty"`
+	LimitSource             string  `json:"limit_source,omitempty"`
+	MachineTotalBytes       int64   `json:"machine_total_bytes,omitempty"`
+	CgroupLimitBytes        int64   `json:"cgroup_limit_bytes,omitempty"`
+	CurrentBytes            int64   `json:"current_bytes,omitempty"`
+	WorkingSetBytes         int64   `json:"working_set_bytes,omitempty"`
+	InactiveFileBytes       int64   `json:"inactive_file_bytes,omitempty"`
+	WorkloadCurrentBytes    int64   `json:"workload_current_bytes,omitempty"`
+	WorkloadWorkingSetBytes int64   `json:"workload_working_set_bytes,omitempty"`
+	PSISomeRatio            float64 `json:"psi_some_ratio,omitempty"` // pod-level PSI (cgroup2)
 }
 
 // componentMemory is one component's figures in a sample. Under cgroup2
@@ -35,23 +38,25 @@ type podMemory struct {
 // cgroup-only fields (PSS, the anon/file/slab/sock split, the event counters,
 // and per-leaf PSI) are omitted when not sampled.
 type componentMemory struct {
-	Name         string  `json:"name"`
-	PID          int     `json:"pid,omitempty"`
-	Share        float64 `json:"share,omitempty"`
-	CurrentBytes int64   `json:"current_bytes"`
-	RSSBytes     int64   `json:"rss_bytes,omitempty"`
-	PSSBytes     int64   `json:"pss_bytes,omitempty"`
-	HighBytes    int64   `json:"high_bytes,omitempty"`
-	LimitBytes   int64   `json:"limit_bytes,omitempty"`
-	AnonBytes    int64   `json:"anon_bytes,omitempty"`
-	FileBytes    int64   `json:"file_bytes,omitempty"`
-	SlabBytes    int64   `json:"slab_bytes,omitempty"`
-	SockBytes    int64   `json:"sock_bytes,omitempty"`
-	EventsHigh   int64   `json:"events_high,omitempty"`
-	EventsMax    int64   `json:"events_max,omitempty"`
-	EventsOOM    int64   `json:"events_oom_kill,omitempty"`
-	PSISomeRatio float64 `json:"psi_some_ratio,omitempty"`
-	State        string  `json:"state,omitempty"`
+	Name              string  `json:"name"`
+	PID               int     `json:"pid,omitempty"`
+	Share             float64 `json:"share,omitempty"`
+	CurrentBytes      int64   `json:"current_bytes"`
+	WorkingSetBytes   int64   `json:"working_set_bytes,omitempty"`
+	RSSBytes          int64   `json:"rss_bytes,omitempty"`
+	PSSBytes          int64   `json:"pss_bytes,omitempty"`
+	HighBytes         int64   `json:"high_bytes,omitempty"`
+	LimitBytes        int64   `json:"limit_bytes,omitempty"`
+	AnonBytes         int64   `json:"anon_bytes,omitempty"`
+	FileBytes         int64   `json:"file_bytes,omitempty"`
+	InactiveFileBytes int64   `json:"inactive_file_bytes,omitempty"`
+	SlabBytes         int64   `json:"slab_bytes,omitempty"`
+	SockBytes         int64   `json:"sock_bytes,omitempty"`
+	EventsHigh        int64   `json:"events_high,omitempty"`
+	EventsMax         int64   `json:"events_max,omitempty"`
+	EventsOOM         int64   `json:"events_oom_kill,omitempty"`
+	PSISomeRatio      float64 `json:"psi_some_ratio,omitempty"`
+	State             string  `json:"state,omitempty"`
 }
 
 // memorySample is one full sample: pod plus every tracked component. Each
@@ -61,6 +66,33 @@ type memorySample struct {
 	Mode       MemoryMode        `json:"mode"`
 	Pod        podMemory         `json:"pod"`
 	Components []componentMemory `json:"components"`
+}
+
+func workingSetBytes(current, inactiveFile int64) int64 {
+	if current <= 0 {
+		return 0
+	}
+	if inactiveFile <= 0 {
+		return current
+	}
+	if inactiveFile >= current {
+		return 0
+	}
+	return current - inactiveFile
+}
+
+func (this componentMemory) pressureBytes() int64 {
+	if this.WorkingSetBytes > 0 || this.InactiveFileBytes > 0 {
+		return this.WorkingSetBytes
+	}
+	return this.CurrentBytes
+}
+
+func (this podMemory) pressureBytes() int64 {
+	if this.WorkingSetBytes > 0 || this.InactiveFileBytes > 0 {
+		return this.WorkingSetBytes
+	}
+	return this.CurrentBytes
 }
 
 // memoryMonitor samples per-component and pod memory on a fixed cadence,
@@ -357,14 +389,16 @@ func (this *memoryMonitor) sampleOnce() {
 			summedRSS += rss
 		}
 
-		// Under cgroup2 the leaf is authoritative: memory.current is the exact,
-		// non-overlapping charge, and stat/events/PSI add the detail RSS lacks.
+		// Under cgroup2 memory.current is the exact non-overlapping raw charge.
+		// For pressure decisions use working set, subtracting inactive file cache
+		// the same way kubelet/cAdvisor do for reclaimable cache.
 		if this.cgroup != nil {
 			if cur, ok := this.cgroup.readCurrent(name); ok {
 				cm.CurrentBytes = cur
 			}
 			if st, ok := this.cgroup.readStat(name); ok {
 				cm.AnonBytes, cm.FileBytes, cm.SlabBytes, cm.SockBytes = st.Anon, st.File, st.Slab, st.Sock
+				cm.InactiveFileBytes = st.InactiveFile
 			}
 			if ev, ok := this.cgroup.readEvents(name); ok {
 				cm.EventsHigh, cm.EventsMax, cm.EventsOOM = ev.High, ev.Max, ev.OOMKill
@@ -374,6 +408,7 @@ func (this *memoryMonitor) sampleOnce() {
 				cm.PSISomeRatio = psi
 			}
 		}
+		cm.WorkingSetBytes = workingSetBytes(cm.CurrentBytes, cm.InactiveFileBytes)
 
 		// Optional PSS for deeper diagnosis, read on the slower cadence only.
 		if pssDue && pid > 0 {
@@ -382,11 +417,11 @@ func (this *memoryMonitor) sampleOnce() {
 			}
 		}
 
-		cm.State = classifyMemoryState(cm.CurrentBytes, cm.HighBytes, cm.LimitBytes)
+		cm.State = classifyMemoryState(cm.pressureBytes(), cm.HighBytes, cm.LimitBytes)
 		comps = append(comps, cm)
 
 		if this.bundle != nil {
-			this.bundle.observeMemory(name, cm.CurrentBytes, cm.HighBytes, cm.LimitBytes, cm.State)
+			this.bundle.observeMemory(name, cm.pressureBytes(), cm.HighBytes, cm.LimitBytes, cm.State)
 			this.bundle.observeMemoryDetail(name, cm.RSSBytes)
 		}
 	}
@@ -407,6 +442,11 @@ func (this *memoryMonitor) sampleOnce() {
 		if wc, ok := this.cgroup.readWorkloadCurrent(); ok {
 			pod.WorkloadCurrentBytes = wc
 		}
+		var workloadInactive int64
+		for _, c := range comps {
+			workloadInactive += c.InactiveFileBytes
+		}
+		pod.WorkloadWorkingSetBytes = workingSetBytes(pod.WorkloadCurrentBytes, workloadInactive)
 		if psi, ok := this.cgroup.readContainerPSISome(); ok {
 			pod.PSISomeRatio = psi
 		}
@@ -414,12 +454,20 @@ func (this *memoryMonitor) sampleOnce() {
 	if pod.WorkloadCurrentBytes == 0 {
 		pod.WorkloadCurrentBytes = summedRSS
 	}
-	// Container charge is the source of truth for the pod-level decision.
+	if pod.WorkloadWorkingSetBytes == 0 {
+		pod.WorkloadWorkingSetBytes = pod.WorkloadCurrentBytes
+	}
+	// Container charge is preserved as raw current; pod-pressure decisions use
+	// working set so reclaimable page cache does not trip the watchdog.
 	if container, ok := readContainerCurrentBytes(); ok {
 		pod.CurrentBytes = container
+		if st, ok := readContainerMemoryStat(); ok {
+			pod.InactiveFileBytes = st.InactiveFile
+		}
 	} else {
 		pod.CurrentBytes = pod.WorkloadCurrentBytes
 	}
+	pod.WorkingSetBytes = workingSetBytes(pod.CurrentBytes, pod.InactiveFileBytes)
 
 	sample := memorySample{
 		TS:         ts.Format(time.RFC3339),
@@ -429,7 +477,7 @@ func (this *memoryMonitor) sampleOnce() {
 	}
 
 	if this.bundle != nil {
-		this.bundle.observePodMemory(pod.LimitBytes, pod.CurrentBytes, pod.WorkloadCurrentBytes)
+		this.bundle.observePodMemory(pod.LimitBytes, pod.CurrentBytes, pod.pressureBytes(), pod.WorkloadCurrentBytes, pod.WorkloadWorkingSetBytes)
 		this.bundle.observeMemorySampleTime(ts)
 		if selfRSS, ok := readProcessRSS(os.Getpid()); ok {
 			this.bundle.observeSupervisorRSS(selfRSS)
@@ -492,11 +540,12 @@ func (this *memoryMonitor) componentLatest(name string) (componentMemory, bool) 
 
 // seriesPoint is one (timestamp, current) pair on a component's history.
 type seriesPoint struct {
-	TS           string `json:"ts"`
-	CurrentBytes int64  `json:"current_bytes"`
-	HighBytes    int64  `json:"high_bytes,omitempty"`
-	LimitBytes   int64  `json:"limit_bytes,omitempty"`
-	State        string `json:"state,omitempty"`
+	TS              string `json:"ts"`
+	CurrentBytes    int64  `json:"current_bytes"`
+	WorkingSetBytes int64  `json:"working_set_bytes,omitempty"`
+	HighBytes       int64  `json:"high_bytes,omitempty"`
+	LimitBytes      int64  `json:"limit_bytes,omitempty"`
+	State           string `json:"state,omitempty"`
 }
 
 // componentSeries returns a component's history within the window (counted back
@@ -534,11 +583,12 @@ func (this *memoryMonitor) componentSeries(name string, window time.Duration) []
 				oldestRing = t
 			}
 			ringPts = append(ringPts, seriesPoint{
-				TS:           s.TS,
-				CurrentBytes: c.CurrentBytes,
-				HighBytes:    c.HighBytes,
-				LimitBytes:   c.LimitBytes,
-				State:        c.State,
+				TS:              s.TS,
+				CurrentBytes:    c.CurrentBytes,
+				WorkingSetBytes: c.WorkingSetBytes,
+				HighBytes:       c.HighBytes,
+				LimitBytes:      c.LimitBytes,
+				State:           c.State,
 			})
 		}
 	}
@@ -575,11 +625,12 @@ func (this *memoryMonitor) enrichSnapshot(snap *ComponentSnapshot) {
 		return
 	}
 	snap.MemoryCurrentBytes = cm.CurrentBytes
+	snap.MemoryWorkingSetBytes = cm.WorkingSetBytes
 	snap.MemoryHighBytes = cm.HighBytes
 	snap.MemoryLimitBytes = cm.LimitBytes
 	snap.MemoryState = cm.State
 	if cm.LimitBytes > 0 {
-		snap.MemoryPressureRatio = float64(cm.CurrentBytes) / float64(cm.LimitBytes)
+		snap.MemoryPressureRatio = float64(cm.pressureBytes()) / float64(cm.LimitBytes)
 	}
 }
 
@@ -594,10 +645,10 @@ func (this *memoryMonitor) reconstructPodOOM() {
 		return
 	}
 	last, ok := this.persist.loadLastSample()
-	if !ok || last.Pod.LimitBytes <= 0 || last.Pod.CurrentBytes <= 0 {
+	if !ok || last.Pod.LimitBytes <= 0 || last.Pod.pressureBytes() <= 0 {
 		return
 	}
-	ratio := float64(last.Pod.CurrentBytes) / float64(last.Pod.LimitBytes)
+	ratio := float64(last.Pod.pressureBytes()) / float64(last.Pod.LimitBytes)
 	if ratio < this.cfg.PodPressureHigh {
 		return // last run ended well below the limit — not an OOM signature.
 	}

@@ -17,6 +17,7 @@ func detectCgroupMode() MemoryMode { return "" }
 func readCgroupGlobalLimit() (int64, string, bool) { return 0, "", false }
 
 func readContainerCurrentBytes() (int64, bool) { return 0, false }
+func readContainerMemoryStat() (memStat, bool) { return memStat{}, false }
 
 // readMachineTotalBytes returns the host's total physical RAM. On macOS this is
 // sysctl hw.memsize (already in bytes). Shown for context only.

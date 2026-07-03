@@ -199,11 +199,16 @@ func (this *Component) SetCgroupAttach(fn func(cmd *exec.Cmd) func(pid int)) {
 func (this *Component) TerminateForMemory(reason string) {
 	this.mu.Lock()
 	pid := this.pid
+	version := this.currentRunning
 	this.mu.Unlock()
 	if pid <= 0 {
 		return
 	}
+	if version == "" {
+		version, _ = this.paths.ReadCurrent()
+	}
 	this.logger.Warn("[%s] memory kill (%s); pid=%d — terminating, counts as a crash", this.cfg.Name, reason, pid)
+	this.runOverflowHook(version, pid, reason)
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	// Escalate to SIGKILL after the grace window in case the child ignores
 	// SIGTERM. Signalling a dead/relaunched group is a harmless ESRCH.
@@ -212,6 +217,74 @@ func (this *Component) TerminateForMemory(reason string) {
 		time.Sleep(grace)
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 	}(pid)
+}
+
+// runOverflowHook gives a component one last chance to dump diagnostics before
+// a supervisor-driven memory kill. The hook runs in the component's version dir
+// with the normal child launch environment plus OP_OVERFLOW_* facts. Any hook
+// failure is logged but never blocks the kill path beyond kill_grace_period.
+func (this *Component) runOverflowHook(version string, pid int, reason string) {
+	if strings.TrimSpace(this.cfg.OnOverflow) == "" || version == "" {
+		return
+	}
+	vars, err := this.launchVars(version)
+	if err != nil {
+		this.logger.Warn("[%s] onoverflow skipped: %v", this.cfg.Name, err)
+		return
+	}
+	env, err := this.buildEnv(vars)
+	if err != nil {
+		this.logger.Warn("[%s] onoverflow env failed: %v", this.cfg.Name, err)
+		return
+	}
+	env = append(env,
+		fmt.Sprintf("OP_OVERFLOW_PID=%d", pid),
+		fmt.Sprintf("OP_OVERFLOW_CHILD_PID=%d", pid),
+		"OP_OVERFLOW_REASON="+reason,
+	)
+
+	argv, err := shlex.Split(this.cfg.OnOverflow)
+	if err != nil {
+		this.logger.Warn("[%s] onoverflow split failed: %v", this.cfg.Name, err)
+		return
+	}
+	if len(argv) == 0 {
+		return
+	}
+	if !filepath.IsAbs(argv[0]) && strings.ContainsAny(argv[0], "/\\") {
+		argv[0] = filepath.Join(vars.VersionDir, argv[0])
+	}
+
+	timeout := this.killGracePeriod
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = vars.VersionDir
+	cmd.Env = env
+	cmd.Stdout = newPrefixedWriter(this.cfg.Name+".onoverflow", processConsoleStdout())
+	cmd.Stderr = newPrefixedWriter(this.cfg.Name+".onoverflow", processConsoleStderr())
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	this.logger.Status("[%s] running onoverflow hook before memory kill: %s", this.cfg.Name, this.cfg.OnOverflow)
+	if err := cmd.Start(); err != nil {
+		this.logger.Warn("[%s] onoverflow start failed: %v", this.cfg.Name, err)
+		return
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			this.logger.Warn("[%s] onoverflow failed: %v", this.cfg.Name, err)
+		}
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		err := <-done
+		this.logger.Warn("[%s] onoverflow timed out after %s: %v", this.cfg.Name, timeout, err)
+	}
 }
 
 // Snapshot returns a JSON/YAML-friendly snapshot of the current state.
