@@ -140,7 +140,7 @@
     <header class="top">
       <div>
         <h1>{{.Title}}</h1>
-        {{if .StartedAt}}<div class="sub">running since {{.StartedAt}}</div>{{end}}
+        {{if .StartedAt}}<div class="sub">running {{if .RunningFor}}for {{.RunningFor}} (since {{.StartedAt}}){{else}}since {{.StartedAt}}{{end}}</div>{{end}}
       </div>
       <nav class="topnav">
         {{if .HealthEnabled}}<a href="{{.RootRel}}health/">Health &rarr;</a>{{end}}

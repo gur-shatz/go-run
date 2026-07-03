@@ -67,8 +67,26 @@ var _ = Describe("portal", func() {
 		Expect(body).To(ContainSubstring(`href="backoffice/"`))       // backoffice
 		Expect(body).To(ContainSubstring(`href="backoffice/logs/_supervisor/"`))
 		Expect(body).To(ContainSubstring(`href="backoffice/components/hello/current_version_logs"`))
-		Expect(body).To(ContainSubstring(`badge pass`))               // status badge
+		Expect(body).To(ContainSubstring(`badge pass`)) // status badge
 		Expect(body).To(ContainSubstring(`<meta http-equiv="refresh" content="20">`))
+	})
+
+	It("renders supervisor runtime with both duration and start timestamp", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		startedAt := timeRFC(2*60*60 + 5*60)
+		sp := stubStateProvider{name: "hello", port: 18090, startedAt: startedAt}
+		hs := newHTTPServer("127.0.0.1:0", sp, nil, &recordingControls{}, NewPaths(dir), bundle, []ComponentConfig{{Name: "hello"}}, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, body := get(srv.Client(), srv.URL+"/")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("running for"))
+		Expect(body).To(ContainSubstring("2h"))
+		Expect(body).To(ContainSubstring("since " + startedAt))
 	})
 
 	It("renders proxy_url links on cards and component pages", func() {
@@ -260,6 +278,12 @@ var _ = Describe("portal", func() {
 		Expect(fmtAgo("not-a-time")).To(Equal("not-a-time"))
 		Expect(fmtAgo(timeRFC(30))).To(Equal("just now")) // under a minute
 		Expect(fmtAgo(timeRFC(5 * 60))).To(Equal("5m ago"))
+	})
+
+	It("fmtRunningFor renders elapsed runtime when the start timestamp is parseable", func() {
+		Expect(fmtRunningFor("")).To(Equal(""))
+		Expect(fmtRunningFor("not-a-time")).To(Equal(""))
+		Expect(fmtRunningFor(timeRFC(2*60*60 + 5*60))).To(HavePrefix("2h"))
 	})
 
 	DescribeTable("portalDisplayState downgrades only",

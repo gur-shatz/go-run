@@ -157,6 +157,7 @@ type portalProxyLink struct {
 type portalHomeView struct {
 	Title         string
 	StartedAt     string
+	RunningFor    string
 	RootRel       string
 	HealthEnabled bool
 	Components    []portalComponent
@@ -312,6 +313,21 @@ func fmtAgo(rfc3339 string) string {
 	return humanDuration(d) + " ago"
 }
 
+func fmtRunningFor(rfc3339 string) string {
+	if rfc3339 == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	return humanDuration(d)
+}
+
 // humanDuration formats a duration to two significant units at most.
 func humanDuration(d time.Duration) string {
 	days := int(d / (24 * time.Hour))
@@ -332,7 +348,12 @@ func humanDuration(d time.Duration) string {
 
 func (this *portal) home(w http.ResponseWriter, _ *http.Request) {
 	snap := this.sp.Snapshot()
-	view := portalHomeView{Title: "Supervisor", StartedAt: snap.StartedAt, HealthEnabled: this.healthEnabled}
+	view := portalHomeView{
+		Title:         "Supervisor",
+		StartedAt:     snap.StartedAt,
+		RunningFor:    fmtRunningFor(snap.StartedAt),
+		HealthEnabled: this.healthEnabled,
+	}
 	for _, c := range snap.Components {
 		view.Components = append(view.Components, this.card(c))
 	}

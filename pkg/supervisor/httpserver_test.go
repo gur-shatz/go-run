@@ -31,10 +31,11 @@ type stubStateProvider struct {
 	updateState  string
 	updateReason string
 	proxyURLs    map[string]string
+	startedAt    string
 }
 
 func (this stubStateProvider) Snapshot() SupervisorSnapshot {
-	return SupervisorSnapshot{Components: []ComponentSnapshot{this.snap()}}
+	return SupervisorSnapshot{StartedAt: this.startedAt, Components: []ComponentSnapshot{this.snap()}}
 }
 
 func (this stubStateProvider) ComponentSnapshot(name string) (ComponentSnapshot, bool) {
