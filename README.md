@@ -589,7 +589,7 @@ The supervisor can track and enforce memory budgets for managed components. When
 For Go services, the recommended pre-kill path is:
 
 1. The component registers an HTTP pprof dump endpoint.
-2. The supervisor component config sets `overflow-path` to that endpoint path.
+2. The supervisor component config sets `memory.overflow-path` to that endpoint path.
 3. On memory overflow, the supervisor POSTs to `http://127.0.0.1:<component port><overflow-path>`, waits up to `kill_grace_period`, then terminates the component.
 
 Component example:
@@ -629,8 +629,8 @@ components:
   - name: api
     port: 8080
     command: "./api"
-    overflow-path: /debug/pprof/dump
     memory:
+      overflow-path: /debug/pprof/dump
       hardlimit: 512m
       softlimit: 420m
 ```
@@ -737,7 +737,7 @@ The backoffice router includes `chi/middleware.Recoverer`. Handler panics return
 
 ## pprofdump
 
-`pkg/pprofdump` provides a small `POST` handler for writing pprof files to disk on demand. It is intended for last-chance diagnostics, especially from supervisor `overflow-path`.
+`pkg/pprofdump` provides a small `POST` handler for writing pprof files to disk on demand. It is intended for last-chance diagnostics, especially from supervisor `memory.overflow-path`.
 
 Standard library mux:
 

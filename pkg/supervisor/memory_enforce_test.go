@@ -106,10 +106,10 @@ var _ = Describe("Memory enforcement", func() {
 
 			c := &Component{
 				cfg: ComponentConfig{
-					Name:         "api",
-					Port:         port,
-					Command:      "/bin/api",
-					OverflowPath: "/pprof/dump",
+					Name:    "api",
+					Port:    port,
+					Command: "/bin/api",
+					Memory:  &ComponentMemoryConfig{OverflowPath: "/pprof/dump"},
 				},
 				killGracePeriod: time.Second,
 				logger:          log.New("[t]", false),

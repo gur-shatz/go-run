@@ -86,6 +86,8 @@ supervisor:
 #                                      #   (default: derived ~10% below the hard cap)
 #     monitor_only: false              # true = track + warn/fail state but never kill
 #     tracking: true                   # per-component sampling on/off
+#     overflow-path: /pprof/dump       # optional HTTP path POSTed before a memory kill,
+#                                      #   resolved as http://127.0.0.1:<port><path>
 
 updates:
   enabled: true
@@ -108,7 +110,5 @@ remote:
 # Optionally:
 #   - urls:    {healthz,readyz,state,metrics} path overrides (default: /healthz etc.)
 #   - env:     extra environment variables passed to the child
-#   - overflow-path: HTTP path POSTed before a supervisor memory kill, resolved as
-#                    http://127.0.0.1:<port><overflow-path>
 #   - remote:  per-component override of the top-level remote block
 components: []

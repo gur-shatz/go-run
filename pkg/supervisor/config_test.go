@@ -501,11 +501,12 @@ components:
   - name: hello
     port: 18090
     command: "./bin/hello"
-    overflow-path: "/pprof/dump"
+    memory:
+      overflow-path: "/pprof/dump"
 `)
 			cfg, err := supervisor.LoadConfig(path)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Components[0].OverflowPath).To(Equal("/pprof/dump"))
+			Expect(cfg.Components[0].Memory.OverflowPath).To(Equal("/pprof/dump"))
 		})
 
 		It("rejects overflow paths that try to override the component base URL", func() {
@@ -517,7 +518,8 @@ components:
   - name: hello
     port: 18090
     command: "./bin/hello"
-    overflow-path: "http://127.0.0.1:18091/pprof/dump"
+    memory:
+      overflow-path: "http://127.0.0.1:18091/pprof/dump"
 `)
 			_, err := supervisor.LoadConfig(path)
 			Expect(err).To(MatchError(ContainSubstring("overflow-path")))
@@ -533,7 +535,8 @@ components:
   - name: hello
     port: 18090
     command: "./bin/hello"
-    overflow-path: ":18091/pprof/dump"
+    memory:
+      overflow-path: ":18091/pprof/dump"
 `)
 			_, err := supervisor.LoadConfig(path)
 			Expect(err).To(MatchError(ContainSubstring("overflow-path")))

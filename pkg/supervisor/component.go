@@ -219,10 +219,14 @@ func (this *Component) TerminateForMemory(reason string) {
 // before a supervisor-driven memory kill. overflow-path is resolved against the
 // component's known HTTP base URL: http://127.0.0.1:<port>.
 func (this *Component) requestOverflowDump(pid int, reason string) {
-	if strings.TrimSpace(this.cfg.OverflowPath) == "" {
+	pathSpec := ""
+	if this.cfg.Memory != nil {
+		pathSpec = this.cfg.Memory.OverflowPath
+	}
+	if strings.TrimSpace(pathSpec) == "" {
 		return
 	}
-	path, err := normalizeOverflowPath(this.cfg.OverflowPath)
+	path, err := normalizeOverflowPath(pathSpec)
 	if err != nil {
 		this.logger.Warn("[%s] overflow-path skipped: %v", this.cfg.Name, err)
 		return

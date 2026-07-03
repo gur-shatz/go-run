@@ -236,6 +236,11 @@ type ComponentMemoryConfig struct {
 	// to wait in fail before acting, etc.) is a global default. Pointer so an
 	// absent value defaults to false (i.e. the component IS enforced).
 	MonitorOnly *bool `yaml:"monitor_only,omitempty"`
+
+	// OverflowPath is POSTed before a supervisor-driven memory kill. It is
+	// resolved against the component HTTP base URL:
+	// http://127.0.0.1:<component port><overflow-path>.
+	OverflowPath string `yaml:"overflow-path,omitempty"`
 }
 
 // IsTracked reports whether this component should be sampled. Absent means on.
@@ -368,14 +373,13 @@ type RemoteConfig struct {
 // child to serve (healthz, readyz, state, metrics). Unset fields fall back
 // to their conventional values.
 type ComponentConfig struct {
-	Name         string            `yaml:"name"`
-	Description  string            `yaml:"description,omitempty"`
-	Port         int               `yaml:"port"`
-	Command      string            `yaml:"command"`
-	OverflowPath string            `yaml:"overflow-path,omitempty"`
-	Env          map[string]string `yaml:"env,omitempty"`
-	URLs         URLsConfig        `yaml:"urls,omitempty"`
-	ProxyURLs    map[string]string `yaml:"proxy_urls,omitempty"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description,omitempty"`
+	Port        int               `yaml:"port"`
+	Command     string            `yaml:"command"`
+	Env         map[string]string `yaml:"env,omitempty"`
+	URLs        URLsConfig        `yaml:"urls,omitempty"`
+	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`
 
 	// Readme is an optional path to a Markdown file describing this component,
 	// shown on the component's portal page. Relative paths resolve against the
@@ -713,8 +717,8 @@ func (this *Config) Validate() error {
 		if c.Remote.Enabled && c.Remote.BaseURL == "" {
 			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
 		}
-		if strings.TrimSpace(c.OverflowPath) != "" {
-			if _, err := normalizeOverflowPath(c.OverflowPath); err != nil {
+		if c.Memory != nil && strings.TrimSpace(c.Memory.OverflowPath) != "" {
+			if _, err := normalizeOverflowPath(c.Memory.OverflowPath); err != nil {
 				return fmt.Errorf("components[%q]: overflow-path: %w", c.Name, err)
 			}
 		}
