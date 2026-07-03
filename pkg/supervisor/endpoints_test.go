@@ -24,6 +24,27 @@ var _ = Describe("endpoint resolution", func() {
 		_, err := resolveEndpoint("http://localhost:8080", ":/state")
 		Expect(err).To(HaveOccurred())
 	})
+
+	DescribeTable("normalizes overflow paths",
+		func(spec, want string) {
+			got, err := normalizeOverflowPath(spec)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want))
+		},
+		Entry("absolute path", "/pprof/dump", "/pprof/dump"),
+		Entry("bare path", "pprof/dump", "/pprof/dump"),
+		Entry("query string", "/pprof/dump?kind=heap", "/pprof/dump?kind=heap"),
+	)
+
+	DescribeTable("rejects overflow paths with their own base",
+		func(spec string) {
+			_, err := normalizeOverflowPath(spec)
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("absolute URL", "http://localhost:8080/pprof/dump"),
+		Entry("host-relative URL", "//localhost:8080/pprof/dump"),
+		Entry("port override", ":8081/pprof/dump"),
+	)
 })
 
 var _ = Describe("scrape target construction", func() {

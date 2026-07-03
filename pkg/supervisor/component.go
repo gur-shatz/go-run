@@ -199,16 +199,12 @@ func (this *Component) SetCgroupAttach(fn func(cmd *exec.Cmd) func(pid int)) {
 func (this *Component) TerminateForMemory(reason string) {
 	this.mu.Lock()
 	pid := this.pid
-	version := this.currentRunning
 	this.mu.Unlock()
 	if pid <= 0 {
 		return
 	}
-	if version == "" {
-		version, _ = this.paths.ReadCurrent()
-	}
 	this.logger.Warn("[%s] memory kill (%s); pid=%d — terminating, counts as a crash", this.cfg.Name, reason, pid)
-	this.runOverflowHook(version, pid, reason)
+	this.requestOverflowDump(pid, reason)
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	// Escalate to SIGKILL after the grace window in case the child ignores
 	// SIGTERM. Signalling a dead/relaunched group is a harmless ESRCH.
@@ -219,71 +215,44 @@ func (this *Component) TerminateForMemory(reason string) {
 	}(pid)
 }
 
-// runOverflowHook gives a component one last chance to dump diagnostics before
-// a supervisor-driven memory kill. The hook runs in the component's version dir
-// with the normal child launch environment plus OP_OVERFLOW_* facts. Any hook
-// failure is logged but never blocks the kill path beyond kill_grace_period.
-func (this *Component) runOverflowHook(version string, pid int, reason string) {
-	if strings.TrimSpace(this.cfg.OnOverflow) == "" || version == "" {
+// requestOverflowDump gives a component one last chance to dump diagnostics
+// before a supervisor-driven memory kill. overflow-path is resolved against the
+// component's known HTTP base URL: http://127.0.0.1:<port>.
+func (this *Component) requestOverflowDump(pid int, reason string) {
+	if strings.TrimSpace(this.cfg.OverflowPath) == "" {
 		return
 	}
-	vars, err := this.launchVars(version)
+	path, err := normalizeOverflowPath(this.cfg.OverflowPath)
 	if err != nil {
-		this.logger.Warn("[%s] onoverflow skipped: %v", this.cfg.Name, err)
+		this.logger.Warn("[%s] overflow-path skipped: %v", this.cfg.Name, err)
 		return
 	}
-	env, err := this.buildEnv(vars)
-	if err != nil {
-		this.logger.Warn("[%s] onoverflow env failed: %v", this.cfg.Name, err)
-		return
-	}
-	env = append(env,
-		fmt.Sprintf("OP_OVERFLOW_PID=%d", pid),
-		fmt.Sprintf("OP_OVERFLOW_CHILD_PID=%d", pid),
-		"OP_OVERFLOW_REASON="+reason,
-	)
-
-	argv, err := shlex.Split(this.cfg.OnOverflow)
-	if err != nil {
-		this.logger.Warn("[%s] onoverflow split failed: %v", this.cfg.Name, err)
-		return
-	}
-	if len(argv) == 0 {
-		return
-	}
-	if !filepath.IsAbs(argv[0]) && strings.ContainsAny(argv[0], "/\\") {
-		argv[0] = filepath.Join(vars.VersionDir, argv[0])
-	}
-
 	timeout := this.killGracePeriod
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = vars.VersionDir
-	cmd.Env = env
-	cmd.Stdout = newPrefixedWriter(this.cfg.Name+".onoverflow", processConsoleStdout())
-	cmd.Stderr = newPrefixedWriter(this.cfg.Name+".onoverflow", processConsoleStderr())
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	this.logger.Status("[%s] running onoverflow hook before memory kill: %s", this.cfg.Name, this.cfg.OnOverflow)
-	if err := cmd.Start(); err != nil {
-		this.logger.Warn("[%s] onoverflow start failed: %v", this.cfg.Name, err)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", this.cfg.Port, path)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		this.logger.Warn("[%s] overflow-path request build failed: %v", this.cfg.Name, err)
 		return
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			this.logger.Warn("[%s] onoverflow failed: %v", this.cfg.Name, err)
-		}
-	case <-time.After(timeout):
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		err := <-done
-		this.logger.Warn("[%s] onoverflow timed out after %s: %v", this.cfg.Name, timeout, err)
+	req.Header.Set("X-Go-Run-Overflow-PID", fmt.Sprintf("%d", pid))
+	req.Header.Set("X-Go-Run-Overflow-Child-PID", fmt.Sprintf("%d", pid))
+	req.Header.Set("X-Go-Run-Overflow-Reason", reason)
+
+	this.logger.Status("[%s] requesting overflow dump before memory kill: POST %s", this.cfg.Name, url)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		this.logger.Warn("[%s] overflow-path request failed: %v", this.cfg.Name, err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		this.logger.Warn("[%s] overflow-path request returned HTTP %d", this.cfg.Name, resp.StatusCode)
 	}
 }
 

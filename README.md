@@ -589,8 +589,8 @@ The supervisor can track and enforce memory budgets for managed components. When
 For Go services, the recommended pre-kill path is:
 
 1. The component registers an HTTP pprof dump endpoint.
-2. The supervisor component config sets `onoverflow` to call that endpoint.
-3. On memory overflow, the supervisor invokes `onoverflow`, waits up to `kill_grace_period`, then terminates the component.
+2. The supervisor component config sets `overflow-path` to that endpoint path.
+3. On memory overflow, the supervisor POSTs to `http://127.0.0.1:<component port><overflow-path>`, waits up to `kill_grace_period`, then terminates the component.
 
 Component example:
 
@@ -629,19 +629,19 @@ components:
   - name: api
     port: 8080
     command: "./api"
-    onoverflow: "curl -fsS -XPOST http://127.0.0.1:8080/debug/pprof/dump"
+    overflow-path: /debug/pprof/dump
     memory:
       hardlimit: 512m
       softlimit: 420m
 ```
 
-The dump handler writes a timestamped directory containing heap, allocs, goroutine, threadcreate, block, and mutex profiles. The supervisor passes these extra environment variables to `onoverflow`:
+The dump handler writes a timestamped directory containing heap, allocs, goroutine, threadcreate, block, and mutex profiles. The supervisor sends these headers on the overflow request:
 
-| Variable                | Description                       |
-| ----------------------- | --------------------------------- |
-| `OP_OVERFLOW_PID`       | PID of the child being terminated |
-| `OP_OVERFLOW_CHILD_PID` | Alias for `OP_OVERFLOW_PID`       |
-| `OP_OVERFLOW_REASON`    | Human-readable memory kill reason |
+| Header                          | Description                       |
+| ------------------------------- | --------------------------------- |
+| `X-Go-Run-Overflow-PID`         | PID of the child being terminated |
+| `X-Go-Run-Overflow-Child-PID`   | Alias for `X-Go-Run-Overflow-PID` |
+| `X-Go-Run-Overflow-Reason`      | Human-readable memory kill reason |
 
 Memory accounting keeps raw cgroup charge and working set separate. Raw `memory.current` is still reported for visibility, but pod-pressure decisions use working set (`memory.current - inactive_file`) when the kernel exposes it, so reclaimable file cache does not trigger avoidable restarts.
 
@@ -737,7 +737,7 @@ The backoffice router includes `chi/middleware.Recoverer`. Handler panics return
 
 ## pprofdump
 
-`pkg/pprofdump` provides a small `POST` handler for writing pprof files to disk on demand. It is intended for last-chance diagnostics, especially from supervisor `onoverflow`.
+`pkg/pprofdump` provides a small `POST` handler for writing pprof files to disk on demand. It is intended for last-chance diagnostics, especially from supervisor `overflow-path`.
 
 Standard library mux:
 

@@ -1,10 +1,12 @@
 package supervisor
 
 import (
-	"os"
-	"path/filepath"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"runtime"
-	"strings"
+	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -86,38 +88,42 @@ var _ = Describe("Memory enforcement", func() {
 		})
 	})
 
-	Describe("onoverflow hook", func() {
-		It("runs in the component version dir with overflow context", func() {
-			root := GinkgoT().TempDir()
-			paths := NewPaths(root).Component("api")
-			Expect(paths.EnsureDirs()).To(Succeed())
-			versionDir := paths.VersionDir("v1")
-			Expect(os.MkdirAll(versionDir, 0755)).To(Succeed())
-			Expect(os.WriteFile(filepath.Join(versionDir, "run.sh"), []byte("#!/bin/sh\n"), 0755)).To(Succeed())
+	Describe("overflow-path", func() {
+		It("POSTs to the component localhost port with overflow context", func() {
+			seen := make(chan *http.Request, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+
+			u, err := url.Parse(srv.URL)
+			Expect(err).NotTo(HaveOccurred())
+			_, portText, err := net.SplitHostPort(u.Host)
+			Expect(err).NotTo(HaveOccurred())
+			port, err := strconv.Atoi(portText)
+			Expect(err).NotTo(HaveOccurred())
 
 			c := &Component{
 				cfg: ComponentConfig{
-					Name:       "api",
-					Port:       18090,
-					Command:    "/bin/sh ./run.sh",
-					OnOverflow: `/bin/sh -c 'printf "%s|%s|%s" "$OP_OVERFLOW_PID" "$OP_OVERFLOW_REASON" "$PWD" > overflow.out'`,
+					Name:         "api",
+					Port:         port,
+					Command:      "/bin/api",
+					OverflowPath: "/pprof/dump",
 				},
-				paths:           paths,
 				killGracePeriod: time.Second,
 				logger:          log.New("[t]", false),
 			}
 
-			c.runOverflowHook("v1", 12345, "memory state fail")
+			c.requestOverflowDump(12345, "memory state fail")
 
-			raw, err := os.ReadFile(filepath.Join(versionDir, "overflow.out"))
-			Expect(err).NotTo(HaveOccurred())
-			parts := strings.Split(string(raw), "|")
-			Expect(parts).To(HaveLen(3))
-			Expect(parts[0]).To(Equal("12345"))
-			Expect(parts[1]).To(Equal("memory state fail"))
-			realVersionDir, err := filepath.EvalSymlinks(versionDir)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(parts[2]).To(Equal(realVersionDir))
+			var req *http.Request
+			Eventually(seen).Should(Receive(&req))
+			Expect(req.Method).To(Equal(http.MethodPost))
+			Expect(req.URL.Path).To(Equal("/pprof/dump"))
+			Expect(req.Header.Get("X-Go-Run-Overflow-PID")).To(Equal("12345"))
+			Expect(req.Header.Get("X-Go-Run-Overflow-Child-PID")).To(Equal("12345"))
+			Expect(req.Header.Get("X-Go-Run-Overflow-Reason")).To(Equal("memory state fail"))
 		})
 	})
 

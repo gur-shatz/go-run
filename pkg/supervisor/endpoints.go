@@ -68,3 +68,30 @@ func endpointRequestURI(u *url.URL) string {
 	}
 	return path
 }
+
+func normalizeOverflowPath(spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	if strings.HasPrefix(spec, ":") {
+		return "", fmt.Errorf("must be a path, not a port override")
+	}
+	if strings.HasPrefix(spec, "//") {
+		return "", fmt.Errorf("must be a path, not a host-relative URL")
+	}
+	if u, err := url.Parse(spec); err == nil && u.IsAbs() {
+		return "", fmt.Errorf("must be a path, not an absolute URL")
+	}
+	if !strings.HasPrefix(spec, "/") {
+		spec = "/" + spec
+	}
+	u, err := url.ParseRequestURI(spec)
+	if err != nil {
+		return "", err
+	}
+	if u.Host != "" {
+		return "", fmt.Errorf("must be a path, not a URL")
+	}
+	return endpointRequestURI(u), nil
+}

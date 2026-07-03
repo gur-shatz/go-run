@@ -368,14 +368,14 @@ type RemoteConfig struct {
 // child to serve (healthz, readyz, state, metrics). Unset fields fall back
 // to their conventional values.
 type ComponentConfig struct {
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description,omitempty"`
-	Port        int               `yaml:"port"`
-	Command     string            `yaml:"command"`
-	OnOverflow  string            `yaml:"onoverflow,omitempty"`
-	Env         map[string]string `yaml:"env,omitempty"`
-	URLs        URLsConfig        `yaml:"urls,omitempty"`
-	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`
+	Name         string            `yaml:"name"`
+	Description  string            `yaml:"description,omitempty"`
+	Port         int               `yaml:"port"`
+	Command      string            `yaml:"command"`
+	OverflowPath string            `yaml:"overflow-path,omitempty"`
+	Env          map[string]string `yaml:"env,omitempty"`
+	URLs         URLsConfig        `yaml:"urls,omitempty"`
+	ProxyURLs    map[string]string `yaml:"proxy_urls,omitempty"`
 
 	// Readme is an optional path to a Markdown file describing this component,
 	// shown on the component's portal page. Relative paths resolve against the
@@ -712,6 +712,11 @@ func (this *Config) Validate() error {
 		}
 		if c.Remote.Enabled && c.Remote.BaseURL == "" {
 			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
+		}
+		if strings.TrimSpace(c.OverflowPath) != "" {
+			if _, err := normalizeOverflowPath(c.OverflowPath); err != nil {
+				return fmt.Errorf("components[%q]: overflow-path: %w", c.Name, err)
+			}
 		}
 		if err := validateProxyURLs(c.ProxyURLs); err != nil {
 			return fmt.Errorf("components[%q]: proxy_urls: %w", c.Name, err)

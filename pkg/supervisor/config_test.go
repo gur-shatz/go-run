@@ -492,7 +492,7 @@ components:
 			Expect(cfg.Components[0].Command).To(Equal("${VERSION_DIR}/bin/hello --port=${MONITOR_PORT}"))
 		})
 
-		It("parses a component onoverflow hook", func() {
+		It("parses a component overflow path", func() {
 			writeYAML(`
 state_dir: ./state
 remote:
@@ -501,11 +501,43 @@ components:
   - name: hello
     port: 18090
     command: "./bin/hello"
-    onoverflow: "./dump.sh"
+    overflow-path: "/pprof/dump"
 `)
 			cfg, err := supervisor.LoadConfig(path)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Components[0].OnOverflow).To(Equal("./dump.sh"))
+			Expect(cfg.Components[0].OverflowPath).To(Equal("/pprof/dump"))
+		})
+
+		It("rejects overflow paths that try to override the component base URL", func() {
+			writeYAML(`
+state_dir: ./state
+remote:
+  base_url: https://x
+components:
+  - name: hello
+    port: 18090
+    command: "./bin/hello"
+    overflow-path: "http://127.0.0.1:18091/pprof/dump"
+`)
+			_, err := supervisor.LoadConfig(path)
+			Expect(err).To(MatchError(ContainSubstring("overflow-path")))
+			Expect(err).To(MatchError(ContainSubstring("absolute URL")))
+		})
+
+		It("rejects overflow paths that try to override the component port", func() {
+			writeYAML(`
+state_dir: ./state
+remote:
+  base_url: https://x
+components:
+  - name: hello
+    port: 18090
+    command: "./bin/hello"
+    overflow-path: ":18091/pprof/dump"
+`)
+			_, err := supervisor.LoadConfig(path)
+			Expect(err).To(MatchError(ContainSubstring("overflow-path")))
+			Expect(err).To(MatchError(ContainSubstring("port override")))
 		})
 
 		It("returns an error for an undefined template variable", func() {
