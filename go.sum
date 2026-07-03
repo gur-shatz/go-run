@@ -42,6 +42,8 @@ github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaU
 github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510/go.mod h1:pupxD2MaaD3pAXIBCelhxNneeOaAeabZDe5s4K6zSpQ=
 github.com/gur-shatz/statekit v0.0.17 h1:ZI0xg4EoOk3bwRrVJbYv2UzHLIiyulcyI3Z/p0sRzho=
 github.com/gur-shatz/statekit v0.0.17/go.mod h1:+886AD3EgqmqvHzFbwmwJt5zjpcI+Wa/qXVUoFkyoYE=
+github.com/gur-shatz/statekit v0.0.19 h1:2AIh7y71uEJpJpbKSTqTI5xi2vR6JD9pjAM9K54BlW8=
+github.com/gur-shatz/statekit v0.0.19/go.mod h1:ROz64ZDWfPLZ1FZsseRcXJGpICrpvsM2yJOhbJa9C4w=
 github.com/joshdk/go-junit v1.0.0 h1:S86cUKIdwBHWwA6xCmFlf3RTLfVXYQfvanM5Uh+K6GE=
 github.com/joshdk/go-junit v1.0.0/go.mod h1:TiiV0PqkaNfFXjEiyjWM3XXrhVyCa1K4Zfga6W52ung=
 github.com/klauspost/compress v1.17.11 h1:In6xLpyWOi1+C7tXUUWv2ot1QvBjxevKAaI6IXrJmUc=

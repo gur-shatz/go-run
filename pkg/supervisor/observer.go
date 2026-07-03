@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,8 +21,10 @@ import (
 // This deliberately reuses the existing scraper path: the scraper already
 // mirrors every component's /state into the registry, so the observer just
 // snapshots registry.StateDisplay() into the store. The store decomposes each
-// snapshot into current state, per-target rollups, and transition events. It
-// is in-memory only — history resets on restart.
+// snapshot into current state, per-target rollups, and bounded history.
+// Current state is in-memory and rebuilds from the first scrape after a
+// restart; with history_dir set, the timeline chart and the
+// transition/incident history persist under it and survive restarts.
 type observer struct {
 	store          *storage.MemoryStore
 	registry       *statekit.Registry
@@ -30,14 +33,30 @@ type observer struct {
 }
 
 // newObserver builds the store. Run must be called to start ingesting, and
-// mount to expose the console.
+// mount to expose the console. A history_dir that cannot be opened degrades
+// that piece to in-memory with a warning: the health console must never
+// block supervision.
 func newObserver(cfg ObserveConfig, registry *statekit.Registry, logger *log.Logger) *observer {
-	store := storage.NewMemoryStore(storage.WithDocumentCache(
+	opts := []storage.MemoryStoreOption{storage.WithDocumentCache(
 		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](cfg.CacheMB<<20),
 		5*time.Minute,
-	))
+	)}
+	if cfg.HistoryDir != "" {
+		chart, err := storage.NewFileChartStore(filepath.Join(cfg.HistoryDir, "chart"), time.Minute, 24*60)
+		if err != nil {
+			logger.Warn("observer: chart history disabled, falling back to memory: %v", err)
+		} else {
+			opts = append(opts, storage.WithChartStore(chart))
+		}
+		journal, err := storage.OpenJournal(filepath.Join(cfg.HistoryDir, "journal.ndjson"))
+		if err != nil {
+			logger.Warn("observer: transition/incident history disabled, falling back to memory: %v", err)
+		} else {
+			opts = append(opts, storage.WithJournal(journal))
+		}
+	}
 	return &observer{
-		store:          store,
+		store:          storage.NewMemoryStore(opts...),
 		registry:       registry,
 		ingestInterval: cfg.IngestInterval,
 		logger:         logger,

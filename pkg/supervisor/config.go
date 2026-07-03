@@ -290,9 +290,17 @@ type ObserveConfig struct {
 	IngestInterval time.Duration `yaml:"ingest_interval,omitempty"`
 
 	// CacheMB sizes the document cache (full /state documents) in MiB.
-	// Default 32. Note: storage is in-memory only — history does not survive a
-	// supervisor restart.
+	// Default 32.
 	CacheMB int `yaml:"cache_mb,omitempty"`
+
+	// HistoryDir enables file-backed health history under this directory:
+	// the timeline chart persists as day segments in <dir>/chart/ and state
+	// transitions + incidents in <dir>/journal.ndjson, so both survive a
+	// supervisor restart. A relative path resolves under state_dir. Empty
+	// (the default) keeps history in memory only, where it resets on
+	// restart. Current state is always in memory: it rebuilds from the
+	// first scrape cycle regardless.
+	HistoryDir string `yaml:"history_dir,omitempty"`
 }
 
 // SupervisorConfig controls the supervisor's own HTTP server (own-state, /healthz, /metrics)
@@ -583,6 +591,9 @@ func (this *Config) ApplyDefaults() {
 		}
 		if this.StateMonitor.Observe.CacheMB == 0 {
 			this.StateMonitor.Observe.CacheMB = 32
+		}
+		if dir := this.StateMonitor.Observe.HistoryDir; dir != "" && !filepath.IsAbs(dir) {
+			this.StateMonitor.Observe.HistoryDir = filepath.Join(this.StateDir, dir)
 		}
 	}
 
