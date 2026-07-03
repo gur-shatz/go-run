@@ -148,6 +148,38 @@ var _ = Describe("backoffice env", func() {
 })
 
 var _ = Describe("current_version_logs", func() {
+	It("serves configured backoffice static directories", func() {
+		dir := GinkgoT().TempDir()
+		staticDir := filepath.Join(dir, "pprof-dumps")
+		Expect(os.MkdirAll(staticDir, 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(staticDir, "heap.pprof"), []byte("heap profile\n"), 0o644)).To(Succeed())
+
+		cfg := Config{
+			StateDir: dir,
+			Backoffice: BackofficeConfig{StaticDirs: []BackofficeStaticDirConfig{
+				{Name: "pprof", Path: staticDir, Description: "Captured pprof dumps"},
+			}},
+		}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false), cfg.Backoffice)
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		code, idx := getBody(srv.Client(), srv.URL+"/backoffice/static/index.json")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(idx).To(ContainSubstring(`"name":"pprof"`))
+		Expect(idx).To(ContainSubstring("Captured pprof dumps"))
+
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/static/pprof/heap.pprof")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(Equal("heap profile\n"))
+	})
+
 	It("serves supervisor process run logs from the logs tree", func() {
 		dir := GinkgoT().TempDir()
 		cfg := Config{StateDir: dir}

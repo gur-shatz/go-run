@@ -88,7 +88,7 @@ type supervisorEnv struct {
 // be handed to a child component without colliding with control routes.
 const backofficePrefix = "/backoffice"
 
-func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, externalCfgs []ExternalComponentConfig, obs *observer, mem *memoryMonitor, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger) *httpServer {
+func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, paths Paths, bundle *statekitBundle, componentCfgs []ComponentConfig, externalCfgs []ExternalComponentConfig, obs *observer, mem *memoryMonitor, build BuildInfo, auth BasicAuthConfig, favicon FaviconConfig, logger *log.Logger, backofficeCfg ...BackofficeConfig) *httpServer {
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 
@@ -345,6 +345,25 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 		logsRoot.StaticFilesFolder(c.Name, fsRoot).
 			Title("Logs for " + c.Name).
 			Description("state_dir/logs/" + c.Name + "/")
+	}
+
+	var boCfg BackofficeConfig
+	if len(backofficeCfg) > 0 {
+		boCfg = backofficeCfg[0]
+	}
+	if len(boCfg.StaticDirs) > 0 {
+		staticRoot := bo.Folder("static").
+			Title("Static directories").
+			Description("Configured local directories exposed for operator inspection.")
+		for _, dir := range boCfg.StaticDirs {
+			desc := dir.Description
+			if desc == "" {
+				desc = "Local directory " + dir.Path
+			}
+			staticRoot.StaticFilesFolder(dir.Name, dir.Path).
+				Title(dir.Name).
+				Description(desc)
+		}
 	}
 
 	return &httpServer{

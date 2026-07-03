@@ -36,6 +36,16 @@ supervisor:
   #   password: changeme   # template with env to avoid hard-coding a secret
   #   hint: "demo login: admin / changeme"  # shown under the form; demos only
 
+# backoffice: optional operator-facing folders under /backoffice.
+# static_dirs exposes local filesystem directories as browseable folders under
+# /backoffice/static/<name>/. Relative paths resolve against supervisor.yml.
+# Useful for dump/artifact directories such as pprof output.
+# backoffice:
+#   static_dirs:
+#     - name: pprof
+#       path: ./pprof-dumps
+#       description: Captured pprof dumps
+
 # memory: per-component memory tracking and (on Linux + cgroup v2) enforcement.
 # Tracking is ON BY DEFAULT: with no block at all the supervisor measures each
 # component's usage. Set `enabled: false` to turn it off entirely.

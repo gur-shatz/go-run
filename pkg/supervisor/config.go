@@ -59,6 +59,7 @@ type Config struct {
 	Vars map[string]any `yaml:"vars,omitempty"`
 
 	Supervisor SupervisorConfig `yaml:"supervisor"`
+	Backoffice BackofficeConfig `yaml:"backoffice,omitempty"`
 	Updates    UpdatesConfig    `yaml:"updates,omitempty"`
 	Remote     RemoteConfig     `yaml:"remote"`
 
@@ -346,6 +347,20 @@ type BasicAuthConfig struct {
 	Hint string `yaml:"hint,omitempty"`
 }
 
+// BackofficeConfig configures optional operator-facing folders under the
+// supervisor's /backoffice tree.
+type BackofficeConfig struct {
+	StaticDirs []BackofficeStaticDirConfig `yaml:"static_dirs,omitempty"`
+}
+
+// BackofficeStaticDirConfig exposes a local filesystem directory as a
+// browseable /backoffice/static/<name>/ folder.
+type BackofficeStaticDirConfig struct {
+	Name        string `yaml:"name"`
+	Path        string `yaml:"path"`
+	Description string `yaml:"description,omitempty"`
+}
+
 // UpdatesConfig is the operator-facing update switch. When enabled is false,
 // the supervisor does not poll an update source and runs current.txt locally.
 // The remaining fields mirror remote: and are copied into the effective
@@ -473,6 +488,9 @@ func LoadConfig(path string, opts ...config.Option) (*Config, error) {
 	}
 	cfg.Remote.BaseURL = resolveFileURL(cfg.Remote.BaseURL, absConfigDir)
 	cfg.Updates.BaseURL = resolveFileURL(cfg.Updates.BaseURL, absConfigDir)
+	for i := range cfg.Backoffice.StaticDirs {
+		cfg.Backoffice.StaticDirs[i].Path = resolveLocalPath(cfg.Backoffice.StaticDirs[i].Path, absConfigDir)
+	}
 	for i := range cfg.Components {
 		cfg.Components[i].Remote.BaseURL = resolveFileURL(cfg.Components[i].Remote.BaseURL, absConfigDir)
 		cfg.Components[i].Readme = resolveLocalPath(cfg.Components[i].Readme, absConfigDir)
@@ -703,6 +721,9 @@ func (this *Config) Validate() error {
 	if err := this.validateMemory(); err != nil {
 		return err
 	}
+	if err := this.validateBackoffice(); err != nil {
+		return err
+	}
 	if len(this.Components) == 0 && len(this.ExternalComponents) == 0 {
 		return nil
 	}
@@ -754,6 +775,27 @@ func (this *Config) Validate() error {
 		}
 		if err := validateProxyURLs(c.ProxyURLs); err != nil {
 			return fmt.Errorf("external_components[%q]: proxy_urls: %w", c.Name, err)
+		}
+	}
+	return nil
+}
+
+func (this *Config) validateBackoffice() error {
+	seen := make(map[string]bool, len(this.Backoffice.StaticDirs))
+	for i, dir := range this.Backoffice.StaticDirs {
+		name := strings.TrimSpace(dir.Name)
+		if name == "" {
+			return fmt.Errorf("backoffice.static_dirs[%d]: name is required", i)
+		}
+		if strings.Contains(name, "/") || name == "." || name == ".." {
+			return fmt.Errorf("backoffice.static_dirs[%q]: name must be a single path segment", dir.Name)
+		}
+		if seen[name] {
+			return fmt.Errorf("backoffice.static_dirs[%d]: duplicate name %q", i, name)
+		}
+		seen[name] = true
+		if strings.TrimSpace(dir.Path) == "" {
+			return fmt.Errorf("backoffice.static_dirs[%q]: path is required", name)
 		}
 	}
 	return nil

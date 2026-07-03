@@ -295,6 +295,29 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(Succeed())
 		})
 
+		It("accepts configured backoffice static directories", func() {
+			cfg := supervisor.Config{
+				Backoffice: supervisor.BackofficeConfig{StaticDirs: []supervisor.BackofficeStaticDirConfig{
+					{Name: "pprof", Path: "/var/lib/app/pprof", Description: "pprof dumps"},
+				}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects invalid backoffice static directory entries", func() {
+			cfg := supervisor.Config{
+				Backoffice: supervisor.BackofficeConfig{StaticDirs: []supervisor.BackofficeStaticDirConfig{
+					{Name: "bad/name", Path: "/tmp/x"},
+				}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("single path segment")))
+
+			cfg.Backoffice.StaticDirs = []supervisor.BackofficeStaticDirConfig{{Name: "pprof"}}
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("path is required")))
+		})
+
 		It("rejects favicon names longer than two characters", func() {
 			cfg := supervisor.Config{}
 			cfg.Supervisor.Favicon.Name = "supervisor"
@@ -507,6 +530,25 @@ components:
 			cfg, err := supervisor.LoadConfig(path)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Components[0].Memory.OverflowPath).To(Equal("/pprof/dump"))
+		})
+
+		It("resolves backoffice static directory paths relative to supervisor.yml", func() {
+			writeYAML(`
+state_dir: ./state
+backoffice:
+  static_dirs:
+    - name: pprof
+      path: ./pprof-dumps
+      description: Captured pprof dumps
+remote:
+  base_url: https://x
+`)
+			cfg, err := supervisor.LoadConfig(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Backoffice.StaticDirs).To(HaveLen(1))
+			Expect(cfg.Backoffice.StaticDirs[0].Name).To(Equal("pprof"))
+			Expect(cfg.Backoffice.StaticDirs[0].Description).To(Equal("Captured pprof dumps"))
+			Expect(cfg.Backoffice.StaticDirs[0].Path).To(Equal(filepath.Join(filepath.Dir(path), "pprof-dumps")))
 		})
 
 		It("rejects overflow paths that try to override the component base URL", func() {

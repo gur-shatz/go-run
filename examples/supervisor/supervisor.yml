@@ -30,6 +30,14 @@ supervisor:
   metric_labels:
     source: example-supervisor
 
+# Local directories exposed under /backoffice/static/<name>/.
+# Browse this one at /backoffice/static/pprof/ after logging into the demo.
+backoffice:
+  static_dirs:
+    - name: pprof
+      path: ./pprof-dumps
+      description: Captured pprof dumps and diagnostics
+
 # Component monitoring, in two independently toggleable parts.
 #   scrape:  poll each component's healthz/state/metrics into the registry
 #            (on by default; set enabled: false to turn off — the supervisor's
