@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/shlex"
@@ -416,6 +417,65 @@ exec:
 			Eventually(runDone).Should(Receive(BeNil()))
 		})
 
+		It("can skip only the initial tests while later rebuilds gate restarts on tests", func() {
+			cfg := execrun.Config{
+				Watch: []string{"watched.txt"},
+				Build: []string{"sh -c 'echo build >> events.log'"},
+				Test:  []string{"sh -c 'echo test >> events.log; grep -q pass testgate.txt'"},
+				Exec:  []string{"sh -c 'echo start >> events.log; sleep 30'"},
+			}
+			Expect(os.WriteFile(filepath.Join(tmpDir, "watched.txt"), []byte("unchanged\n"), 0644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(tmpDir, "testgate.txt"), []byte("fail\n"), 0644)).To(Succeed())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			buildTrigger := make(chan struct{}, 2)
+			starts := make(chan int, 10)
+			runDone := make(chan error, 1)
+
+			go func() {
+				runDone <- execrun.Run(ctx, cfg, execrun.Options{
+					RootDir:          tmpDir,
+					ContinueOnError:  true,
+					DisableHeartbeat: true,
+					SkipInitialTests: true,
+					BuildTrigger:     buildTrigger,
+					OnProcessStart: func(pid int) {
+						starts <- pid
+					},
+				})
+			}()
+
+			Eventually(starts, 5*time.Second).Should(Receive(BeNumerically(">", 0)))
+			Consistently(starts, 400*time.Millisecond).ShouldNot(Receive())
+			Expect(readTestEvents(tmpDir)).To(Equal([]string{"build", "start"}))
+
+			buildTrigger <- struct{}{}
+			Eventually(func() []string {
+				return readTestEvents(tmpDir)
+			}, 5*time.Second).Should(Equal([]string{"build", "start", "build", "test"}))
+			Consistently(starts, 400*time.Millisecond).ShouldNot(Receive())
+
+			Expect(os.WriteFile(filepath.Join(tmpDir, "testgate.txt"), []byte("pass\n"), 0644)).To(Succeed())
+			buildTrigger <- struct{}{}
+			Eventually(starts, 5*time.Second).Should(Receive(BeNumerically(">", 0)))
+			Eventually(func() []string {
+				return readTestEvents(tmpDir)
+			}, 5*time.Second).Should(Equal([]string{
+				"build",
+				"start",
+				"build",
+				"test",
+				"build",
+				"test",
+				"start",
+			}))
+
+			cancel()
+			Eventually(runDone).Should(Receive(BeNil()))
+		})
+
 		It("writes child start failures to the run log", func() {
 			cfg := execrun.Config{
 				Watch: []string{"trigger.txt"},
@@ -456,3 +516,15 @@ exec:
 		})
 	})
 })
+
+func readTestEvents(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, "events.log"))
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
+}

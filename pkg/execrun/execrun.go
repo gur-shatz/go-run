@@ -58,6 +58,9 @@ type Options struct {
 	ContinueOnError bool
 	// DisableHeartbeat suppresses periodic console dots.
 	DisableHeartbeat bool
+	// SkipInitialTests skips test steps only during the first automatic run.
+	// Later rebuilds/restarts and explicit test triggers still run tests.
+	SkipInitialTests bool
 	Stdout           io.Writer
 	Stderr           io.Writer
 
@@ -395,15 +398,19 @@ func (this *runner) runTestSteps() (time.Duration, error) {
 // Test steps write to TestStdout/TestStderr (test log).
 // Exec prep steps write to Stdout/Stderr (run log).
 // Returns the total duration and any error.
-func (this *runner) execSteps() (time.Duration, error) {
+func (this *runner) execSteps(skipTests bool) (time.Duration, error) {
 	start := time.Now()
 
 	if _, err := this.runBuildSteps(); err != nil {
 		return time.Since(start), err
 	}
 
-	if _, err := this.runTestSteps(); err != nil {
-		return time.Since(start), err
+	if !skipTests {
+		if _, err := this.runTestSteps(); err != nil {
+			return time.Since(start), err
+		}
+	} else if len(this.cfg.TestSteps()) > 0 {
+		this.logTo(this.opts.TestStdout, "Tests skipped for initial run")
 	}
 
 	for _, cmd := range this.cfg.ExecPrepSteps() {
@@ -413,6 +420,14 @@ func (this *runner) execSteps() (time.Duration, error) {
 	}
 
 	return time.Since(start), nil
+}
+
+func (this *runner) execStepsWithTests() (time.Duration, error) {
+	return this.execSteps(false)
+}
+
+func (this *runner) execInitialSteps() (time.Duration, error) {
+	return this.execSteps(this.opts.SkipInitialTests)
 }
 
 // start runs the run command.
@@ -610,7 +625,7 @@ func killProcessGroup(p *os.Process, sig syscall.Signal) error {
 // restart runs preparation steps, stops old process, starts new one.
 // If any step fails, the old process keeps running.
 func (this *runner) restart() (time.Duration, error) {
-	buildDuration, err := this.execSteps()
+	buildDuration, err := this.execStepsWithTests()
 	if err != nil {
 		return buildDuration, err
 	}
@@ -752,7 +767,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		l.Change(changes)
 
 		l.Status("Rebuilding...")
-		dur, err := r.execSteps()
+		dur, err := r.execStepsWithTests()
 		if err != nil {
 			l.Error("Build failed: %v", err)
 			l.Warn("Keeping previous process running.")
@@ -794,7 +809,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 
 	if len(cfg.Steps()) > 0 {
 		l.Status("Executing...")
-		dur, err := r.execSteps()
+		dur, err := r.execInitialSteps()
 		if err != nil {
 			if !opts.ContinueOnError {
 				return fmt.Errorf("exec failed: %w", err)
@@ -879,11 +894,11 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 	}
 }
 
-// runBuildOnly handles build mode: run all commands as steps, then watch for
-// changes and re-run. No managed process is started.
+// runBuildOnly handles build mode: run configured steps, then watch for changes
+// and re-run. No managed process is started.
 func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glob.Pattern, initialSums map[string]string, sumPath string, opts Options, l *log.Logger) error {
-	l.Status("Build mode: executing all commands...")
-	dur, err := r.execSteps()
+	l.Status("Build mode: executing...")
+	dur, err := r.execInitialSteps()
 	if err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
@@ -899,7 +914,7 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 		l.Change(changes)
 
 		l.Status("Rebuilding...")
-		dur, err := r.execSteps()
+		dur, err := r.execStepsWithTests()
 		if err != nil {
 			l.Error("Build failed: %v", err)
 			healthy.Store(false)
@@ -934,7 +949,7 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 			return nil
 		case <-opts.BuildTrigger:
 			l.Status("Build triggered...")
-			dur, err := r.execSteps()
+			dur, err := r.execStepsWithTests()
 			if err != nil {
 				l.Error("Build failed: %v", err)
 				healthy.Store(false)

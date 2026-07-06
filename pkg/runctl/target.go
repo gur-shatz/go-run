@@ -100,6 +100,7 @@ type target struct {
 	state        TargetState
 	currentStage string
 	enabled      bool
+	startedOnce  bool
 	cancel       context.CancelFunc
 	pid          int
 
@@ -188,6 +189,8 @@ func (this *target) start() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	this.mu.Lock()
+	skipInitialTests := !this.startedOnce
+	this.startedOnce = true
 	this.cancel = cancel
 	this.mu.Unlock()
 
@@ -226,6 +229,7 @@ func (this *target) start() error {
 		Verbose:          this.verbose,
 		ContinueOnError:  true,
 		DisableHeartbeat: true,
+		SkipInitialTests: skipInitialTests,
 		Stdout:           runLog,
 		Stderr:           runLog,
 		SumFile:          execSumFile,
