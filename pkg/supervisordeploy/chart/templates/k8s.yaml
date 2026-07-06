@@ -157,7 +157,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - -c
-            - {{ .Values.global.mountPath }}/supervisor/supervisor.yml
+            - {{ .Values.global.mountPath }}/{{ .Values.configDir }}/supervisor.yml
             - -v
           env:
             {{- range $name, $value := .Values.env }}

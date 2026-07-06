@@ -32,6 +32,14 @@ func (a *TestAccount) Settings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *TestAccount) Report(w http.ResponseWriter, r *http.Request) {
+	_, _ = w.Write([]byte("reported " + a.ID))
+}
+
+func (a *TestAccount) ReportForm(w http.ResponseWriter, r *http.Request) {
+	_, _ = w.Write([]byte("explicit form " + a.ID))
+}
+
 // Test mapper implementation
 type TestAccountMapper struct {
 	accounts sync.Map
@@ -59,8 +67,41 @@ func (m *TestAccountMapper) GetItem(id string) (*TestAccount, bool) {
 
 func (m *TestAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
 	return []chiutil.ObjectRoute[*TestAccount]{
-		{"GET", "/details", (*TestAccount).Details, "Account details"},
-		{"GET", "/settings", (*TestAccount).Settings, "Account settings"},
+		{Method: "GET", Path: "/details", Handler: (*TestAccount).Details, Description: "Account details"},
+		{Method: "GET", Path: "/settings", Handler: (*TestAccount).Settings, Description: "Account settings"},
+	}
+}
+
+type actionTestAccountMapper struct {
+	*TestAccountMapper
+}
+
+func (m actionTestAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
+	return []chiutil.ObjectRoute[*TestAccount]{
+		{
+			Method:      http.MethodPost,
+			Path:        "/report",
+			Handler:     (*TestAccount).Report,
+			Description: "Report account",
+			Action:      chiutil.Form("Report account", []string{"state"}),
+		},
+	}
+}
+
+type explicitGetPostAccountMapper struct {
+	*TestAccountMapper
+}
+
+func (m explicitGetPostAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
+	return []chiutil.ObjectRoute[*TestAccount]{
+		{Method: http.MethodGet, Path: "/report", Handler: (*TestAccount).ReportForm, Description: "Report account form"},
+		{
+			Method:      http.MethodPost,
+			Path:        "/report",
+			Handler:     (*TestAccount).Report,
+			Description: "Report account",
+			Action:      chiutil.Form("Report account", []string{"state"}),
+		},
 	}
 }
 
@@ -215,6 +256,44 @@ var _ = Describe("ObjectMapper", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result["id"]).To(Equal("acc-1"))
 			Expect(result["name"]).To(Equal("Acme Corp"))
+		})
+
+		It("serves GET action forms for POST object routes", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			mapper.accounts.Store("acc-1", &TestAccount{ID: "acc-1", Name: "Acme Corp"})
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", actionTestAccountMapper{TestAccountMapper: mapper})
+
+			req := httptest.NewRequest(http.MethodGet, "/backoffice/accounts/acc-1/report", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Header().Get("Content-Type")).To(ContainSubstring("text/html"))
+			Expect(w.Body.String()).To(ContainSubstring("Report account"))
+
+			req = httptest.NewRequest(http.MethodPost, "/backoffice/accounts/acc-1/report", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("reported acc-1"))
+		})
+
+		It("does not auto-register a GET action when an explicit GET route exists", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			mapper.accounts.Store("acc-1", &TestAccount{ID: "acc-1", Name: "Acme Corp"})
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", explicitGetPostAccountMapper{TestAccountMapper: mapper})
+
+			req := httptest.NewRequest(http.MethodGet, "/backoffice/accounts/acc-1/report", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("explicit form acc-1"))
 		})
 
 		It("should return 404 for non-existent item", func() {

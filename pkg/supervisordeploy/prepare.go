@@ -46,6 +46,7 @@ type Target struct {
 		MountPath string `yaml:"mount_path"`
 	} `yaml:"global"`
 	Supervisor struct {
+		Name           string    `yaml:"name"`
 		ImageRepo      string    `yaml:"image_repo"`
 		ImageTag       string    `yaml:"image_tag"`
 		BackofficePort int       `yaml:"backoffice_port"`
@@ -147,7 +148,7 @@ func Prepare(opts PrepareOptions) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("load supervisor config: %w", err)
 	}
-	if err := copyFile(opts.ConfigPath, filepath.Join(stageRoot, "global", "supervisor", "supervisor.yml"), 0644); err != nil {
+	if err := copyFile(opts.ConfigPath, filepath.Join(stageRoot, "global", target.Supervisor.Name, "supervisor.yml"), 0644); err != nil {
 		return "", err
 	}
 
@@ -204,6 +205,12 @@ func readTarget(path string) (Target, error) {
 	if target.Global.MountPath == "" {
 		target.Global.MountPath = "/global"
 	}
+	if target.Supervisor.Name == "" {
+		target.Supervisor.Name = "supervisor"
+	}
+	if !validKubeName(target.Supervisor.Name) {
+		return Target{}, fmt.Errorf("supervisor.name invalid: %q", target.Supervisor.Name)
+	}
 	if target.Supervisor.ImageRepo == "" {
 		target.Supervisor.ImageRepo = "localhost/supervisor"
 	}
@@ -240,6 +247,22 @@ func readTarget(path string) (Target, error) {
 		}
 	}
 	return target, nil
+}
+
+func validKubeName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for i, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+		if !ok {
+			return false
+		}
+		if (i == 0 || i == len(name)-1) && r == '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func parsePlatform(platform string) (string, string, error) {
@@ -360,8 +383,9 @@ func writeValues(stageRoot string, target Target) error {
 	}
 	resources := resourcesWithDefaults(target.Supervisor.Resources)
 	values := map[string]any{
-		"app":       "supervisor",
+		"app":       target.Supervisor.Name,
 		"namespace": target.Namespace,
+		"configDir": target.Supervisor.Name,
 		"image": map[string]any{
 			"repository": target.Supervisor.ImageRepo,
 			"tag":        target.Supervisor.ImageTag,
@@ -416,6 +440,8 @@ func defaultResources() Resources {
 }
 
 func writeDeployScript(stageRoot string, target Target) error {
+	releaseName := target.Supervisor.Name
+	localValuesPath := target.Global.HostPath + "/" + target.Supervisor.Name + "/values.local.yaml"
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
@@ -437,7 +463,7 @@ scp "$ROOT/global.tar.gz" "$HOST:/tmp/$BUNDLE_NAME.global.tar.gz"
 ssh "$HOST" "sudo mkdir -p %s && sudo tar -C %s -xzf /tmp/$BUNDLE_NAME.global.tar.gz --strip-components=1 && sudo chown -R 65532:65532 %s && rm -f /tmp/$BUNDLE_NAME.global.tar.gz"
 rm -f "$ROOT/global.tar.gz"
 
-echo "==> helm upgrade --install supervisor"
+echo "==> helm upgrade --install %s"
 HELM_VALUES=(-f "$ROOT/values.yaml")
 if ssh "$HOST" "test -f '$LOCAL_VALUES'"; then
   scp "$HOST:$LOCAL_VALUES" "$ROOT/values.local.yaml"
@@ -446,13 +472,13 @@ else
   echo "warning: $LOCAL_VALUES not found; deploying without target-local values" >&2
 fi
 
-helm --kubeconfig "$KUBECONFIG_PATH" upgrade --install supervisor "$ROOT/chart" \
+helm --kubeconfig "$KUBECONFIG_PATH" upgrade --install %s "$ROOT/chart" \
   -n "$NAMESPACE" \
   --create-namespace \
   "${HELM_VALUES[@]}" \
   --wait \
   --timeout 2m
-`, target.SSHHost, target.Kubeconfig, shellQuote(target.Namespace), shellQuote(target.Global.HostPath+"/supervisor/values.local.yaml"), shellQuote(target.Global.HostPath), shellQuote(target.Global.HostPath), shellQuote(target.Global.HostPath))
+`, target.SSHHost, target.Kubeconfig, shellQuote(target.Namespace), shellQuote(localValuesPath), shellQuote(target.Global.HostPath), shellQuote(target.Global.HostPath), shellQuote(target.Global.HostPath), releaseName, releaseName)
 	return os.WriteFile(filepath.Join(stageRoot, "deploy.sh"), []byte(script), 0755)
 }
 

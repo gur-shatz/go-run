@@ -29,9 +29,11 @@ const incidentTypeCrash = "crash"
 //     warn (not fail). Failures here mean "we couldn't reach the vendor", not
 //     "the workload is broken."
 //
-// Scraped child data still arrives separately via the statekit/scraper —
-// liveness probes (`<component>.up`), mirrored top-level states, and child
-// metrics. The bundle owns only what the supervisor itself produces.
+// The supervisor's own healthz scrape (`<component>.responsive`) is also
+// attached as an aggregate check once the scraper is built. Other scraped child
+// data still arrives separately via the statekit/scraper — mirrored top-level
+// states and child metrics. The bundle owns only what the supervisor itself
+// produces or probes directly.
 type statekitBundle struct {
 	registry *statekit.Registry
 
@@ -103,6 +105,7 @@ type statekitBundle struct {
 // componentStates holds the ManualStates that feed one component's
 // supervisorstate aggregate.
 type componentStates struct {
+	aggregate *statekit.AggregateState
 	lifecycle *statekit.ManualState // the "uptime" leaf
 	update    *statekit.ManualState // the "update" leaf
 	memory    *statekit.ManualState // the "memory" leaf (nil when subsystem off)
@@ -228,7 +231,7 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		}
 
 		b.components[c.Name] = &componentStates{
-			lifecycle: lifecycle, update: update, memory: memory,
+			aggregate: agg, lifecycle: lifecycle, update: update, memory: memory,
 			memCurrent: memCurrent, memHigh: memHigh, memLimit: memLimit,
 		}
 		b.perComponentRunCount[c.Name] = runCount
@@ -247,6 +250,22 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		b.runCount.WithLabelValues(c.Name)
 	}
 	return b
+}
+
+func (this *statekitBundle) attachScrapedLivenessState(st statekit.State) {
+	if this == nil || st == nil {
+		return
+	}
+	name := st.Name()
+	if !strings.HasSuffix(name, ".responsive") {
+		return
+	}
+	component := strings.TrimSuffix(name, ".responsive")
+	cs, ok := this.components[component]
+	if !ok || cs.aggregate == nil {
+		return
+	}
+	cs.aggregate.AddCheck(st)
 }
 
 // taggedState wraps a statekit.State and stamps ScrapedFrom on every snapshot.

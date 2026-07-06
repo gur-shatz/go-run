@@ -76,6 +76,10 @@ type ObjectEntry struct {
 }
 
 // ObjectRoute binds an HTTP method and path to a handler function.
+//
+// Action, when non-nil on a non-GET route, is also registered as GET on the
+// same path so browser/backoffice navigation can render a confirmation form
+// while programmatic callers keep using the route's real method.
 // The Handler is a method expression that takes the item as receiver.
 //
 // Example using method expressions:
@@ -94,6 +98,7 @@ type ObjectRoute[T any] struct {
 	Path        string
 	Handler     func(T, http.ResponseWriter, *http.Request)
 	Description string
+	Action      Action
 }
 
 // objectsFolder holds the state for an objects folder.
@@ -199,6 +204,12 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	// Build instance routes from mapper.Routes()
 	routes := mapper.Routes()
 	omf.instanceRoutes = make([]*RouteEntry, 0, len(routes))
+	explicitGETRoutes := map[string]bool{}
+	for _, route := range routes {
+		if strings.EqualFold(route.Method, http.MethodGet) {
+			explicitGETRoutes[route.Path] = true
+		}
+	}
 	for _, route := range routes {
 		name := strings.TrimPrefix(route.Path, "/")
 		omf.instanceRoutes = append(omf.instanceRoutes, &RouteEntry{
@@ -229,6 +240,9 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 				}
 				route.Handler(item, w, req)
 			}))
+			if route.Action != nil && !strings.EqualFold(route.Method, http.MethodGet) && !explicitGETRoutes[route.Path] {
+				r.Get(route.Path, route.Action.ServeHTML)
+			}
 		}
 	})
 

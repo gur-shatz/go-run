@@ -66,4 +66,35 @@ var _ = Describe("scrape target construction", func() {
 		Expect(byBase).To(HaveKey("http://localhost:8081"))
 		Expect(byBase).To(HaveKey("http://localhost:9001"))
 	})
+
+	It("adds the supervisor-owned responsive check under supervisorstate", func() {
+		cfg := Config{Components: []ComponentConfig{
+			{Name: "hello", Port: 18090, Command: "/bin/hello"},
+		}}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+
+		_, err := newComponentScraper(cfg, bundle, nil, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		var aggregateFound, topLevelFound, checkFound bool
+		for _, snap := range bundle.registry.StateDisplay().States {
+			if snap.Name == "hello.responsive" {
+				topLevelFound = true
+			}
+			if snap.Name != "hello.supervisorstate" {
+				continue
+			}
+			aggregateFound = true
+			for _, check := range snap.Checks {
+				if check.Name == "hello.responsive" {
+					checkFound = true
+				}
+			}
+		}
+
+		Expect(topLevelFound).To(BeTrue())
+		Expect(aggregateFound).To(BeTrue())
+		Expect(checkFound).To(BeTrue())
+	})
 })

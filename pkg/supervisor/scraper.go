@@ -68,6 +68,7 @@ func newComponentScraper(cfg Config, bundle *statekitBundle, ingestor scraper.Es
 	// Wire the scraper's outputs into the supervisor's bundle so they are
 	// visible under the supervisor's /state and /metrics.
 	for _, st := range sc.States() {
+		bundle.attachScrapedLivenessState(st)
 		if err := bundle.registry.Register(st); err != nil {
 			return nil, fmt.Errorf("register scraper state %q: %w", st.Name(), err)
 		}
