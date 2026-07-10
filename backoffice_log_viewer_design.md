@@ -618,6 +618,24 @@ Performance tests:
 5. Minimal embedded HTML viewer with file list, tail, paging, grep.
 6. Optional sparse checkpoint index for faster deep paging and line numbers.
 
+## Follow-Up Work
+
+- Fix standalone `Viewer.ServeHTTP` navigation so it works outside a mounted
+  `RouteFolder`.
+- Support recursive stream IDs that contain `/` without breaking API routing or
+  cursor use.
+- Return surrounding context rows for backward searches, matching forward search
+  behavior.
+- Add an explicit plain-text parser mode for logs that do not have recognizable
+  timestamp-prefixed entries.
+- Cache the stream catalog for large log directories, with invalidation based on
+  filesystem metadata.
+- Decide whether `WriteYAML` and `WriteText` should preserve their historical
+  append behavior or keep the current compatibility-breaking formatted append
+  helpers.
+- Treat symlink traversal as trusted-environment behavior for now; add stronger
+  root confinement before using this viewer with untrusted log paths.
+
 ## Open Questions
 
 - Should filtered `grep` search across all files, or only one selected file in
