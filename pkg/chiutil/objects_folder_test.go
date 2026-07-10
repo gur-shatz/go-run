@@ -40,6 +40,10 @@ func (a *TestAccount) ReportForm(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("explicit form " + a.ID))
 }
 
+func (a *TestAccount) Readme(w http.ResponseWriter, r *http.Request) {
+	_, _ = w.Write([]byte("# Account\n\n" + a.ID + "\n"))
+}
+
 // Test mapper implementation
 type TestAccountMapper struct {
 	accounts sync.Map
@@ -102,6 +106,16 @@ func (m explicitGetPostAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccoun
 			Description: "Report account",
 			Action:      chiutil.Form("Report account", []string{"state"}),
 		},
+	}
+}
+
+type markdownAccountMapper struct {
+	*TestAccountMapper
+}
+
+func (m markdownAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
+	return []chiutil.ObjectRoute[*TestAccount]{
+		{Method: http.MethodGet, Path: "/readme.md", Handler: (*TestAccount).Readme, Description: "Account README"},
 	}
 }
 
@@ -256,6 +270,22 @@ var _ = Describe("ObjectMapper", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result["id"]).To(Equal("acc-1"))
 			Expect(result["name"]).To(Equal("Acme Corp"))
+		})
+
+		It("marks .md object routes for markdown preview rendering", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			mapper.accounts.Store("acc-1", &TestAccount{ID: "acc-1", Name: "Acme Corp"})
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", markdownAccountMapper{TestAccountMapper: mapper})
+
+			req := httptest.NewRequest(http.MethodGet, "/backoffice/accounts/acc-1/readme.md?preview=true", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Header().Get("Content-Type")).To(Equal("text/markdown; charset=utf-8"))
+			Expect(w.Header().Get("X-Chiutil-Viewer")).To(Equal("markdown"))
 		})
 
 		It("serves GET action forms for POST object routes", func() {

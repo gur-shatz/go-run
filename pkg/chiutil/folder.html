@@ -6,6 +6,8 @@
     <title>Routes</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/monokai.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -393,6 +395,72 @@
             background: var(--bg);
         }
 
+        .viewer-markdown {
+            max-width: 920px;
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .viewer-markdown h1,
+        .viewer-markdown h2,
+        .viewer-markdown h3 {
+            margin: 0 0 12px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .viewer-markdown h1 { font-size: 24px; }
+        .viewer-markdown h2 { font-size: 20px; margin-top: 24px; }
+        .viewer-markdown h3 { font-size: 16px; margin-top: 20px; border-bottom: 0; }
+
+        .viewer-markdown p,
+        .viewer-markdown ul,
+        .viewer-markdown ol,
+        .viewer-markdown pre,
+        .viewer-markdown blockquote {
+            margin: 0 0 14px;
+        }
+
+        .viewer-markdown ul,
+        .viewer-markdown ol {
+            padding-left: 24px;
+        }
+
+        .viewer-markdown blockquote {
+            border-left: 3px solid var(--border);
+            padding-left: 12px;
+            color: var(--text-muted);
+        }
+
+        .viewer-markdown a {
+            color: var(--link);
+        }
+
+        .viewer-markdown code {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 4px;
+        }
+
+        .viewer-markdown pre {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            overflow-x: auto;
+        }
+
+        .viewer-markdown pre code {
+            display: block;
+            border: 0;
+            padding: 0;
+            background: transparent;
+            white-space: pre;
+        }
+
         .viewer-empty {
             display: flex;
             align-items: center;
@@ -699,6 +767,25 @@
                     return;
                 }
 
+                if (viewerMode === 'markdown' || isMarkdownContentType(contentType)) {
+                    currentResponse = text;
+                    const markdownEl = document.createElement('div');
+                    markdownEl.className = 'viewer-markdown';
+                    markdownEl.innerHTML = renderMarkdownPreview(text);
+                    body.innerHTML = '';
+                    body.appendChild(markdownEl);
+                    markdownEl.querySelectorAll('pre code').forEach(codeEl => {
+                        if (typeof hljs !== 'undefined') {
+                            try {
+                                hljs.highlightElement(codeEl);
+                            } catch (hljsErr) {
+                                console.warn('Markdown code highlighting failed:', hljsErr);
+                            }
+                        }
+                    });
+                    return;
+                }
+
                 let formatted = text;
                 try {
                     const json = JSON.parse(text);
@@ -708,6 +795,10 @@
                 currentResponse = formatted;
                 const codeEl = document.createElement('code');
                 codeEl.textContent = formatted;
+                const language = highlightLanguage(contentType);
+                if (language) {
+                    codeEl.classList.add(`language-${language}`);
+                }
                 const preEl = document.createElement('pre');
                 preEl.className = 'viewer-content';
                 preEl.appendChild(codeEl);
@@ -751,6 +842,44 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function isMarkdownContentType(contentType) {
+            return contentType.includes('text/markdown') ||
+                contentType.includes('text/x-markdown') ||
+                contentType.includes('application/markdown') ||
+                contentType.includes('application/x-markdown');
+        }
+
+        function highlightLanguage(contentType) {
+            const mediaType = (contentType || '').split(';', 1)[0].trim().toLowerCase();
+            if (!mediaType) return '';
+
+            if (mediaType === 'application/json' || mediaType.endsWith('+json')) return 'json';
+            if (mediaType === 'text/yaml' || mediaType === 'text/x-yaml' ||
+                mediaType === 'application/yaml' || mediaType === 'application/x-yaml' ||
+                mediaType.endsWith('+yaml')) return 'yaml';
+            if (mediaType === 'text/xml' || mediaType === 'application/xml' || mediaType.endsWith('+xml')) return 'xml';
+            if (mediaType === 'text/html' || mediaType === 'application/xhtml+xml') return 'xml';
+            if (mediaType === 'text/css') return 'css';
+            if (mediaType === 'text/javascript' || mediaType === 'application/javascript' ||
+                mediaType === 'application/x-javascript' || mediaType === 'application/ecmascript') return 'javascript';
+            if (mediaType === 'application/x-sh' || mediaType === 'application/x-shellscript') return 'bash';
+
+            return '';
+        }
+
+        function renderMarkdownPreview(markdown) {
+            if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+                return `<pre><code>${escapeHtml(markdown)}</code></pre>`;
+            }
+            const rendered = marked.parse(markdown, {
+                breaks: true,
+                gfm: true,
+            });
+            return DOMPurify.sanitize(rendered, {
+                ADD_ATTR: ['target'],
+            });
         }
 
         function updateStats(visible, total) {

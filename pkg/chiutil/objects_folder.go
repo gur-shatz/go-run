@@ -231,7 +231,7 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 
 		// Register each route with automatic item lookup
 		for _, route := range routes {
-			r.Method(route.Method, route.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			handler := markdownHeaderFunc(route.Path, func(w http.ResponseWriter, req *http.Request) {
 				id := chi.URLParam(req, paramName)
 				item, found := mapper.GetItem(id)
 				if !found {
@@ -239,9 +239,10 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 					return
 				}
 				route.Handler(item, w, req)
-			}))
+			})
+			r.Method(route.Method, route.Path, handler)
 			if route.Action != nil && !strings.EqualFold(route.Method, http.MethodGet) && !explicitGETRoutes[route.Path] {
-				r.Get(route.Path, route.Action.ServeHTML)
+				r.Get(route.Path, markdownHeaderFunc(route.Path, route.Action.ServeHTML))
 			}
 		}
 	})

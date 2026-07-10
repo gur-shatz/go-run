@@ -14,6 +14,7 @@ examples/**/*.sum
 *.swo
 bin/
 build/
+examples/backoffice-demo/generated-logs/
 !examples/supervisor-local/build/
 !examples/supervisor-local/build/hello/
 !examples/supervisor-local/build/hello/current.txt

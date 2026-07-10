@@ -212,6 +212,56 @@ var _ = Describe("RouteFolder", func() {
 		Expect(strings.Contains(body, "innerHTML = text")).To(BeFalse())
 	})
 
+	It("marks .md routes for markdown preview rendering", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice")
+		folder.GetDesc("/report.md", "Markdown report", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("# Report\n"))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/report.md?preview=true", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Header().Get("Content-Type")).To(Equal("text/markdown; charset=utf-8"))
+		Expect(w.Header().Get("X-Chiutil-Viewer")).To(Equal("markdown"))
+	})
+
+	It("renders markdown previews as documents", func() {
+		router := chi.NewRouter()
+		chiutil.NewRouteFolder(router, "/backoffice")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		body := w.Body.String()
+		Expect(body).To(ContainSubstring("viewerMode === 'markdown' || isMarkdownContentType(contentType)"))
+		Expect(body).To(ContainSubstring("function renderMarkdownPreview(markdown)"))
+		Expect(body).To(ContainSubstring("marked.parse(markdown"))
+		Expect(body).To(ContainSubstring("DOMPurify.sanitize(rendered"))
+		Expect(body).To(ContainSubstring("markdownEl.className = 'viewer-markdown'"))
+	})
+
+	It("maps response content types to highlight.js languages", func() {
+		router := chi.NewRouter()
+		chiutil.NewRouteFolder(router, "/backoffice")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		body := w.Body.String()
+		Expect(body).To(ContainSubstring("const language = highlightLanguage(contentType)"))
+		Expect(body).To(ContainSubstring("codeEl.classList.add(`language-${language}`)"))
+		Expect(body).To(ContainSubstring("mediaType === 'application/json' || mediaType.endsWith('+json')"))
+		Expect(body).To(ContainSubstring("mediaType === 'text/yaml'"))
+		Expect(body).To(ContainSubstring("mediaType.endsWith('+yaml')"))
+	})
+
 	It("persists selected endpoint previews in the URL hash", func() {
 		router := chi.NewRouter()
 		chiutil.NewRouteFolder(router, "/backoffice")

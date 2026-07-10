@@ -610,25 +610,25 @@ func serveDirJSON(w http.ResponseWriter, fsPath, urlPath, serviceName string) {
 // Get registers a GET route and adds it to the index.
 func (this *RouteFolder) Get(path string, handler http.HandlerFunc) {
 	this.addEntry("GET", path, "")
-	this.router.Get(path, handler)
+	this.router.Get(path, markdownHeaderFunc(path, handler))
 }
 
 // GetDesc registers a GET route with a description.
 func (this *RouteFolder) GetDesc(path, description string, handler http.HandlerFunc) {
 	this.addEntry("GET", path, description)
-	this.router.Get(path, handler)
+	this.router.Get(path, markdownHeaderFunc(path, handler))
 }
 
 // GetHandler registers a GET route backed by an http.Handler and adds it to the index.
 func (this *RouteFolder) GetHandler(path string, handler http.Handler) {
 	this.addEntry("GET", path, "")
-	this.router.Get(path, handler.ServeHTTP)
+	this.router.Get(path, markdownHeader(handler, path).ServeHTTP)
 }
 
 // GetHandlerDesc registers a GET route backed by an http.Handler with a description.
 func (this *RouteFolder) GetHandlerDesc(path, description string, handler http.Handler) {
 	this.addEntry("GET", path, description)
-	this.router.Get(path, handler.ServeHTTP)
+	this.router.Get(path, markdownHeader(handler, path).ServeHTTP)
 }
 
 // PostArgs configures a POST route registered via PostFunc. Handler is the
@@ -652,9 +652,9 @@ type PostArgs struct {
 // form that submits via POST.
 func (this *RouteFolder) PostFunc(args PostArgs) {
 	this.addEntry("POST", args.Path, args.Description)
-	this.router.Post(args.Path, args.Handler)
+	this.router.Post(args.Path, markdownHeaderFunc(args.Path, args.Handler))
 	if args.Action != nil {
-		this.router.Get(args.Path, args.Action.ServeHTML)
+		this.router.Get(args.Path, markdownHeaderFunc(args.Path, args.Action.ServeHTML))
 	}
 }
 
@@ -679,58 +679,59 @@ func (this *RouteFolder) PostFunc(args PostArgs) {
 // PostFunc so the split remains explicit at the call site.
 func (this *RouteFolder) Endpoint(method, path, description string, handler http.Handler) {
 	this.addEntry(method, path, description)
-	this.router.Method(method, path, handler)
+	wrapped := markdownHeader(handler, path)
+	this.router.Method(method, path, wrapped)
 	if method != http.MethodGet {
-		this.router.Get(path, handler.ServeHTTP)
+		this.router.Get(path, wrapped.ServeHTTP)
 	}
 }
 
 // Put registers a PUT route and adds it to the index.
 func (this *RouteFolder) Put(path string, handler http.HandlerFunc) {
 	this.addEntry("PUT", path, "")
-	this.router.Put(path, handler)
+	this.router.Put(path, markdownHeaderFunc(path, handler))
 }
 
 // PutDesc registers a PUT route with a description.
 func (this *RouteFolder) PutDesc(path, description string, handler http.HandlerFunc) {
 	this.addEntry("PUT", path, description)
-	this.router.Put(path, handler)
+	this.router.Put(path, markdownHeaderFunc(path, handler))
 }
 
 // Patch registers a PATCH route and adds it to the index.
 func (this *RouteFolder) Patch(path string, handler http.HandlerFunc) {
 	this.addEntry("PATCH", path, "")
-	this.router.Patch(path, handler)
+	this.router.Patch(path, markdownHeaderFunc(path, handler))
 }
 
 // PatchDesc registers a PATCH route with a description.
 func (this *RouteFolder) PatchDesc(path, description string, handler http.HandlerFunc) {
 	this.addEntry("PATCH", path, description)
-	this.router.Patch(path, handler)
+	this.router.Patch(path, markdownHeaderFunc(path, handler))
 }
 
 // Delete registers a DELETE route and adds it to the index.
 func (this *RouteFolder) Delete(path string, handler http.HandlerFunc) {
 	this.addEntry("DELETE", path, "")
-	this.router.Delete(path, handler)
+	this.router.Delete(path, markdownHeaderFunc(path, handler))
 }
 
 // DeleteDesc registers a DELETE route with a description.
 func (this *RouteFolder) DeleteDesc(path, description string, handler http.HandlerFunc) {
 	this.addEntry("DELETE", path, description)
-	this.router.Delete(path, handler)
+	this.router.Delete(path, markdownHeaderFunc(path, handler))
 }
 
 // Handle registers a route with the specified method.
 func (this *RouteFolder) Handle(method, path string, handler http.HandlerFunc) {
 	this.addEntry(method, path, "")
-	this.router.Method(method, path, handler)
+	this.router.Method(method, path, markdownHeaderFunc(path, handler))
 }
 
 // HandleDesc registers a route with a description.
 func (this *RouteFolder) HandleDesc(method, path, description string, handler http.HandlerFunc) {
 	this.addEntry(method, path, description)
-	this.router.Method(method, path, handler)
+	this.router.Method(method, path, markdownHeaderFunc(path, handler))
 }
 
 // Link adds a folder entry to the index without mounting a handler.
@@ -807,6 +808,21 @@ func (this *RouteFolder) addEntry(method, path, description string) {
 		Method:      method,
 		Path:        name,
 		Description: description,
+	})
+}
+
+func markdownHeaderFunc(path string, handler http.HandlerFunc) http.HandlerFunc {
+	return markdownHeader(http.HandlerFunc(handler), path).ServeHTTP
+}
+
+func markdownHeader(handler http.Handler, routePath string) http.Handler {
+	if !strings.HasSuffix(strings.ToLower(routePath), ".md") {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set(actionViewerHeader, "markdown")
+		handler.ServeHTTP(w, r)
 	})
 }
 

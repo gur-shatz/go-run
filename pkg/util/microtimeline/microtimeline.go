@@ -55,13 +55,54 @@ type Timeline struct {
 }
 
 // Entry is a decoded timeline event.
+//
+// At is the reconstructed absolute event time: the timeline anchors its
+// newest event at the last append's wall-clock time and walks the stored
+// offsets backwards. Offsets are quantized to their storage unit (ns / us
+// / ms / s at uint16 range), so reconstructed times drift by up to one
+// unit per hop away from the newest event; a Clamped entry means its
+// offset overflowed even the seconds unit and times at or before it are
+// unreliable.
 type Entry struct {
+	At         time.Time     `json:"at" yaml:"at"`
 	Offset     time.Duration `json:"offset" yaml:"offset"`
 	OffsetRaw  uint16        `json:"offset_raw" yaml:"offset_raw"`
 	OffsetUnit string        `json:"offset_unit" yaml:"offset_unit"`
 	Message    string        `json:"message" yaml:"message"`
 	Truncated  bool          `json:"truncated,omitempty" yaml:"truncated,omitempty"`
 	Clamped    bool          `json:"clamped,omitempty" yaml:"clamped,omitempty"`
+}
+
+// Render formats the entry as one human line relative to now:
+//
+//	20060102-15:04:05 (23s ago) message [truncated,clamped]
+func (this Entry) Render(now time.Time) string {
+	return fmt.Sprintf("%s (%s ago) %s%s", this.At.Format("20060102-15:04:05"), this.ago(now), this.Message, this.marks())
+}
+
+// ago returns the display-rounded distance from now to the event.
+func (this Entry) ago(now time.Time) time.Duration {
+	ago := now.Sub(this.At)
+	if ago >= time.Second {
+		return ago.Round(time.Second)
+	}
+	return ago.Round(time.Millisecond)
+}
+
+// marks renders the entry's storage flags as a " [truncated,clamped]"
+// suffix, or "" when clean.
+func (this Entry) marks() string {
+	if !this.Truncated && !this.Clamped {
+		return ""
+	}
+	var parts []string
+	if this.Truncated {
+		parts = append(parts, "truncated")
+	}
+	if this.Clamped {
+		parts = append(parts, "clamped")
+	}
+	return " [" + strings.Join(parts, ",") + "]"
 }
 
 // New returns a Timeline backed by one fixed-size byte buffer.
@@ -196,6 +237,15 @@ func (this *Timeline) Snapshot() ([]Entry, error) {
 		pos += recLen
 		remaining -= recLen
 	}
+
+	// Reconstruct absolute event times: the newest entry happened at the
+	// last append's wall time; each earlier entry precedes its successor
+	// by the successor's stored offset.
+	at := this.last
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i].At = at
+		at = at.Add(-out[i].Offset)
+	}
 	return out, nil
 }
 
@@ -210,7 +260,9 @@ func (this *Timeline) WriteJSON(w io.Writer) error {
 	return enc.Encode(entries)
 }
 
-// WriteYAML writes a YAML array containing the retained timeline entries.
+// WriteYAML writes a YAML sequence with one rendered line per retained
+// event ("20060102-15:04:05 (23s ago) message") — valid YAML that still
+// reads like a log. Structured access goes through Snapshot / WriteJSON.
 func (this *Timeline) WriteYAML(w io.Writer) error {
 	entries, err := this.Snapshot()
 	if err != nil {
@@ -218,32 +270,72 @@ func (this *Timeline) WriteYAML(w io.Writer) error {
 	}
 	enc := yaml.NewEncoder(w)
 	defer enc.Close()
-	return enc.Encode(entries)
+	return enc.Encode(RenderEntries(entries, time.Now()))
 }
 
-// WriteText writes one retained event per line.
+// WriteText writes one rendered event per line, same shape as the YAML
+// sequence items.
 func (this *Timeline) WriteText(w io.Writer) error {
 	entries, err := this.Snapshot()
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		marks := ""
-		if entry.Truncated || entry.Clamped {
-			var parts []string
-			if entry.Truncated {
-				parts = append(parts, "truncated")
-			}
-			if entry.Clamped {
-				parts = append(parts, "clamped")
-			}
-			marks = " [" + strings.Join(parts, ",") + "]"
-		}
-		if _, err := fmt.Fprintf(w, "+%s %s%s\n", entry.Offset, entry.Message, marks); err != nil {
+	for _, line := range RenderEntries(entries, time.Now()) {
+		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// RenderEntries renders entries into the one-line-per-event form relative
+// to now, for callers serializing a filtered or captured snapshot.
+func RenderEntries(entries []Entry, now time.Time) []string {
+	out := make([]string, len(entries))
+	for i, entry := range entries {
+		out[i] = entry.Render(now)
+	}
+	return out
+}
+
+// WriteMarkdown writes the retained events as a GFM table (Time | Ago |
+// Event), the shape the chiutil backoffice viewer renders for .md routes.
+func (this *Timeline) WriteMarkdown(w io.Writer) error {
+	entries, err := this.Snapshot()
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, RenderEntriesMarkdown(entries, time.Now()))
+	return err
+}
+
+// RenderEntriesMarkdown renders entries as a GFM table relative to now.
+// Messages are wrapped in code spans so markdown-active characters in
+// event text (underscores, asterisks, brackets) render verbatim.
+func RenderEntriesMarkdown(entries []Entry, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("| Time | Ago | Event |\n| --- | --- | --- |\n")
+	for _, entry := range entries {
+		fmt.Fprintf(&sb, "| %s | %s | %s%s |\n",
+			entry.At.Format("20060102-15:04:05"), entry.ago(now), markdownCell(entry.Message), entry.marks())
+	}
+	return sb.String()
+}
+
+// markdownCell renders one message as a table-safe code span: pipes are
+// escaped (they end table cells even inside code spans), newlines become
+// spaces (a cell is one line), and messages containing backticks get a
+// double-backtick delimiter per the GFM code-span rules.
+func markdownCell(message string) string {
+	if message == "" {
+		return ""
+	}
+	message = strings.ReplaceAll(message, "\n", " ")
+	message = strings.ReplaceAll(message, "|", `\|`)
+	if strings.Contains(message, "`") {
+		return "`` " + message + " ``"
+	}
+	return "`" + message + "`"
 }
 
 func (this *Timeline) ensureWritable(recLen int) {

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestTimelineKeepsNewestEntriesWithinByteBudget(t *testing.T) {
@@ -143,16 +145,89 @@ func TestTimelineOutputFormats(t *testing.T) {
 	if err := tl.WriteYAML(&yamlOut); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(yamlOut.String(), "message: world") {
-		t.Fatalf("yaml output = %s", yamlOut.String())
+	var yamlLines []string
+	if err := yaml.Unmarshal(yamlOut.Bytes(), &yamlLines); err != nil {
+		t.Fatalf("yaml output is not a valid string sequence: %v\n%s", err, yamlOut.String())
+	}
+	if len(yamlLines) != 2 || !strings.Contains(yamlLines[1], "world") || !strings.Contains(yamlLines[1], "ago)") {
+		t.Fatalf("yaml lines = %#v", yamlLines)
 	}
 
 	var textOut bytes.Buffer
 	if err := tl.WriteText(&textOut); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(textOut.String(), "+1ms world") {
+	if !strings.Contains(textOut.String(), "ago) world") {
 		t.Fatalf("text output = %s", textOut.String())
+	}
+}
+
+func TestTimelineWriteMarkdownEscapesTableCells(t *testing.T) {
+	tl, err := New(256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Minute)
+	mustAppendAt(t, tl, base, "plain event")
+	mustAppendAt(t, tl, base.Add(time.Second), "pipe | and\nnewline")
+	mustAppendAt(t, tl, base.Add(2*time.Second), "code `span` inside")
+
+	var out bytes.Buffer
+	if err := tl.WriteMarkdown(&out); err != nil {
+		t.Fatal(err)
+	}
+	md := out.String()
+	if !strings.HasPrefix(md, "| Time | Ago | Event |\n| --- | --- | --- |\n") {
+		t.Fatalf("markdown missing table header:\n%s", md)
+	}
+	if !strings.Contains(md, "`plain event`") {
+		t.Fatalf("markdown missing plain row:\n%s", md)
+	}
+	if !strings.Contains(md, `pipe \| and newline`) {
+		t.Fatalf("pipe/newline not escaped:\n%s", md)
+	}
+	if !strings.Contains(md, "`` code `span` inside ``") {
+		t.Fatalf("backtick message not double-delimited:\n%s", md)
+	}
+	if got := strings.Count(md, "\n"); got != 5 {
+		t.Fatalf("markdown line count = %d, want 5 (header + separator + 3 rows):\n%s", got, md)
+	}
+}
+
+func TestTimelineSnapshotReconstructsAbsoluteTimes(t *testing.T) {
+	tl, err := New(128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	mustAppendAt(t, tl, base, "first")
+	mustAppendAt(t, tl, base.Add(250*time.Millisecond), "second")
+	mustAppendAt(t, tl, base.Add(10*time.Second), "third")
+
+	got, err := tl.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	// The newest entry is anchored exactly at the last append; earlier
+	// entries drift by at most one storage unit per hop.
+	if !got[2].At.Equal(base.Add(10 * time.Second)) {
+		t.Fatalf("newest At = %s, want %s", got[2].At, base.Add(10*time.Second))
+	}
+	for i, want := range []time.Time{base, base.Add(250 * time.Millisecond)} {
+		diff := got[i].At.Sub(want)
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 10*time.Millisecond {
+			t.Fatalf("entry %d At = %s, want within 10ms of %s", i, got[i].At, want)
+		}
+	}
+	line := got[2].Render(base.Add(10*time.Second + 23*time.Second))
+	if !strings.Contains(line, "(23s ago) third") {
+		t.Fatalf("rendered line = %q", line)
 	}
 }
 
