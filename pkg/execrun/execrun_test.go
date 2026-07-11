@@ -476,6 +476,85 @@ exec:
 			Eventually(runDone).Should(Receive(BeNil()))
 		})
 
+		It("runs the skipped initial tests in the background after startup", func() {
+			cfg := execrun.Config{
+				Watch: []string{"watched.txt"},
+				Build: []string{"sh -c 'echo build >> events.log'"},
+				Test:  []string{"sh -c 'echo test >> events.log'"},
+				Exec:  []string{"sh -c 'echo start >> events.log; sleep 30'"},
+			}
+			Expect(os.WriteFile(filepath.Join(tmpDir, "watched.txt"), []byte("unchanged\n"), 0644)).To(Succeed())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			starts := make(chan int, 10)
+			testResults := make(chan error, 10)
+			runDone := make(chan error, 1)
+
+			go func() {
+				runDone <- execrun.Run(ctx, cfg, execrun.Options{
+					RootDir:          tmpDir,
+					ContinueOnError:  true,
+					DisableHeartbeat: true,
+					SkipInitialTests: true,
+					InitialTestDelay: 200 * time.Millisecond,
+					OnProcessStart: func(pid int) {
+						starts <- pid
+					},
+					OnTestDone: func(_ time.Duration, err error) {
+						testResults <- err
+					},
+				})
+			}()
+
+			Eventually(starts, 5*time.Second).Should(Receive(BeNumerically(">", 0)))
+			Eventually(func() []string {
+				return readTestEvents(tmpDir)
+			}, 5*time.Second).Should(Equal([]string{"build", "start"}))
+
+			Eventually(testResults, 5*time.Second).Should(Receive(BeNil()))
+			Expect(readTestEvents(tmpDir)).To(Equal([]string{"build", "start", "test"}))
+			// Deferred tests only report; they never restart the process.
+			Consistently(starts, 400*time.Millisecond).ShouldNot(Receive())
+
+			cancel()
+			Eventually(runDone).Should(Receive(BeNil()))
+		})
+
+		It("runs the skipped initial tests for build-only targets", func() {
+			cfg := execrun.Config{
+				Watch: []string{"watched.txt"},
+				Build: []string{"sh -c 'echo build >> events.log'"},
+				Test:  []string{"sh -c 'echo test >> events.log'"},
+			}
+			Expect(os.WriteFile(filepath.Join(tmpDir, "watched.txt"), []byte("unchanged\n"), 0644)).To(Succeed())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			testResults := make(chan error, 10)
+			runDone := make(chan error, 1)
+
+			go func() {
+				runDone <- execrun.Run(ctx, cfg, execrun.Options{
+					RootDir:          tmpDir,
+					DisableHeartbeat: true,
+					SkipInitialTests: true,
+					InitialTestDelay: 200 * time.Millisecond,
+					OnTestDone: func(_ time.Duration, err error) {
+						testResults <- err
+					},
+				})
+			}()
+
+			Eventually(testResults, 5*time.Second).Should(Receive(BeNil()))
+			Expect(readTestEvents(tmpDir)).To(Equal([]string{"build", "test"}))
+
+			cancel()
+			Eventually(runDone).Should(Receive(BeNil()))
+		})
+
 		It("writes child start failures to the run log", func() {
 			cfg := execrun.Config{
 				Watch: []string{"trigger.txt"},

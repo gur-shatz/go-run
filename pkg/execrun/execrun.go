@@ -58,9 +58,14 @@ type Options struct {
 	ContinueOnError bool
 	// DisableHeartbeat suppresses periodic console dots.
 	DisableHeartbeat bool
-	// SkipInitialTests skips test steps only during the first automatic run.
-	// Later rebuilds/restarts and explicit test triggers still run tests.
+	// SkipInitialTests skips test steps only during the first automatic run,
+	// keeping boot fast; the skipped tests then run once in the background
+	// InitialTestDelay after a successful startup. Later rebuilds/restarts
+	// and explicit test triggers still run tests inline.
 	SkipInitialTests bool
+	// InitialTestDelay is how long after startup the test steps skipped by
+	// SkipInitialTests run. Zero means DefaultInitialTestDelay.
+	InitialTestDelay time.Duration
 	Stdout           io.Writer
 	Stderr           io.Writer
 
@@ -97,6 +102,17 @@ type Options struct {
 	TestTrigger  <-chan struct{} // triggers tests only
 	ExecStop     <-chan struct{} // stops just the managed process
 	ExecStart    <-chan struct{} // starts just the managed process (no rebuild)
+}
+
+// DefaultInitialTestDelay is how long after startup deferred initial tests
+// run when Options.InitialTestDelay is zero.
+const DefaultInitialTestDelay = 30 * time.Second
+
+func (this Options) initialTestDelay() time.Duration {
+	if this.InitialTestDelay > 0 {
+		return this.InitialTestDelay
+	}
+	return DefaultInitialTestDelay
 }
 
 // exitInfo describes how the child process exited.
@@ -410,7 +426,7 @@ func (this *runner) execSteps(skipTests bool) (time.Duration, error) {
 			return time.Since(start), err
 		}
 	} else if len(this.cfg.TestSteps()) > 0 {
-		this.logTo(this.opts.TestStdout, "Tests skipped for initial run")
+		this.logTo(this.opts.TestStdout, "Tests deferred for initial run; they will run shortly after startup")
 	}
 
 	for _, cmd := range this.cfg.ExecPrepSteps() {
@@ -836,6 +852,14 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		}
 	}
 
+	// Initial tests were skipped to keep boot fast; run them once in the loop
+	// below shortly after a successful startup. A failed startup skips them —
+	// the next successful rebuild runs tests anyway.
+	var initialTests <-chan time.Time
+	if opts.SkipInitialTests && len(cfg.TestSteps()) > 0 && healthy.Load() {
+		initialTests = time.After(opts.initialTestDelay())
+	}
+
 	// Heartbeat ticker
 	var tick <-chan time.Time
 	var ticker *time.Ticker
@@ -850,6 +874,17 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 		case <-ctx.Done():
 			l.Status("Shutting down...")
 			return nil
+		case <-initialTests:
+			initialTests = nil
+			l.Status("Running tests deferred at startup...")
+			dur, err := r.runTestSteps()
+			if err != nil {
+				l.Error("Tests failed: %v", err)
+				healthy.Store(false)
+			} else {
+				l.Success("Tests done (%s).", scan.FormatDuration(dur))
+				healthy.Store(true)
+			}
 		case info := <-r.exited:
 			if info.ExitCode != 0 {
 				l.Error("Exited with code %d. Waiting for file changes...", info.ExitCode)
@@ -934,6 +969,13 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 
 	go w.Run(ctx)
 
+	// Initial tests were skipped to keep boot fast; run them once in the loop
+	// below shortly after the successful initial build.
+	var initialTests <-chan time.Time
+	if opts.SkipInitialTests && len(r.cfg.TestSteps()) > 0 {
+		initialTests = time.After(opts.initialTestDelay())
+	}
+
 	var tick <-chan time.Time
 	var ticker *time.Ticker
 	if !opts.DisableHeartbeat {
@@ -947,6 +989,17 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 		case <-ctx.Done():
 			l.Status("Shutting down...")
 			return nil
+		case <-initialTests:
+			initialTests = nil
+			l.Status("Running tests deferred at startup...")
+			dur, err := r.runTestSteps()
+			if err != nil {
+				l.Error("Tests failed: %v", err)
+				healthy.Store(false)
+			} else {
+				l.Success("Tests done in %s", scan.FormatDuration(dur))
+				healthy.Store(true)
+			}
 		case <-opts.BuildTrigger:
 			l.Status("Build triggered...")
 			dur, err := r.execStepsWithTests()
