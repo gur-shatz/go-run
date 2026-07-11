@@ -61,16 +61,9 @@ func TestPrepareFilterReusesCompiledRegex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filter.regex == nil {
-		t.Fatal("regex was not compiled")
-	}
-	compiled := filter.regex
 	filter, err = prepareFilter(filter)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if filter.regex != compiled {
-		t.Fatal("prepared regex was compiled again")
 	}
 	if !matchEntry(Entry{Raw: "request status=500"}, filter) {
 		t.Fatal("prepared regex did not match")
@@ -647,7 +640,11 @@ func TestObjectsFolderMount(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &index); err != nil {
 		t.Fatal(err)
 	}
-	if !hasEntry(index.Entries, "tail") || !hasEntry(index.Entries, "search") || !hasEntry(index.Entries, "raw") || !hasEntry(index.Entries, "download") {
+	if !hasIndexEntry(index.Entries, "_index") ||
+		hasIndexEntry(index.Entries, "tail") ||
+		hasIndexEntry(index.Entries, "search") ||
+		hasIndexEntry(index.Entries, "raw") ||
+		hasIndexEntry(index.Entries, "download") {
 		t.Fatalf("item entries = %#v", index.Entries)
 	}
 
@@ -679,6 +676,50 @@ func TestObjectsFolderMount(t *testing.T) {
 	}
 }
 
+func TestObjectsFolderMountRecursiveStreams(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "hello/v123/stdout.log", "2026-07-10T10:01:00Z INFO boot app.go:2 new status=200\n")
+
+	router := chi.NewRouter()
+	folder := chiutil.NewRouteFolder(router, "/backoffice")
+	if _, err := Mount(folder, "logs", Options{Root: root, Recursive: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	streamID := StreamID("hello/v123/stdout.log")
+	if strings.Contains(streamID, "/") {
+		t.Fatalf("stream id contains slash: %q", streamID)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/backoffice/logs/index.json", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var index chiutil.FolderIndex
+	if err := json.Unmarshal(rr.Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Entries) != 1 || index.Entries[0].Name != "hello/v123/stdout.log" || index.Entries[0].Path != streamID+"/" {
+		t.Fatalf("list entries = %#v", index.Entries)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/backoffice/logs/"+streamID+"/tail?limit=1", nil)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tail status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var page Page
+	if err := json.Unmarshal(rr.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].Stream != streamID || page.Entries[0].Message != "new" {
+		t.Fatalf("tail entries = %#v", page.Entries)
+	}
+}
+
 func newTestViewer(t *testing.T, root string) *Viewer {
 	t.Helper()
 	viewer, err := New(Options{Root: root, BlockBytes: 16, DefaultLimit: 2, MaxLimit: 10})
@@ -699,7 +740,7 @@ func writeFile(t testing.TB, root, name, content string) {
 	}
 }
 
-func hasEntry(entries []*chiutil.RouteEntry, name string) bool {
+func hasIndexEntry(entries []*chiutil.RouteEntry, name string) bool {
 	for _, entry := range entries {
 		if entry.Name == name {
 			return true

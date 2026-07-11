@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/gur-shatz/go-run/pkg/backoffice/logparser"
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 )
 
@@ -56,7 +57,7 @@ func New(opts Options) (*Viewer, error) {
 		return nil, fs.ErrInvalid
 	}
 	if opts.Parser == nil {
-		opts.Parser = ConsoleParser{}
+		opts.Parser = logparser.TimestampedParser{}
 	}
 	if opts.DefaultLimit <= 0 {
 		opts.DefaultLimit = defaultLimit
@@ -117,12 +118,12 @@ func (v *Viewer) GetItem(id string) (Stream, bool) {
 // Routes implements chiutil.ObjectMapper for ObjectsFolder integration.
 func (v *Viewer) Routes() []chiutil.ObjectRoute[Stream] {
 	return []chiutil.ObjectRoute[Stream]{
-		{Method: http.MethodGet, Path: "/metadata", Handler: v.handleObjectMetadata, Description: "Stream metadata"},
-		{Method: http.MethodGet, Path: "/tail", Handler: v.handleObjectTail, Description: "Newest log page"},
-		{Method: http.MethodGet, Path: "/page", Handler: v.handleObjectPage, Description: "Cursor-based log page"},
-		{Method: http.MethodGet, Path: "/search", Handler: v.handleObjectPage, Description: "Server-side filtered log page"},
-		{Method: http.MethodGet, Path: "/raw", Handler: v.handleObjectRaw, Description: "Bounded raw byte range"},
-		{Method: http.MethodGet, Path: "/download", Handler: v.handleObjectDownload, Description: "Download log stream"},
+		{Method: http.MethodGet, Path: "/metadata", Handler: v.handleObjectMetadata, Description: "Stream metadata", Hidden: false},
+		{Method: http.MethodGet, Path: "/tail", Handler: v.handleObjectTail, Description: "Newest log page", Hidden: true},
+		{Method: http.MethodGet, Path: "/page", Handler: v.handleObjectPage, Description: "Cursor-based log page", Hidden: true},
+		{Method: http.MethodGet, Path: "/search", Handler: v.handleObjectPage, Description: "Server-side filtered log page", Hidden: true},
+		{Method: http.MethodGet, Path: "/raw", Handler: v.handleObjectRaw, Description: "Bounded raw byte range", Hidden: true},
+		{Method: http.MethodGet, Path: "/download", Handler: v.handleObjectDownload, Description: "Download log stream", Hidden: true},
 	}
 }
 

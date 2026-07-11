@@ -5,9 +5,9 @@ package logviewer
 import (
 	"errors"
 	"net/http"
-	"regexp"
 	"time"
 
+	"github.com/gur-shatz/go-run/pkg/backoffice/logparser"
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 )
 
@@ -61,48 +61,14 @@ type Segment struct {
 	ModTime time.Time `json:"mod_time"`
 }
 
-// Entry is one parsed log line.
-type Entry struct {
-	Stream     string            `json:"stream,omitempty"`
-	Segment    string            `json:"segment,omitempty"`
-	Line       int64             `json:"line"`
-	Offset     int64             `json:"offset"`
-	NextOffset int64             `json:"next_offset"`
-	Time       *time.Time        `json:"time,omitempty"`
-	Level      string            `json:"level,omitempty"`
-	Logger     string            `json:"logger,omitempty"`
-	Caller     string            `json:"caller,omitempty"`
-	Message    string            `json:"message"`
-	Fields     map[string]string `json:"fields,omitempty"`
-	Raw        string            `json:"raw"`
-	Truncated  bool              `json:"truncated,omitempty"`
-	Match      bool              `json:"match,omitempty"`
-	ContextTop bool              `json:"context_top,omitempty"`
-	ContextBot bool              `json:"context_bottom,omitempty"`
-}
-
-// LineMeta carries file-position metadata for a parsed line.
-type LineMeta struct {
-	Stream     string
-	Segment    string
-	Line       int64
-	Offset     int64
-	NextOffset int64
-	Truncated  bool
-}
-
-// Parser parses and filters decoded log lines.
-type Parser interface {
-	ParseLine(line []byte, meta LineMeta) (Entry, bool)
-	Match(entry Entry, filter Filter) bool
-}
-
-// LineClassifier lets parsers opt into multiline entry folding. Lines that do
-// not start a new entry are appended to the previous entry before ParseLine.
-type LineClassifier interface {
-	StartsEntryLine(line []byte) bool
-	IgnoreLine(line []byte) bool
-}
+type Entry = logparser.Entry
+type LineMeta = logparser.LineMeta
+type Parser = logparser.Parser
+type LineClassifier = logparser.LineClassifier
+type Filter = logparser.Filter
+type TimestampedParser = logparser.TimestampedParser
+type NaiveParser = logparser.NaiveParser
+type ConsoleParser = logparser.ConsoleParser
 
 // Query describes one page request.
 type Query struct {
@@ -110,21 +76,6 @@ type Query struct {
 	Limit     int
 	Direction Direction
 	Filter    Filter
-}
-
-// Filter describes server-side filtering.
-type Filter struct {
-	Text     string
-	Regex    string
-	Level    []string
-	Logger   []string
-	Since    *time.Time
-	Until    *time.Time
-	Fields   map[string]string
-	CaseFold bool
-	Before   int
-	After    int
-	regex    *regexp.Regexp
 }
 
 // Direction controls page scan direction.

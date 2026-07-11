@@ -1,6 +1,7 @@
 package logviewer
 
 import (
+	"encoding/base64"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -98,7 +99,7 @@ func (v *Viewer) streams() ([]Stream, error) {
 		for i := range segments {
 			segments[i].Index = i
 		}
-		streams = append(streams, Stream{ID: name, Name: name, Segments: segments})
+		streams = append(streams, Stream{ID: StreamID(name), Name: name, Segments: segments})
 	}
 	sort.Slice(streams, func(i, j int) bool {
 		return streams[i].Name < streams[j].Name
@@ -210,4 +211,12 @@ func summarize(streams []Stream) []streamSummary {
 		})
 	}
 	return out
+}
+
+// StreamID returns the URL path-segment ID used for a logical stream name.
+func StreamID(name string) string {
+	if !strings.ContainsAny(name, `/\`) {
+		return name
+	}
+	return "~" + base64.RawURLEncoding.EncodeToString([]byte(filepath.ToSlash(name)))
 }

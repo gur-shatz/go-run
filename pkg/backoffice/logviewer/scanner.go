@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"strconv"
+
+	"github.com/gur-shatz/go-run/pkg/backoffice/logparser"
 )
 
 func (v *Viewer) scan(stream Stream, q Query) (Page, error) {
@@ -203,7 +205,7 @@ func (v *Viewer) scanSegmentForwardEntries(stream Stream, seg Segment, offset in
 	}
 
 	reader := bufio.NewReaderSize(f, v.opts.BlockBytes)
-	classifier := lineClassifierFor(v.parser)
+	classifier := lineClassifierFor(v.parser, stream.Name)
 	pos := offset
 	var pending []byte
 	var pendingMeta LineMeta
@@ -315,7 +317,7 @@ func (v *Viewer) scanSegmentBackward(stream Stream, seg Segment, offset int64, l
 	var reverseEntries []Entry
 	var carry reverseLineBuffer
 	carryNextOffset := offset
-	classifier := lineClassifierFor(v.parser)
+	classifier := lineClassifierFor(v.parser, stream.Name)
 	var continuation reverseLineBuffer
 	continuationNextOffset := int64(0)
 
@@ -602,11 +604,40 @@ type defaultLineClassifier struct{}
 func (defaultLineClassifier) StartsEntryLine([]byte) bool { return true }
 func (defaultLineClassifier) IgnoreLine([]byte) bool      { return false }
 
-func lineClassifierFor(parser Parser) LineClassifier {
+func lineClassifierFor(parser Parser, stream string) LineClassifier {
+	if classifier, ok := parser.(logparser.StreamLineClassifier); ok {
+		return streamLineClassifier{classifier: classifier, stream: stream}
+	}
 	if classifier, ok := parser.(LineClassifier); ok {
 		return classifier
 	}
 	return defaultLineClassifier{}
+}
+
+type streamLineClassifier struct {
+	classifier logparser.StreamLineClassifier
+	stream     string
+}
+
+func (c streamLineClassifier) StartsEntryLine(line []byte) bool {
+	return c.classifier.StartsEntryLineForStream(c.stream, line)
+}
+
+func (c streamLineClassifier) IgnoreLine(line []byte) bool {
+	return c.classifier.IgnoreLineForStream(c.stream, line)
+}
+
+func truncateLine(line []byte, max int) ([]byte, bool) {
+	if max <= 0 || len(line) <= max {
+		return line, false
+	}
+	const suffix = " ... [truncated]"
+	if max <= len(suffix) {
+		return bytes.Clone(line[:max]), true
+	}
+	out := bytes.Clone(line[:max-len(suffix)])
+	out = append(out, suffix...)
+	return out, true
 }
 
 type reverseLineBuffer struct {
