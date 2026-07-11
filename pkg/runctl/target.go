@@ -368,6 +368,25 @@ func (this *target) markPhaseDone(stage string, duration time.Duration, err erro
 	if countEnabled {
 		*p.count++
 	}
+	this.restoreStateAfterPhase(stage)
+}
+
+// restoreStateAfterPhase leaves the transient starting/<stage> display once a
+// phase succeeds without a process (re)start following it: a test-only trigger
+// keeps the managed process running, and build-only targets have no run stage
+// at all. In a full start/restart sequence the next phase or markRunStart
+// overwrites this immediately.
+func (this *target) restoreStateAfterPhase(stage string) {
+	if this.currentStage != stage {
+		return
+	}
+	if this.pid != 0 {
+		this.currentStage = "run"
+		this.state = StateRunning
+	} else if !this.hasRun {
+		this.currentStage = ""
+		this.state = StateIdle
+	}
 }
 
 func (this *target) inferFailedStage() string {
