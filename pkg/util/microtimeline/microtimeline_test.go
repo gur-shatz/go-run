@@ -194,6 +194,28 @@ func TestTimelineWriteMarkdownEscapesTableCells(t *testing.T) {
 	}
 }
 
+func TestRenderEntriesMarkdownCanRenderNewestFirst(t *testing.T) {
+	now := time.Unix(100, 0)
+	entries := []Entry{
+		{At: now.Add(-3 * time.Second), Message: "oldest"},
+		{At: now.Add(-2 * time.Second), Message: "middle"},
+		{At: now.Add(-1 * time.Second), Message: "newest"},
+	}
+
+	defaultMD := RenderEntriesMarkdown(entries, now)
+	if !stringsInOrder(defaultMD, "`oldest`", "`middle`", "`newest`") {
+		t.Fatalf("default markdown order is not oldest to newest:\n%s", defaultMD)
+	}
+
+	newestFirstMD := RenderEntriesMarkdown(entries, now, RenderEntriesMarkdownOptions{NewestFirst: true})
+	if !stringsInOrder(newestFirstMD, "`newest`", "`middle`", "`oldest`") {
+		t.Fatalf("newest-first markdown order is not newest to oldest:\n%s", newestFirstMD)
+	}
+	if entries[0].Message != "oldest" || entries[2].Message != "newest" {
+		t.Fatalf("entries were mutated: %#v", entries)
+	}
+}
+
 func TestTimelineSnapshotReconstructsAbsoluteTimes(t *testing.T) {
 	tl, err := New(128)
 	if err != nil {
@@ -406,4 +428,16 @@ func mustAppendAt(t *testing.T, tl *Timeline, at time.Time, message string) {
 	if !tl.AppendAt(at, message) {
 		t.Fatal("append failed")
 	}
+}
+
+func stringsInOrder(s string, values ...string) bool {
+	pos := 0
+	for _, value := range values {
+		i := strings.Index(s[pos:], value)
+		if i < 0 {
+			return false
+		}
+		pos += i + len(value)
+	}
+	return true
 }

@@ -119,6 +119,17 @@ func (v *Viewer) stream(id string) (Stream, error) {
 	return Stream{}, errStreamNotFound
 }
 
+func currentLogOnly(stream Stream) Stream {
+	segments := stream.Segments[:0:0]
+	for _, segment := range stream.Segments {
+		if segment.Path == stream.Name {
+			segments = append(segments, segment)
+		}
+	}
+	stream.Segments = segments
+	return stream
+}
+
 func (v *Viewer) segmentPath(seg Segment) (string, error) {
 	root, err := filepath.Abs(v.opts.Root)
 	if err != nil {

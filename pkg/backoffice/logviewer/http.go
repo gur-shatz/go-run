@@ -1,11 +1,13 @@
 package logviewer
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 )
+
+//go:embed logstream.html
+var logstreamHTML []byte
 
 // Mount creates a Viewer and registers it as an ObjectsFolder under parent.
 //
@@ -24,6 +29,7 @@ import (
 //	/<name>/{stream}/page
 //	/<name>/{stream}/search
 //	/<name>/{stream}/raw
+//	/<name>/{stream}/download
 //	/<name>/{stream}/metadata
 func Mount(parent *chiutil.RouteFolder, name string, opts Options) (*Viewer, error) {
 	viewer, err := New(opts)
@@ -72,7 +78,6 @@ func New(opts Options) (*Viewer, error) {
 	}
 	v := &Viewer{opts: opts, parser: opts.Parser}
 	r := chi.NewRouter()
-	r.Get("/", v.handleHTML)
 	r.Get("/index.json", v.handleIndex)
 	r.Get("/api/streams", v.handleStreams)
 	r.Get("/api/streams/{id}", v.handleStream)
@@ -80,6 +85,7 @@ func New(opts Options) (*Viewer, error) {
 	r.Get("/api/streams/{id}/page", v.handlePage)
 	r.Get("/api/streams/{id}/search", v.handlePage)
 	r.Get("/api/streams/{id}/raw", v.handleRaw)
+	r.Get("/api/streams/{id}/download", v.handleDownload)
 	v.router = r
 	return v, nil
 }
@@ -116,6 +122,7 @@ func (v *Viewer) Routes() []chiutil.ObjectRoute[Stream] {
 		{Method: http.MethodGet, Path: "/page", Handler: v.handleObjectPage, Description: "Cursor-based log page"},
 		{Method: http.MethodGet, Path: "/search", Handler: v.handleObjectPage, Description: "Server-side filtered log page"},
 		{Method: http.MethodGet, Path: "/raw", Handler: v.handleObjectRaw, Description: "Bounded raw byte range"},
+		{Method: http.MethodGet, Path: "/download", Handler: v.handleObjectDownload, Description: "Download log stream"},
 	}
 }
 
@@ -137,11 +144,6 @@ func (v *Viewer) Index() chiutil.FolderIndex {
 	}
 }
 
-func (v *Viewer) handleHTML(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(logviewerHTML)
-}
-
 func (v *Viewer) handleStreamHTML(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(logstreamHTML)
@@ -160,7 +162,10 @@ func (v *Viewer) handleStreams(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"streams": summarize(streams)})
 }
 
-func (v *Viewer) handleObjectMetadata(stream Stream, w http.ResponseWriter, _ *http.Request) {
+func (v *Viewer) handleObjectMetadata(stream Stream, w http.ResponseWriter, r *http.Request) {
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	writeJSON(w, stream)
 }
 
@@ -170,10 +175,16 @@ func (v *Viewer) handleStream(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	writeJSON(w, stream)
 }
 
 func (v *Viewer) handleObjectTail(stream Stream, w http.ResponseWriter, r *http.Request) {
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	filter, err := parseFilter(r)
 	if err != nil {
 		httpError(w, errInvalidFilter)
@@ -193,6 +204,9 @@ func (v *Viewer) handleTail(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	filter, err := parseFilter(r)
 	if err != nil {
 		httpError(w, errInvalidFilter)
@@ -207,6 +221,9 @@ func (v *Viewer) handleTail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (v *Viewer) handleObjectPage(stream Stream, w http.ResponseWriter, r *http.Request) {
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	page, err := v.pageFromRequest(stream, r)
 	if err != nil {
 		httpError(w, err)
@@ -220,6 +237,9 @@ func (v *Viewer) handlePage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, err)
 		return
+	}
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
 	}
 	page, err := v.pageFromRequest(stream, r)
 	if err != nil {
@@ -257,7 +277,33 @@ func (v *Viewer) pageFromRequest(stream Stream, r *http.Request) (Page, error) {
 }
 
 func (v *Viewer) handleObjectRaw(stream Stream, w http.ResponseWriter, r *http.Request) {
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
 	if err := v.serveRaw(stream, w, r); err != nil {
+		httpError(w, err)
+	}
+}
+
+func (v *Viewer) handleObjectDownload(stream Stream, w http.ResponseWriter, r *http.Request) {
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
+	if err := v.serveDownload(stream, w); err != nil {
+		httpError(w, err)
+	}
+}
+
+func (v *Viewer) handleDownload(w http.ResponseWriter, r *http.Request) {
+	stream, err := v.stream(chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, err)
+		return
+	}
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
+	}
+	if err := v.serveDownload(stream, w); err != nil {
 		httpError(w, err)
 	}
 }
@@ -267,6 +313,9 @@ func (v *Viewer) handleRaw(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, err)
 		return
+	}
+	if onlyCurrentLog(r) {
+		stream = currentLogOnly(stream)
 	}
 	if err := v.serveRaw(stream, w, r); err != nil {
 		httpError(w, err)
@@ -319,6 +368,30 @@ func (v *Viewer) serveRaw(stream Stream, w http.ResponseWriter, r *http.Request)
 	return nil
 }
 
+func (v *Viewer) serveDownload(stream Stream, w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+downloadFileName(stream)+`"`)
+	for _, segment := range stream.Segments {
+		full, err := v.segmentPath(segment)
+		if err != nil {
+			return err
+		}
+		f, err := fsOpen(full)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(w, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
 func parseLimit(r *http.Request, fallback int) int {
 	limit := fallback
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -327,6 +400,26 @@ func parseLimit(r *http.Request, fallback int) int {
 		}
 	}
 	return limit
+}
+
+func downloadFileName(stream Stream) string {
+	name := filepath.Base(stream.Name)
+	if name == "." || name == string(filepath.Separator) {
+		return "log.txt"
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '"', '\\', '\r', '\n':
+			return '_'
+		default:
+			return r
+		}
+	}, name)
+}
+
+func onlyCurrentLog(r *http.Request) bool {
+	raw := r.URL.Query().Get("current_only")
+	return raw == "true" || raw == "1" || raw == "yes"
 }
 
 func parseFilter(r *http.Request) (Filter, error) {

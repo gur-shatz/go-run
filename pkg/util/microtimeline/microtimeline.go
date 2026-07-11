@@ -312,14 +312,41 @@ func (this *Timeline) WriteMarkdown(w io.Writer) error {
 // RenderEntriesMarkdown renders entries as a GFM table relative to now.
 // Messages are wrapped in code spans so markdown-active characters in
 // event text (underscores, asterisks, brackets) render verbatim.
-func RenderEntriesMarkdown(entries []Entry, now time.Time) string {
+func RenderEntriesMarkdown(entries []Entry, now time.Time, opts ...RenderEntriesMarkdownOptions) string {
+	options := renderEntriesMarkdownOptions(opts)
 	var sb strings.Builder
 	sb.WriteString("| Time | Ago | Event |\n| --- | --- | --- |\n")
-	for _, entry := range entries {
+	forEachMarkdownEntry(entries, options.NewestFirst, func(entry Entry) {
 		fmt.Fprintf(&sb, "| %s | %s | %s%s |\n",
 			entry.At.Format("20060102-15:04:05"), entry.ago(now), markdownCell(entry.Message), entry.marks())
-	}
+	})
 	return sb.String()
+}
+
+// RenderEntriesMarkdownOptions controls RenderEntriesMarkdown output.
+type RenderEntriesMarkdownOptions struct {
+	// NewestFirst renders retained entries from newest to oldest. By default,
+	// entries are rendered in Snapshot order: oldest to newest.
+	NewestFirst bool
+}
+
+func renderEntriesMarkdownOptions(opts []RenderEntriesMarkdownOptions) RenderEntriesMarkdownOptions {
+	if len(opts) == 0 {
+		return RenderEntriesMarkdownOptions{}
+	}
+	return opts[0]
+}
+
+func forEachMarkdownEntry(entries []Entry, newestFirst bool, fn func(Entry)) {
+	if newestFirst {
+		for i := len(entries) - 1; i >= 0; i-- {
+			fn(entries[i])
+		}
+		return
+	}
+	for _, entry := range entries {
+		fn(entry)
+	}
 }
 
 // markdownCell renders one message as a table-safe code span: pipes are

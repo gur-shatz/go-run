@@ -232,6 +232,23 @@ func TestTailPageAndSearchHTTP(t *testing.T) {
 	if len(page.Entries) != 1 || page.Entries[0].Message != "old-two" {
 		t.Fatalf("search page = %#v", page.Entries)
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/streams/app.log/search?direction=forward&field.status=401&current_only=true", nil)
+	rr = httptest.NewRecorder()
+	viewer.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("current-only search status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	page = Page{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 0 || !page.EOF {
+		t.Fatalf("current-only search page = %#v eof=%v", page.Entries, page.EOF)
+	}
+	if page.Range.SegmentCount != 1 || page.Range.TotalBytes != int64(len("2026-07-10T10:02:00Z INFO api app.go:3 new-one status=200\n2026-07-10T10:03:00Z ERROR api app.go:4 new-two status=500\n")) {
+		t.Fatalf("current-only range = %#v", page.Range)
+	}
 }
 
 func TestRawEndpoint(t *testing.T) {
@@ -247,6 +264,36 @@ func TestRawEndpoint(t *testing.T) {
 	}
 	if rr.Body.String() != "bcd" {
 		t.Fatalf("raw = %q, want bcd", rr.Body.String())
+	}
+}
+
+func TestDownloadEndpointRespectsCurrentOnly(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "app.log.1", "old\n")
+	writeFile(t, root, "app.log", "new\n")
+	viewer := newTestViewer(t, root)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/streams/app.log/download?current_only=true", nil)
+	rr := httptest.NewRecorder()
+	viewer.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("current-only download status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); got != "new\n" {
+		t.Fatalf("current-only download = %q, want current segment", got)
+	}
+	if got := rr.Header().Get("Content-Disposition"); !strings.Contains(got, `filename="app.log"`) {
+		t.Fatalf("content disposition = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/streams/app.log/download", nil)
+	rr = httptest.NewRecorder()
+	viewer.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("download status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); got != "old\nnew\n" {
+		t.Fatalf("download = %q, want all segments in order", got)
 	}
 }
 
@@ -600,7 +647,7 @@ func TestObjectsFolderMount(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &index); err != nil {
 		t.Fatal(err)
 	}
-	if !hasEntry(index.Entries, "tail") || !hasEntry(index.Entries, "search") || !hasEntry(index.Entries, "raw") {
+	if !hasEntry(index.Entries, "tail") || !hasEntry(index.Entries, "search") || !hasEntry(index.Entries, "raw") || !hasEntry(index.Entries, "download") {
 		t.Fatalf("item entries = %#v", index.Entries)
 	}
 
