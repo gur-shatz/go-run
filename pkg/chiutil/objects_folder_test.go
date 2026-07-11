@@ -119,6 +119,17 @@ func (m markdownAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
 	}
 }
 
+type hiddenAccountMapper struct {
+	*TestAccountMapper
+}
+
+func (m hiddenAccountMapper) Routes() []chiutil.ObjectRoute[*TestAccount] {
+	return []chiutil.ObjectRoute[*TestAccount]{
+		{Method: http.MethodGet, Path: "/details", Handler: (*TestAccount).Details, Description: "Account details"},
+		{Method: http.MethodGet, Path: "/settings", Handler: (*TestAccount).Settings, Description: "Account settings", Hidden: true},
+	}
+}
+
 var _ = Describe("ObjectMapper", func() {
 	var (
 		router *chi.Mux
@@ -178,8 +189,17 @@ var _ = Describe("ObjectMapper", func() {
 			var index chiutil.FolderIndex
 			Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
 			Expect(index.HasIndex).To(BeTrue())
+			Expect(index.Entries).To(HaveLen(1))
+			Expect(index.Entries[0].Name).To(Equal("_index"))
 
 			req = httptest.NewRequest("GET", "/backoffice/accounts/?preview=true", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("accounts overview"))
+
+			req = httptest.NewRequest("GET", "/backoffice/accounts/_index", nil)
 			w = httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
@@ -256,6 +276,31 @@ var _ = Describe("ObjectMapper", func() {
 
 			Expect(w.Code).To(Equal(http.StatusOK))
 			Expect(w.Body.String()).To(Equal("object page for acc-1"))
+
+			req = httptest.NewRequest("GET", "/backoffice/accounts/acc-1/index.json", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var index chiutil.FolderIndex
+			Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+			var mainEntry *chiutil.RouteEntry
+			for _, entry := range index.Entries {
+				if entry.Name == "_index" {
+					mainEntry = entry
+					break
+				}
+			}
+			Expect(mainEntry).NotTo(BeNil())
+			Expect(mainEntry.Method).To(Equal(http.MethodGet))
+			Expect(mainEntry.Path).To(Equal("_index"))
+
+			req = httptest.NewRequest("GET", "/backoffice/accounts/acc-1/_index", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Body.String()).To(Equal("object page for acc-1"))
 		})
 
 		It("should call the item's handler", func() {
@@ -270,6 +315,33 @@ var _ = Describe("ObjectMapper", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result["id"]).To(Equal("acc-1"))
 			Expect(result["name"]).To(Equal("Acme Corp"))
+		})
+
+		It("keeps hidden routes callable but omits them from the item index", func() {
+			router = chi.NewRouter()
+			mapper = &TestAccountMapper{}
+			mapper.accounts.Store("acc-1", &TestAccount{ID: "acc-1", Name: "Acme Corp"})
+			folder := chiutil.NewRouteFolder(router, "/backoffice")
+			chiutil.ObjectsFolder(folder, "accounts", hiddenAccountMapper{TestAccountMapper: mapper})
+
+			req := httptest.NewRequest("GET", "/backoffice/accounts/acc-1/index.json", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var index chiutil.FolderIndex
+			Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+			Expect(index.Entries).To(HaveLen(1))
+			Expect(index.Entries[0].Name).To(Equal("details"))
+
+			req = httptest.NewRequest("GET", "/backoffice/accounts/acc-1/settings", nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var result map[string]string
+			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
+			Expect(result["theme"]).To(Equal("dark"))
 		})
 
 		It("marks .md object routes for markdown preview rendering", func() {

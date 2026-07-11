@@ -99,6 +99,8 @@ type ObjectRoute[T any] struct {
 	Handler     func(T, http.ResponseWriter, *http.Request)
 	Description string
 	Action      Action
+	// Hidden keeps the route callable while omitting it from the backoffice index.
+	Hidden bool
 }
 
 // objectsFolder holds the state for an objects folder.
@@ -109,6 +111,7 @@ type objectsFolder[T any] struct {
 	instanceRoutes []*RouteEntry
 	flatJSON       bool
 	itemIndexFn    http.Handler
+	itemIndexRoute bool
 }
 
 // Title sets the folder title displayed in the index.
@@ -132,7 +135,7 @@ func (this *objectsFolder[T]) Index(handler http.HandlerFunc) *objectsFolder[T] 
 // IndexHandler registers a collection-level http.Handler rendered by the HTML
 // index viewer when no object is selected.
 func (this *objectsFolder[T]) IndexHandler(handler http.Handler) *objectsFolder[T] {
-	this.folder.index = handler
+	this.folder.IndexHandler(handler)
 	return this
 }
 
@@ -147,6 +150,7 @@ func (this *objectsFolder[T]) ItemIndex(handler http.HandlerFunc) *objectsFolder
 // index viewer at /<name>/{id}/ in place of the default route listing.
 func (this *objectsFolder[T]) ItemIndexHandler(handler http.Handler) *objectsFolder[T] {
 	this.itemIndexFn = handler
+	this.addItemIndexRoute()
 	return this
 }
 
@@ -211,6 +215,9 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 		}
 	}
 	for _, route := range routes {
+		if route.Hidden {
+			continue
+		}
 		name := strings.TrimPrefix(route.Path, "/")
 		omf.instanceRoutes = append(omf.instanceRoutes, &RouteEntry{
 			Name:        name,
@@ -304,6 +311,9 @@ func (this *objectsFolder[T]) listIndex() FolderIndex {
 			IsFolder:    isFolder,
 		})
 	}
+	if this.folder.indexRoute {
+		entries = append(entries, this.folder.indexRouteEntry())
+	}
 
 	// Sort entries alphabetically
 	sort.Slice(entries, func(i, j int) bool {
@@ -354,6 +364,33 @@ func (this *objectsFolder[T]) serveItemHTML(w http.ResponseWriter, r *http.Reque
 
 	paramValue := chi.URLParam(r, this.paramName)
 	writeDefaultIndexHTML(w, this.itemIndex(paramValue))
+}
+
+func (this *objectsFolder[T]) serveItemIndex(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, this.paramName)
+	if _, found := this.mapper.GetItem(id); !found {
+		http.NotFound(w, r)
+		return
+	}
+	if this.itemIndexFn == nil {
+		http.NotFound(w, r)
+		return
+	}
+	this.itemIndexFn.ServeHTTP(w, r)
+}
+
+func (this *objectsFolder[T]) addItemIndexRoute() {
+	if this.itemIndexRoute {
+		return
+	}
+	this.itemIndexRoute = true
+	this.instanceRoutes = append(this.instanceRoutes, &RouteEntry{
+		Name:        "_index",
+		Method:      http.MethodGet,
+		Path:        "_index",
+		Description: "Index page",
+	})
+	this.folder.router.Get("/{"+this.paramName+"}/_index", this.serveItemIndex)
 }
 
 func (this *objectsFolder[T]) itemIndex(paramValue string) FolderIndex {

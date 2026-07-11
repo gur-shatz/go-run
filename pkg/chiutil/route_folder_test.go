@@ -40,6 +40,116 @@ var _ = Describe("RouteFolder", func() {
 		Expect(index.Entries[0].Description).To(Equal("Status page"))
 	})
 
+	It("keeps hidden GET routes callable but omits them from the index", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice")
+
+		folder.GetDesc("/visible", "Visible page", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("visible"))
+		})
+		folder.GetDesc("/internal", "Internal page", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("internal"))
+		}, chiutil.Hidden())
+		folder.Get("/quiet", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("quiet"))
+		}, chiutil.Hidden())
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.Entries).To(HaveLen(1))
+		Expect(index.Entries[0].Name).To(Equal("visible"))
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/internal", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("internal"))
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/quiet", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("quiet"))
+	})
+
+	It("lists PostFunc actions as GET forms while keeping the submit POST callable", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice")
+
+		folder.PostFunc(chiutil.PostArgs{
+			Path:        "/flush",
+			Description: "Flush cache",
+			Handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("flushed"))
+			},
+			Action: chiutil.Form("Flush cache", []string{"scope"}),
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.Entries).To(HaveLen(1))
+		Expect(index.Entries[0].Name).To(Equal("flush"))
+		Expect(index.Entries[0].Method).To(Equal(http.MethodGet))
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/flush", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(ContainSubstring("Flush cache"))
+
+		req = httptest.NewRequest(http.MethodPost, "/backoffice/flush", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("flushed"))
+	})
+
+	It("keeps hidden POST routes callable but omits their action entry from the index", func() {
+		router := chi.NewRouter()
+		folder := chiutil.NewRouteFolder(router, "/backoffice")
+
+		folder.PostFunc(chiutil.PostArgs{
+			Path:        "/flush",
+			Description: "Flush cache",
+			Handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("flushed"))
+			},
+			Action: chiutil.Form("Flush cache", []string{"scope"}),
+			Hidden: true,
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+		Expect(index.Entries).To(BeEmpty())
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/flush", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(ContainSubstring("Flush cache"))
+
+		req = httptest.NewRequest(http.MethodPost, "/backoffice/flush", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("flushed"))
+	})
+
 	It("redirects a bare folder URL to its trailing-slash form", func() {
 		router := chi.NewRouter()
 		bo := chiutil.NewRouteFolder(router, "/backoffice")
@@ -140,9 +250,16 @@ var _ = Describe("RouteFolder", func() {
 		var index chiutil.FolderIndex
 		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
 		Expect(index.HasIndex).To(BeTrue())
-		Expect(index.Entries).To(BeEmpty())
+		Expect(index.Entries).To(HaveLen(1))
+		Expect(index.Entries[0].Name).To(Equal("_index"))
 
 		req = httptest.NewRequest(http.MethodGet, "/backoffice/?preview=true", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Body.String()).To(Equal("overview"))
+
+		req = httptest.NewRequest(http.MethodGet, "/backoffice/_index", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		Expect(w.Code).To(Equal(http.StatusOK))
