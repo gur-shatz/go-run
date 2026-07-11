@@ -14,7 +14,7 @@ version_folder_retention: 2
 # then stay active forever within this host.
 # reject_expiry: 24h
 
-# Per-version stdout/stderr log capture (state_dir/logs/<component>/<version>/).
+# Per-version process log capture (state_dir/logs/<component>/<version>_log.log).
 # log_max_size:  bytes per active file before rotating to <base>.1
 # log_max_files: history generations to keep (negative = no history)
 log_max_size: 10485760
@@ -121,4 +121,6 @@ remote:
 #   - urls:    {healthz,readyz,state,metrics} path overrides (default: /healthz etc.)
 #   - env:     extra environment variables passed to the child
 #   - remote:  per-component override of the top-level remote block
+#   - log_format: how process logs are parsed in backoffice logs:
+#                 naive (default) or timestamped
 components: []

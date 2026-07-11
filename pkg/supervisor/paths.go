@@ -26,8 +26,7 @@ func (this Paths) ForcedVersions() string {
 	return filepath.Join(this.StateDir, "forced_versions.txt")
 }
 
-// LogsRoot is the per-supervisor top-level logs directory:
-// state_dir/logs/<component>/<version>/.
+// LogsRoot is the per-supervisor top-level logs directory.
 func (this Paths) LogsRoot() string {
 	return filepath.Join(this.StateDir, "logs")
 }
@@ -39,23 +38,29 @@ func (this Paths) LogsForComponent(name string) string {
 	return filepath.Join(this.LogsRoot(), name)
 }
 
-// LogsForVersion returns the per-version log directory the child writes to:
-// state_dir/logs/<component>/<version>/. The supervisor writes stdout.log
-// and stderr.log here; the child may write its own app log files alongside.
+// LogsForVersion returns the per-version application log directory the child
+// receives as OP_LOG_DIR. The supervisor's captured child stdout/stderr stream
+// uses ComponentPaths.Log instead.
 func (this Paths) LogsForVersion(name, version string) string {
 	return filepath.Join(this.LogsRoot(), name, version)
 }
 
-// SupervisorLogs returns the directory containing one subdirectory per
-// supervisor process run.
+// SupervisorLogs returns the directory containing supervisor process log
+// streams and status files. Legacy per-run directories may also be present.
 func (this Paths) SupervisorLogs() string {
 	return filepath.Join(this.LogsRoot(), "_supervisor")
 }
 
-// SupervisorRunLogs returns the stdout/stderr log directory for one
-// supervisor process run.
+// SupervisorRunLogs returns the legacy stdout/stderr log directory for one
+// supervisor process run. New supervisor process logs use SupervisorRunLog.
 func (this Paths) SupervisorRunLogs(runID string) string {
 	return filepath.Join(this.SupervisorLogs(), runID)
+}
+
+// SupervisorRunLog returns the combined stdout/stderr log stream for one
+// supervisor process run.
+func (this Paths) SupervisorRunLog(runID string) string {
+	return filepath.Join(this.SupervisorLogs(), runID+"_log.log")
 }
 
 // Component returns paths scoped to a single component.
@@ -83,13 +88,18 @@ func (this ComponentPaths) VersionDir(version string) string {
 	return filepath.Join(this.Versions(), version)
 }
 
-// LogsDir is the per-version log directory for this component. The supervisor
-// writes stdout.log and stderr.log here (rotating); the child receives the
-// same path via OP_LOG_DIR and is free to write its own app log files
-// alongside. It lives outside the version dir so logs survive a version
-// folder GC of an obsolete release if the operator wants to keep them.
+// LogsDir is the per-version application log directory for this component. The
+// child receives it via OP_LOG_DIR and is free to write its own files there.
+// Supervisor-captured child stdout/stderr is stored by Log.
 func (this ComponentPaths) LogsDir(version string) string {
 	return filepath.Join(filepath.Dir(this.Root), "logs", this.dirName(), version)
+}
+
+// Log returns the combined stdout/stderr stream captured by the supervisor for
+// this component version. It is append-opened across same-version restarts and
+// rotated in place.
+func (this ComponentPaths) Log(version string) string {
+	return filepath.Join(filepath.Dir(this.Root), "logs", this.dirName(), version+"_log.log")
 }
 
 func (this ComponentPaths) dirName() string {

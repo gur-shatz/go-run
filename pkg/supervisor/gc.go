@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // gcResult summarises the outcome of one CleanOrphanVersions call.
@@ -76,15 +77,36 @@ func CleanOrphanVersions(paths ComponentPaths, retain int) (gcResult, error) {
 		if err := os.RemoveAll(full); err != nil {
 			return res, fmt.Errorf("remove %s: %w", full, err)
 		}
-		// Drop the matching log directory alongside the version. Logs live
-		// outside the version dir so they survive ad-hoc inspection of the
-		// extracted tree, but once the version itself is gone there is no
-		// useful audit trail left to preserve.
+		// Drop the matching logs alongside the version. Logs live outside the
+		// version dir so they survive ad-hoc inspection of the extracted tree,
+		// but once the version itself is gone there is no useful audit trail
+		// left to preserve.
 		logDir := paths.LogsDir(o.name)
 		if err := os.RemoveAll(logDir); err != nil {
 			return res, fmt.Errorf("remove %s: %w", logDir, err)
 		}
+		if err := removeRotatedLogFiles(paths.Log(o.name)); err != nil {
+			return res, err
+		}
 		res.Deleted = append(res.Deleted, o.name)
 	}
 	return res, nil
+}
+
+func removeRotatedLogFiles(path string) error {
+	matches, err := filepath.Glob(path + "*")
+	if err != nil {
+		return fmt.Errorf("glob %s*: %w", path, err)
+	}
+	for _, match := range matches {
+		name := filepath.Base(match)
+		base := filepath.Base(path)
+		if name != base && !strings.HasPrefix(name, base+".") {
+			continue
+		}
+		if err := os.Remove(match); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", match, err)
+		}
+	}
+	return nil
 }

@@ -4,24 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-// ProcessLog duplicates the supervisor process stdout/stderr into files while
-// preserving the original stdout/stderr destinations for container logs,
+// ProcessLog duplicates the supervisor process stdout/stderr into a combined
+// rotating file while preserving the original stdout/stderr destinations for container logs,
 // terminals, or systemd journals.
 type ProcessLog struct {
 	RunID     string
 	Dir       string
+	Path      string
 	PID       int
 	StartedAt time.Time
 
 	stdout *streamTee
 	stderr *streamTee
+	log    *rotatingFile
 }
 
 type ProcessLogStatus struct {
@@ -61,9 +65,9 @@ func setProcessConsoleStreams(stdout, stderr *os.File) {
 	processConsole.stderr = stderr
 }
 
-// StartProcessLog creates a new per-run supervisor log directory and tees the
-// current process stdout/stderr into stdout.log and stderr.log inside it.
-func StartProcessLog(paths Paths) (*ProcessLog, error) {
+// StartProcessLog creates a new combined per-run supervisor log stream and tees
+// the current process stdout/stderr into it.
+func StartProcessLog(paths Paths, maxSize int64, maxFiles int) (*ProcessLog, error) {
 	if err := markStaleProcessLogs(paths); err != nil {
 		return nil, err
 	}
@@ -71,23 +75,30 @@ func StartProcessLog(paths Paths) (*ProcessLog, error) {
 	startedAt := time.Now().UTC()
 	pid := os.Getpid()
 	runID := startedAt.Format("20060102-150405Z") + fmt.Sprintf("-pid%d", pid)
-	dir := paths.SupervisorRunLogs(runID)
+	dir := paths.SupervisorLogs()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create supervisor log dir %s: %w", dir, err)
 	}
 
-	stdout, err := startStreamTee(int(os.Stdout.Fd()), "stdout", filepath.Join(dir, "stdout.log"))
+	logPath := paths.SupervisorRunLog(runID)
+	logFile, err := openRotatingFile(logPath, maxSize, maxFiles)
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := startStreamTee(int(os.Stderr.Fd()), "stderr", filepath.Join(dir, "stderr.log"))
+	stdout, err := startStreamTee(int(os.Stdout.Fd()), "stdout", logFile)
+	if err != nil {
+		_ = logFile.Close()
+		return nil, err
+	}
+	stderr, err := startStreamTee(int(os.Stderr.Fd()), "stderr", logFile)
 	if err != nil {
 		_ = stdout.Close()
+		_ = logFile.Close()
 		return nil, err
 	}
 	setProcessConsoleStreams(stdout.original, stderr.original)
 
-	pl := &ProcessLog{RunID: runID, Dir: dir, PID: pid, StartedAt: startedAt, stdout: stdout, stderr: stderr}
+	pl := &ProcessLog{RunID: runID, Dir: dir, Path: logPath, PID: pid, StartedAt: startedAt, stdout: stdout, stderr: stderr, log: logFile}
 	if err := pl.Mark("running", ""); err != nil {
 		_ = pl.Close()
 		return nil, err
@@ -100,7 +111,7 @@ func (this *ProcessLog) Mark(status, message string) error {
 	if this == nil {
 		return nil
 	}
-	return writeProcessLogStatus(filepath.Join(this.Dir, "status.json"), ProcessLogStatus{
+	return writeProcessLogStatus(filepath.Join(this.Dir, this.RunID+"_status.json"), ProcessLogStatus{
 		RunID:     this.RunID,
 		PID:       this.PID,
 		Status:    status,
@@ -127,6 +138,11 @@ func (this *ProcessLog) Close() error {
 			first = err
 		}
 	}
+	if this.log != nil {
+		if err := this.log.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
 	return first
 }
 
@@ -140,27 +156,36 @@ func markStaleProcessLogs(paths Paths) error {
 		return fmt.Errorf("read supervisor log dir %s: %w", root, err)
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		for _, statusPath := range processStatusPaths(root, entry) {
+			data, err := os.ReadFile(statusPath)
+			if err != nil {
+				continue
+			}
+			var status ProcessLogStatus
+			if err := json.Unmarshal(data, &status); err != nil {
+				continue
+			}
+			if status.Status != "running" || status.EndedAt != "" {
+				continue
+			}
+			status.Status = "crashed"
+			status.EndedAt = time.Now().UTC().Format(time.RFC3339)
+			status.Message = "supervisor did not record a clean exit before the next start"
+			if err := writeProcessLogStatus(statusPath, status); err != nil {
+				return err
+			}
 		}
-		statusPath := filepath.Join(root, entry.Name(), "status.json")
-		data, err := os.ReadFile(statusPath)
-		if err != nil {
-			continue
-		}
-		var status ProcessLogStatus
-		if err := json.Unmarshal(data, &status); err != nil {
-			continue
-		}
-		if status.Status != "running" || status.EndedAt != "" {
-			continue
-		}
-		status.Status = "crashed"
-		status.EndedAt = time.Now().UTC().Format(time.RFC3339)
-		status.Message = "supervisor did not record a clean exit before the next start"
-		if err := writeProcessLogStatus(statusPath, status); err != nil {
-			return err
-		}
+	}
+	return nil
+}
+
+func processStatusPaths(root string, entry fs.DirEntry) []string {
+	name := entry.Name()
+	if entry.IsDir() {
+		return []string{filepath.Join(root, name, "status.json")}
+	}
+	if strings.HasSuffix(name, "_status.json") {
+		return []string{filepath.Join(root, name)}
 	}
 	return nil
 }
@@ -192,11 +217,11 @@ type streamTee struct {
 	fd       int
 	original *os.File
 	reader   *os.File
-	logFile  *os.File
+	log      io.Writer
 	done     chan error
 }
 
-func startStreamTee(fd int, label, path string) (*streamTee, error) {
+func startStreamTee(fd int, label string, logWriter io.Writer) (*streamTee, error) {
 	origFD, err := syscall.Dup(fd)
 	if err != nil {
 		return nil, fmt.Errorf("dup %s: %w", label, err)
@@ -209,16 +234,7 @@ func startStreamTee(fd int, label, path string) (*streamTee, error) {
 		return nil, fmt.Errorf("pipe %s: %w", label, err)
 	}
 
-	logFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-	if err != nil {
-		_ = reader.Close()
-		_ = writer.Close()
-		_ = original.Close()
-		return nil, fmt.Errorf("open %s log %s: %w", label, path, err)
-	}
-
 	if err := dupFD(int(writer.Fd()), fd); err != nil {
-		_ = logFile.Close()
 		_ = reader.Close()
 		_ = writer.Close()
 		_ = original.Close()
@@ -228,7 +244,7 @@ func startStreamTee(fd int, label, path string) (*streamTee, error) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(io.MultiWriter(original, logFile), reader)
+		_, err := io.Copy(io.MultiWriter(original, logWriter), reader)
 		done <- err
 	}()
 
@@ -236,7 +252,7 @@ func startStreamTee(fd int, label, path string) (*streamTee, error) {
 		fd:       fd,
 		original: original,
 		reader:   reader,
-		logFile:  logFile,
+		log:      logWriter,
 		done:     done,
 	}, nil
 }
@@ -253,9 +269,6 @@ func (this *streamTee) Close() error {
 		first = err
 	}
 	if err := this.reader.Close(); err != nil && first == nil {
-		first = err
-	}
-	if err := this.logFile.Close(); err != nil && first == nil {
 		first = err
 	}
 	if err := this.original.Close(); err != nil && first == nil {

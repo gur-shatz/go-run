@@ -44,10 +44,10 @@ type Config struct {
 	// stay active forever within this host).
 	RejectExpiry time.Duration `yaml:"reject_expiry"`
 
-	// LogMaxSize / LogMaxFiles control rotation of the per-version
-	// stdout.log and stderr.log files the supervisor captures. Default
-	// 10 MiB per file, 5 history generations. Set LogMaxFiles to 0 to
-	// disable history (rotation truncates instead of preserving).
+	// LogMaxSize / LogMaxFiles control rotation of the supervisor-captured
+	// process log streams. Default 10 MiB per file, 5 history generations. Set
+	// LogMaxFiles to 0 to disable history (rotation truncates instead of
+	// preserving).
 	LogMaxSize  int64 `yaml:"log_max_size"`
 	LogMaxFiles int   `yaml:"log_max_files"`
 
@@ -400,6 +400,7 @@ type ComponentConfig struct {
 	Description string            `yaml:"description,omitempty"`
 	Port        int               `yaml:"port"`
 	Command     string            `yaml:"command"`
+	LogFormat   LogFormat         `yaml:"log_format,omitempty"`
 	Env         map[string]string `yaml:"env,omitempty"`
 	URLs        URLsConfig        `yaml:"urls,omitempty"`
 	ProxyURLs   map[string]string `yaml:"proxy_urls,omitempty"`
@@ -418,6 +419,15 @@ type ComponentConfig struct {
 	// tracking flag. nil leaves the component tracked but unbudgeted.
 	Memory *ComponentMemoryConfig `yaml:"memory,omitempty"`
 }
+
+// LogFormat selects how captured component logs are parsed in the backoffice
+// log viewer. Empty means the supervisor default, currently naive.
+type LogFormat string
+
+const (
+	LogFormatNaive       LogFormat = "naive"
+	LogFormatTimestamped LogFormat = "timestamped"
+)
 
 // ExternalComponentConfig describes a component owned by another process or
 // system. The supervisor does not start/stop/restart it, but proxies and
@@ -740,6 +750,9 @@ func (this *Config) Validate() error {
 		if c.Command == "" {
 			return fmt.Errorf("components[%q]: command is required", c.Name)
 		}
+		if err := validateLogFormat(c.LogFormat); err != nil {
+			return fmt.Errorf("components[%q]: log_format: %w", c.Name, err)
+		}
 		if c.Port <= 0 || c.Port > 65535 {
 			return fmt.Errorf("components[%q]: port is required and must be 1..65535 (got %d)", c.Name, c.Port)
 		}
@@ -778,6 +791,15 @@ func (this *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateLogFormat(format LogFormat) error {
+	switch format {
+	case "", LogFormatNaive, LogFormatTimestamped:
+		return nil
+	default:
+		return fmt.Errorf("must be one of %q or %q", LogFormatNaive, LogFormatTimestamped)
+	}
 }
 
 func (this *Config) validateBackoffice() error {

@@ -19,9 +19,9 @@ type LaunchVars struct {
 	StateDir    string
 	MonitorPort int
 	KillSock    string
-	// LogDir is the per-version log directory the supervisor manages on the
-	// child's behalf. The supervisor writes stdout.log + stderr.log here;
-	// the child may write any other files it wants in this directory.
+	// LogDir is the per-version application log directory the supervisor
+	// creates on the child's behalf. The child may write any files it wants in
+	// this directory.
 	LogDir string
 }
 

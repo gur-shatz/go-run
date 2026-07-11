@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/gur-shatz/go-run/internal/log"
+	"github.com/gur-shatz/go-run/pkg/backoffice/logparser"
+	"github.com/gur-shatz/go-run/pkg/backoffice/logviewer"
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 	"github.com/gur-shatz/go-run/pkg/favico"
 )
@@ -295,7 +298,8 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 			// it to an absolute path) keeps it correct behind a path-stripping
 			// reverse proxy, where an absolute /backoffice/... would drop the
 			// proxy prefix and miss.
-			w.Header().Set("Location", "../../logs/"+name+"/"+current+"/")
+			streamID := logviewer.StreamID(currentVersionLogStreamName(paths, name, current))
+			w.Header().Set("Location", "../../logs/"+streamID+"/")
 			w.WriteHeader(http.StatusFound)
 		})
 
@@ -317,34 +321,19 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 	// component dashboard) to stay put.
 	components.MarkInstanceExternal("current_version_logs")
 
-	// Per-component log trees, each mounted as its own browseable static
-	// folder. fsRoot is captured at construction so each handler "knows"
-	// which component it serves without per-request URL-param lookup. The
-	// directory is pre-created so the index UI doesn't 404 before the
-	// child has launched for the first time.
-	logsRoot := bo.Folder("logs").
-		Title("Logs").
-		Description("Supervisor process logs and per-component stdout / stderr + child-written application logs.")
-	supervisorLogs := paths.SupervisorLogs()
-	_ = os.MkdirAll(supervisorLogs, 0o755)
-	logsRoot.StaticFilesFolder("_supervisor", supervisorLogs).
-		Title("Supervisor process logs").
-		Description("state_dir/logs/_supervisor/")
+	// Mount the full log tree as searchable streams. Component process logs
+	// live under <component>/<version>_log.log; supervisor process runs live
+	// under _supervisor/.
+	_ = os.MkdirAll(paths.LogsRoot(), 0o755)
+	if _, err := logviewer.Mount(bo, "logs", supervisorLogViewerOptions(paths, componentCfgs)); err != nil {
+		logger.Warn("mount log viewer: %v", err)
+	}
 	for _, c := range sp.Snapshot().Components {
 		desc := "Component " + c.Name
 		if c.Description != "" {
 			desc = c.Description
 		}
 		components.Add(c.Name, desc)
-		if c.External {
-			continue
-		}
-
-		fsRoot := paths.LogsForComponent(c.Name)
-		_ = os.MkdirAll(fsRoot, 0o755)
-		logsRoot.StaticFilesFolder(c.Name, fsRoot).
-			Title("Logs for " + c.Name).
-			Description("state_dir/logs/" + c.Name + "/")
 	}
 
 	var boCfg BackofficeConfig
@@ -371,6 +360,45 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 		server: &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 5 * time.Second},
 		logger: logger,
 	}
+}
+
+func supervisorLogViewerOptions(paths Paths, componentCfgs []ComponentConfig) logviewer.Options {
+	return logviewer.Options{
+		Root:      paths.LogsRoot(),
+		Parser:    supervisorLogParser(componentCfgs),
+		Recursive: true,
+		Globs: []string{
+			"*.log", "*.log.*",
+			"*.txt", "*.txt.*",
+			"*.out", "*.out.*",
+		},
+	}
+}
+
+func supervisorLogParser(componentCfgs []ComponentConfig) logparser.Parser {
+	prefixes := map[string]logparser.Parser{
+		"_supervisor/": logparser.NaiveParser{},
+	}
+	for _, cfg := range componentCfgs {
+		switch cfg.LogFormat {
+		case LogFormatTimestamped:
+			prefixes[cfg.Name+"/"] = logparser.TimestampedParser{}
+		case "", LogFormatNaive:
+			prefixes[cfg.Name+"/"] = logparser.NaiveParser{}
+		}
+	}
+	return logparser.PrefixParser{
+		Default:  logparser.NaiveParser{},
+		Prefixes: prefixes,
+	}
+}
+
+func currentVersionLogStreamName(paths Paths, name, current string) string {
+	rel, err := filepath.Rel(paths.LogsRoot(), paths.Component(name).Log(current))
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(filepath.Join(name, current+"_log.log"))
 }
 
 func controlComponent(w http.ResponseWriter, r *http.Request, name string, fn func(context.Context, string) error) {

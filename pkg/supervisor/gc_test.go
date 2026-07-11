@@ -83,18 +83,24 @@ var _ = Describe("CleanOrphanVersions", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("removes the matching log dir when deleting an orphan version", func() {
+	It("removes the matching logs when deleting an orphan version", func() {
 		mkVersionFolder(paths.Versions(), "current-v", time.Now())
 		mkVersionFolder(paths.Versions(), "orphan-v", time.Now())
 		Expect(paths.WriteCurrent("current-v")).To(Succeed())
 
-		// Pre-populate log dirs for both, mirroring runtime layout.
+		// Pre-populate app log dirs and flattened process logs, mirroring
+		// runtime layout.
 		currentLogs := paths.LogsDir("current-v")
 		orphanLogs := paths.LogsDir("orphan-v")
 		Expect(os.MkdirAll(currentLogs, 0o755)).To(Succeed())
 		Expect(os.MkdirAll(orphanLogs, 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(currentLogs, "stdout.log"), []byte("alive"), 0o644)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(orphanLogs, "stdout.log"), []byte("stale"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(currentLogs, "app.log"), []byte("alive"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(orphanLogs, "app.log"), []byte("stale"), 0o644)).To(Succeed())
+		currentProcessLog := paths.Log("current-v")
+		orphanProcessLog := paths.Log("orphan-v")
+		Expect(os.WriteFile(currentProcessLog, []byte("alive"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(orphanProcessLog, []byte("stale"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(orphanProcessLog+".1", []byte("older"), 0o644)).To(Succeed())
 
 		_, err := supervisor.CleanOrphanVersions(paths, 0)
 		Expect(err).NotTo(HaveOccurred())
@@ -104,11 +110,17 @@ var _ = Describe("CleanOrphanVersions", func() {
 		Expect(os.IsNotExist(err)).To(BeTrue())
 		_, err = os.Stat(orphanLogs)
 		Expect(os.IsNotExist(err)).To(BeTrue())
+		_, err = os.Stat(orphanProcessLog)
+		Expect(os.IsNotExist(err)).To(BeTrue())
+		_, err = os.Stat(orphanProcessLog + ".1")
+		Expect(os.IsNotExist(err)).To(BeTrue())
 
 		// Current version + its logs are kept.
 		_, err = os.Stat(filepath.Join(paths.Versions(), "current-v"))
 		Expect(err).NotTo(HaveOccurred())
 		_, err = os.Stat(currentLogs)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = os.Stat(currentProcessLog)
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

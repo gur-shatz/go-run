@@ -212,6 +212,19 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(Succeed())
 		})
 
+		It("validates component log_format", func() {
+			cfg := supervisor.Config{
+				Components: []supervisor.ComponentConfig{
+					{Name: "x", Port: 8080, Command: "/bin/x", LogFormat: "json"},
+				},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("log_format")))
+
+			cfg.Components[0].LogFormat = supervisor.LogFormatTimestamped
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
 		It("requires a remote base_url when updates are explicitly enabled", func() {
 			enabled := true
 			cfg := supervisor.Config{

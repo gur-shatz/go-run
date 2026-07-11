@@ -869,11 +869,10 @@ type runningChild struct {
 	exitCh     chan childExit
 	launchedAt time.Time
 
-	// Rotating log files the supervisor writes the child's stdout / stderr
-	// into. Closed when the child exits. Nil-safe so tests / nil bundles
-	// don't crash if log opening was skipped.
-	stdoutLog *rotatingFile
-	stderrLog *rotatingFile
+	// Rotating log file the supervisor writes the child's stdout / stderr into.
+	// Closed when the child exits. Nil-safe so tests / nil bundles don't crash
+	// if log opening was skipped.
+	log *rotatingFile
 }
 
 type childExit struct {
@@ -933,18 +932,12 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		return nil, err
 	}
 
-	// Open per-version rotating log files. The child also gets the dir
-	// via OP_LOG_DIR so its own application logs can live alongside.
-	stdoutLog, err := openRotatingFile(filepath.Join(logDir, "stdout.log"), this.logMaxSize, this.logMaxFiles)
+	// Open the per-version rotating process log. The child also gets logDir via
+	// OP_LOG_DIR so its own application logs can live alongside.
+	childLog, err := openRotatingFile(this.paths.Log(version), this.logMaxSize, this.logMaxFiles)
 	if err != nil {
 		_ = ks.Close()
-		return nil, fmt.Errorf("open stdout log: %w", err)
-	}
-	stderrLog, err := openRotatingFile(filepath.Join(logDir, "stderr.log"), this.logMaxSize, this.logMaxFiles)
-	if err != nil {
-		_ = stdoutLog.Close()
-		_ = ks.Close()
-		return nil, fmt.Errorf("open stderr log: %w", err)
+		return nil, fmt.Errorf("open component log: %w", err)
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -952,12 +945,11 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	// MultiWriter: kubectl-logs-style process output AND the per-version
 	// on-disk copy. The process output uses the original stdout/stderr, so
 	// component output does not pollute the supervisor's own process log.
-	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStdout()), stdoutLog)
-	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStderr()), stderrLog)
+	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStdout()), childLog)
+	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStderr()), childLog)
 	cmd.Env, err = this.buildEnv(vars)
 	if err != nil {
-		_ = stdoutLog.Close()
-		_ = stderrLog.Close()
+		_ = childLog.Close()
 		_ = ks.Close()
 		return nil, err
 	}
@@ -973,8 +965,7 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 
 	this.logger.Status("[%s] launching %s port=%d (logs=%s)", this.cfg.Name, version, port, logDir)
 	if err := cmd.Start(); err != nil {
-		_ = stdoutLog.Close()
-		_ = stderrLog.Close()
+		_ = childLog.Close()
 		_ = ks.Close()
 		return nil, err
 	}
@@ -988,20 +979,15 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		killSocket: ks,
 		exitCh:     make(chan childExit, 1),
 		launchedAt: time.Now(),
-		stdoutLog:  stdoutLog,
-		stderrLog:  stderrLog,
+		log:        childLog,
 	}
 	go func() {
 		err := cmd.Wait()
-		// cmd.Wait() returned, so stdout/stderr pipes are drained — safe to
-		// close the rotating log files. Errors here are best-effort: a closed
-		// log file at most loses the very last byte and is independent of the
-		// supervisor's ability to react to the exit itself.
-		if rc.stdoutLog != nil {
-			_ = rc.stdoutLog.Close()
-		}
-		if rc.stderrLog != nil {
-			_ = rc.stderrLog.Close()
+		// cmd.Wait() returned, so stdout/stderr pipes are drained. Errors here
+		// are best-effort: a closed log file at most loses the very last byte
+		// and is independent of the supervisor's ability to react to the exit.
+		if rc.log != nil {
+			_ = rc.log.Close()
 		}
 		rc.exitCh <- childExit{at: time.Now(), err: err}
 	}()

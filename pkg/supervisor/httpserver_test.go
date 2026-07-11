@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/gur-shatz/go-run/internal/log"
+	"github.com/gur-shatz/go-run/pkg/backoffice/logviewer"
 )
 
 // stubStateProvider is a minimal stateProvider exposing a single component.
@@ -186,25 +187,77 @@ var _ = Describe("current_version_logs", func() {
 		cfg.ApplyDefaults()
 		paths := NewPaths(dir)
 
-		runLogs := paths.SupervisorRunLogs("20260611-120000Z-pid42")
-		Expect(os.MkdirAll(runLogs, 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(runLogs, "stdout.log"), []byte("started\n"), 0o644)).To(Succeed())
+		runID := "20260611-120000Z-pid42"
+		Expect(os.MkdirAll(paths.SupervisorLogs(), 0o755)).To(Succeed())
+		Expect(os.WriteFile(paths.SupervisorRunLog(runID), []byte("started\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
 		srv := httptest.NewServer(hs.server.Handler)
 		defer srv.Close()
 
-		resp, err := srv.Client().Get(srv.URL + "/backoffice/logs/_supervisor/20260611-120000Z-pid42/stdout.log")
+		streamID := logviewer.StreamID("_supervisor/" + runID + "_log.log")
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/logs/" + streamID + "/raw")
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		Expect(string(body)).To(Equal("started\n"))
+
+		resp, err = srv.Client().Get(srv.URL + "/backoffice/logs/" + streamID + "/tail?limit=1")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err = io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(ContainSubstring(`"message":"started"`))
 	})
 
-	It("redirects to the live version's log dir with a proxy-safe relative Location", func() {
+	It("parses component logs according to component log_format", func() {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir, Components: []ComponentConfig{
+			{Name: "api", Port: 18090, Command: "/bin/api", LogFormat: LogFormatTimestamped},
+			{Name: "worker", Port: 18091, Command: "/bin/worker"},
+		}}
+		cfg.ApplyDefaults()
+		paths := NewPaths(dir)
+
+		apiLog := paths.Component("api").Log("v1")
+		Expect(os.MkdirAll(filepath.Dir(apiLog), 0o755)).To(Succeed())
+		Expect(os.WriteFile(apiLog, []byte("2026-07-10T10:01:00Z INFO boot app.go:2 request done status=200\n"), 0o644)).To(Succeed())
+
+		workerLog := paths.Component("worker").Log("v1")
+		Expect(os.MkdirAll(filepath.Dir(workerLog), 0o755)).To(Succeed())
+		Expect(os.WriteFile(workerLog, []byte("plain worker line\n"), 0o644)).To(Succeed())
+
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "api"}, nil, nil, paths, bundle, cfg.Components, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+
+		apiStreamID := logviewer.StreamID("api/v1_log.log")
+		resp, err := srv.Client().Get(srv.URL + "/backoffice/logs/" + apiStreamID + "/tail?limit=1")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(ContainSubstring(`"level":"INFO"`))
+		Expect(string(body)).To(ContainSubstring(`"message":"request done"`))
+		Expect(string(body)).To(ContainSubstring(`"status":"200"`))
+
+		workerStreamID := logviewer.StreamID("worker/v1_log.log")
+		resp, err = srv.Client().Get(srv.URL + "/backoffice/logs/" + workerStreamID + "/tail?limit=1")
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err = io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(string(body)).To(ContainSubstring(`"message":"plain worker line"`))
+	})
+
+	It("redirects to the live version's process stream with a proxy-safe relative Location", func() {
 		dir := GinkgoT().TempDir()
 		cfg := Config{StateDir: dir}
 		cfg.ApplyDefaults()
@@ -212,9 +265,9 @@ var _ = Describe("current_version_logs", func() {
 
 		Expect(paths.Component("hello").EnsureDirs()).To(Succeed())
 		Expect(paths.Component("hello").WriteCurrent("v123")).To(Succeed())
-		verLogs := paths.LogsForVersion("hello", "v123")
-		Expect(os.MkdirAll(verLogs, 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(verLogs, "stdout.log"), []byte("hi\n"), 0o644)).To(Succeed())
+		componentLog := paths.Component("hello").Log("v123")
+		Expect(os.MkdirAll(filepath.Dir(componentLog), 0o755)).To(Succeed())
+		Expect(os.WriteFile(componentLog, []byte("hi\n"), 0o644)).To(Succeed())
 
 		bundle := newStatekitBundle(cfg)
 		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, paths, bundle, nil, nil, nil, nil, BuildInfo{}, BasicAuthConfig{}, FaviconConfig{}, log.New("[t]", false))
@@ -230,12 +283,13 @@ var _ = Describe("current_version_logs", func() {
 		// Relative (not absolute /backoffice/...) so it survives a path-stripping
 		// reverse proxy: "../../" climbs from components/hello/ to the backoffice root.
 		Expect(resp.StatusCode).To(Equal(http.StatusFound))
-		Expect(resp.Header.Get("Location")).To(Equal("../../logs/hello/v123/"))
+		streamID := logviewer.StreamID("hello/v123_log.log")
+		Expect(resp.Header.Get("Location")).To(Equal("../../logs/" + streamID + "/"))
 
-		// The browser-resolved target serves the version log dir.
+		// The browser-resolved target serves the logviewer stream page.
 		target, err := resp.Request.URL.Parse(resp.Header.Get("Location"))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(target.Path).To(Equal("/backoffice/logs/hello/v123/"))
+		Expect(target.Path).To(Equal("/backoffice/logs/" + streamID + "/"))
 
 		landed, err := client.Get(target.String())
 		Expect(err).NotTo(HaveOccurred())

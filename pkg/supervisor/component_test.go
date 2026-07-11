@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -158,6 +159,14 @@ var _ = Describe("Component lifecycle", func() {
 			}
 			return pid
 		}, 3*time.Second).ShouldNot(BeZero())
+
+		Eventually(func() int {
+			data, err := os.ReadFile(paths.Log("1.0.0"))
+			if err != nil {
+				return 0
+			}
+			return strings.Count(string(data), "started")
+		}, 3*time.Second).Should(BeNumerically(">=", 2))
 
 		cancel()
 		Eventually(done, 3*time.Second).Should(BeClosed())

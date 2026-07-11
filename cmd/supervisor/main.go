@@ -77,7 +77,7 @@ func run() (err error) {
 		return fmt.Errorf("create state_dir %s: %w", cfg.StateDir, err)
 	}
 
-	processLog, err := supervisor.StartProcessLog(supervisor.NewPaths(cfg.StateDir))
+	processLog, err := supervisor.StartProcessLog(supervisor.NewPaths(cfg.StateDir), cfg.LogMaxSize, cfg.LogMaxFiles)
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func run() (err error) {
 		}
 		_ = processLog.Mark("exited", "")
 	}()
-	log.Status("process logs: %s", processLog.Dir)
+	log.Status("process log: %s", processLog.Path)
 
 	lock, err := supervisor.AcquireLock(supervisor.NewPaths(cfg.StateDir).SupervisorLock())
 	if err != nil {
