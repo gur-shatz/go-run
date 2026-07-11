@@ -103,6 +103,38 @@ exec:
 			}))
 		})
 
+		It("loads config with an initial test delay", func() {
+			configPath := filepath.Join(tmpDir, "execrun.yaml")
+			content := `watch:
+  - "**/*.go"
+test:
+  - "go test ./..."
+initial_test_delay: "500ms"
+`
+			err := os.WriteFile(configPath, []byte(content), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, _, err := execrun.LoadConfig(configPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.InitialTestDelay).To(Equal("500ms"))
+		})
+
+		It("returns error for an invalid initial test delay", func() {
+			configPath := filepath.Join(tmpDir, "execrun.yaml")
+			content := `watch:
+  - "**/*.go"
+test:
+  - "go test ./..."
+initial_test_delay: "soon"
+`
+			err := os.WriteFile(configPath, []byte(content), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, _, err = execrun.LoadConfig(configPath)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("initial_test_delay"))
+		})
+
 		It("loads config with only an exec command (no build steps)", func() {
 			configPath := filepath.Join(tmpDir, "execrun.yaml")
 			content := `watch:
@@ -522,11 +554,12 @@ exec:
 			Eventually(runDone).Should(Receive(BeNil()))
 		})
 
-		It("runs the skipped initial tests for build-only targets", func() {
+		It("runs the skipped initial tests for build-only targets, honoring the config delay", func() {
 			cfg := execrun.Config{
-				Watch: []string{"watched.txt"},
-				Build: []string{"sh -c 'echo build >> events.log'"},
-				Test:  []string{"sh -c 'echo test >> events.log'"},
+				Watch:            []string{"watched.txt"},
+				Build:            []string{"sh -c 'echo build >> events.log'"},
+				Test:             []string{"sh -c 'echo test >> events.log'"},
+				InitialTestDelay: "200ms",
 			}
 			Expect(os.WriteFile(filepath.Join(tmpDir, "watched.txt"), []byte("unchanged\n"), 0644)).To(Succeed())
 
@@ -541,7 +574,6 @@ exec:
 					RootDir:          tmpDir,
 					DisableHeartbeat: true,
 					SkipInitialTests: true,
-					InitialTestDelay: 200 * time.Millisecond,
 					OnTestDone: func(_ time.Duration, err error) {
 						testResults <- err
 					},

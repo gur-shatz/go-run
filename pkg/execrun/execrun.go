@@ -41,6 +41,10 @@ type Config struct {
 	Build       []string `yaml:"build,omitempty"` // prep commands, run to completion
 	Test        []string `yaml:"test,omitempty"`  // test commands, run after build and before exec
 	Exec        []string `yaml:"exec,omitempty"`  // run commands; last is the managed process
+	// InitialTestDelay is how long after startup the test steps skipped by
+	// Options.SkipInitialTests run, as a Go duration string (e.g. "5s").
+	// Empty falls back to Options.InitialTestDelay, then DefaultInitialTestDelay.
+	InitialTestDelay string `yaml:"initial_test_delay,omitempty"`
 }
 
 // IsBuildOnly returns true when there are no exec commands (build-only target).
@@ -64,7 +68,8 @@ type Options struct {
 	// and explicit test triggers still run tests inline.
 	SkipInitialTests bool
 	// InitialTestDelay is how long after startup the test steps skipped by
-	// SkipInitialTests run. Zero means DefaultInitialTestDelay.
+	// SkipInitialTests run. Config.InitialTestDelay, when set, takes
+	// precedence; zero here means DefaultInitialTestDelay.
 	InitialTestDelay time.Duration
 	Stdout           io.Writer
 	Stderr           io.Writer
@@ -105,12 +110,19 @@ type Options struct {
 }
 
 // DefaultInitialTestDelay is how long after startup deferred initial tests
-// run when Options.InitialTestDelay is zero.
-const DefaultInitialTestDelay = 30 * time.Second
+// run when neither Config.InitialTestDelay nor Options.InitialTestDelay is set.
+const DefaultInitialTestDelay = 5 * time.Second
 
-func (this Options) initialTestDelay() time.Duration {
-	if this.InitialTestDelay > 0 {
-		return this.InitialTestDelay
+// initialTestDelay resolves the deferred-initial-tests delay: the config
+// value wins, then the programmatic option, then the default.
+func (this *runner) initialTestDelay() time.Duration {
+	if this.cfg.InitialTestDelay != "" {
+		if d, err := time.ParseDuration(this.cfg.InitialTestDelay); err == nil {
+			return d
+		}
+	}
+	if this.opts.InitialTestDelay > 0 {
+		return this.opts.InitialTestDelay
 	}
 	return DefaultInitialTestDelay
 }
@@ -209,6 +221,16 @@ func (this *Config) Validate() error {
 		this.Exec[i] = strings.TrimSpace(this.Exec[i])
 		if err := checkShellVars(this.Exec[i]); err != nil {
 			return err
+		}
+	}
+	this.InitialTestDelay = strings.TrimSpace(this.InitialTestDelay)
+	if this.InitialTestDelay != "" {
+		d, err := time.ParseDuration(this.InitialTestDelay)
+		if err != nil {
+			return fmt.Errorf("invalid initial_test_delay %q: %w", this.InitialTestDelay, err)
+		}
+		if d < 0 {
+			return fmt.Errorf("initial_test_delay must not be negative, got %q", this.InitialTestDelay)
 		}
 	}
 	return nil
@@ -857,7 +879,7 @@ func Run(ctx context.Context, cfg Config, opts Options) error {
 	// the next successful rebuild runs tests anyway.
 	var initialTests <-chan time.Time
 	if opts.SkipInitialTests && len(cfg.TestSteps()) > 0 && healthy.Load() {
-		initialTests = time.After(opts.initialTestDelay())
+		initialTests = time.After(r.initialTestDelay())
 	}
 
 	// Heartbeat ticker
@@ -973,7 +995,7 @@ func runBuildOnly(ctx context.Context, r *runner, rootDir string, patterns []glo
 	// below shortly after the successful initial build.
 	var initialTests <-chan time.Time
 	if opts.SkipInitialTests && len(r.cfg.TestSteps()) > 0 {
-		initialTests = time.After(opts.initialTestDelay())
+		initialTests = time.After(r.initialTestDelay())
 	}
 
 	var tick <-chan time.Time

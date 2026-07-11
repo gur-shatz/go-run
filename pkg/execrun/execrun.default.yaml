@@ -21,6 +21,12 @@ build:
 test:
   - "go test ./..."
 
+# Optional: when the runner skips tests on the first run (e.g. under
+# runctl), how long after startup the deferred tests run. Go duration
+# string; default "5s". Supports env templating:
+#   initial_test_delay: '[[env "INITIAL_TEST_DELAY" | default "5s"]]'
+# initial_test_delay: "5s"
+
 # Exec commands — the last command is the long-running managed process.
 # If exec is empty, the target is build-only (no managed process).
 exec:
