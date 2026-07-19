@@ -177,6 +177,18 @@ func run() error {
 		return ctrl.FavicoStatus()
 	}))
 	r.Mount("/api", ctrl.Routes())
+
+	// Health monitor (default on): scrapes each target's backoffice for
+	// state/metrics and serves the statekit console at /health.
+	if cfg.Monitor.IsEnabled() {
+		mon, err := runctl.NewStateMonitor(*cfg)
+		if err != nil {
+			return err
+		}
+		mon.Mount(r)
+		go mon.Run(ctx)
+	}
+
 	if *ui {
 		r.Mount("/", runui.Routes())
 	}
@@ -192,6 +204,9 @@ func run() error {
 			fmt.Fprintf(os.Stdout, "[runui] Dashboard: http://localhost:%d/\n", cfg.API.Port)
 		} else {
 			fmt.Fprintf(os.Stdout, "[runctl] API server listening on :%d, no UI\n", cfg.API.Port)
+		}
+		if cfg.Monitor.IsEnabled() {
+			fmt.Fprintf(os.Stdout, "[runctl] Health console: http://localhost:%d/health/\n", cfg.API.Port)
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err

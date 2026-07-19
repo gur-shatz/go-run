@@ -63,6 +63,8 @@
     .app-layout > main { flex: 1; min-width: 0; transition: flex 0.2s ease; overflow: auto; padding: 1rem; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+    .tab-toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+    .tab-toolbar a { font-size: 0.85rem; text-decoration: none; }
     .badge {
       display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
       font-size: 0.8rem; font-weight: 600; color: #fff;
@@ -221,6 +223,9 @@
       </div>
 
       <div id="tab-run" class="tab-content">
+        <div class="tab-toolbar">
+          <a id="run-health-link" href="/health/" target="_blank" style="display:none;">Health Dashboard ↗</a>
+        </div>
         <table id="run-table">
           <thead>
             <tr>
@@ -450,6 +455,9 @@
     if (!activeTargetName) setBrowserTitle(title);
     document.getElementById('topbar-title').textContent = title;
     document.getElementById('page-title').textContent = title;
+
+    document.getElementById('run-health-link').style.display =
+      overview.monitor_enabled ? '' : 'none';
 
     const descEl = document.getElementById('page-description');
     if (description) {

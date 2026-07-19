@@ -22,9 +22,10 @@ type Controller struct {
 
 // Overview is the dashboard/API payload for project-level metadata and targets.
 type Overview struct {
-	Title       string         `json:"title,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Targets     []TargetStatus `json:"targets"`
+	Title          string         `json:"title,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	MonitorEnabled bool           `json:"monitor_enabled"`
+	Targets        []TargetStatus `json:"targets"`
 }
 
 // New creates a Controller from the given config.
@@ -299,9 +300,10 @@ func (this *Controller) Status() []TargetStatus {
 // Overview returns project metadata and current target status.
 func (this *Controller) Overview() Overview {
 	return Overview{
-		Title:       this.cfg.Title,
-		Description: this.cfg.Description,
-		Targets:     this.Status(),
+		Title:          this.cfg.Title,
+		Description:    this.cfg.Description,
+		MonitorEnabled: this.cfg.Monitor.IsEnabled(),
+		Targets:        this.Status(),
 	}
 }
 

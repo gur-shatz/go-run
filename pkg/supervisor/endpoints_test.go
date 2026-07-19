@@ -1,6 +1,12 @@
 package supervisor
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"time"
+
+	"github.com/gur-shatz/go-run/internal/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -74,7 +80,7 @@ var _ = Describe("scrape target construction", func() {
 		cfg.ApplyDefaults()
 		bundle := newStatekitBundle(cfg)
 
-		_, err := newComponentScraper(cfg, bundle, nil, nil)
+		_, err := newComponentScraper(cfg, bundle, nil, nil, nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		var aggregateFound, topLevelFound, checkFound bool
@@ -96,5 +102,46 @@ var _ = Describe("scrape target construction", func() {
 		Expect(topLevelFound).To(BeTrue())
 		Expect(aggregateFound).To(BeTrue())
 		Expect(checkFound).To(BeTrue())
+	})
+
+	It("retains scraped component metrics in the observer timeseries store", func() {
+		metricsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("# HELP requests_total Requests handled.\n# TYPE requests_total counter\nrequests_total 7\n"))
+		}))
+		defer metricsServer.Close()
+
+		cfg := Config{
+			StateDir: GinkgoT().TempDir(),
+			ExternalComponents: []ExternalComponentConfig{{
+				Name: "api",
+				URL:  metricsServer.URL,
+				URLs: URLsConfig{Metrics: "/metrics"},
+			}},
+		}
+		cfg.StateMonitor.Observe.Enabled = true
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		obs := newObserver(cfg.StateMonitor.Observe, bundle.registry, log.New("[t]", false))
+		Expect(obs).NotTo(BeNil())
+		Expect(obs.store).NotTo(BeNil())
+		Expect(obs.store.MetricsStore()).NotTo(BeNil())
+		componentScraper, err := newComponentScraper(
+			cfg,
+			bundle,
+			obs.store,
+			obs.store.MetricsStore(),
+			log.New("[t]", false),
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go componentScraper.Run(ctx)
+
+		Eventually(func() int {
+			doc, metricsErr := obs.store.MetricsStore().Metrics("api", time.Now().Add(-time.Minute), time.Now())
+			Expect(metricsErr).NotTo(HaveOccurred())
+			return len(doc.Metrics)
+		}).Should(Equal(1))
 	})
 })

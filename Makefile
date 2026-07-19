@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-backoffice-demo example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-runctl example-backoffice-demo example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -36,6 +36,12 @@ install:
 	go install -ldflags "$(LDFLAGS)" ./cmd/execrun
 	go install -ldflags "$(LDFLAGS)" ./cmd/runctl
 	go install -ldflags "$(LDFLAGS)" ./cmd/supervisor
+
+# runctl example stack (examples/runctl.yaml). Ports derive from BASE_PORT
+# (default 28000): runui dashboard http://localhost:28099/, statekit health
+# console http://localhost:28099/health/. Override via BASE_PORT / DATA_DIR.
+example-runctl:
+	cd examples && go run -ldflags "$(LDFLAGS)" ../cmd/runctl -ui -c runctl.yaml
 
 DEMO_PORT ?= 18083
 BACKOFFICE_ADDR ?= :19090

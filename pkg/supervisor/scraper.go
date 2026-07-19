@@ -23,11 +23,14 @@ type componentScraper struct {
 // registers its outputs against the bundle's registry. The scraper does not
 // start polling until Run is called.
 //
-// ingestor is optional (the observer's store when observe is enabled). When
-// present, each component's own /escalations endpoint is scraped too, so
-// statekit-based children can surface their support incidents on the /health
-// console alongside the supervisor's lifecycle incidents.
-func newComponentScraper(cfg Config, bundle *statekitBundle, ingestor scraper.EscalationIngestor, logger *log.Logger) (*componentScraper, error) {
+// The ingestors are optional (the observer's state and metrics stores when
+// observe is enabled). The escalation ingestor surfaces component incidents
+// on the /health console; the metrics ingestor retains successful observations
+// for the console's per-target timeseries drawer.
+func newComponentScraper(
+	cfg Config, bundle *statekitBundle, incidents scraper.EscalationIngestor,
+	metrics scraper.MetricsIngestor, logger *log.Logger,
+) (*componentScraper, error) {
 	if len(cfg.Components) == 0 && len(cfg.ExternalComponents) == 0 {
 		return &componentScraper{cfg: cfg, logger: logger}, nil
 	}
@@ -42,14 +45,14 @@ func newComponentScraper(cfg Config, bundle *statekitBundle, ingestor scraper.Es
 
 	for _, c := range cfg.Components {
 		baseURL := fmt.Sprintf("http://127.0.0.1:%d", c.Port)
-		targets, err := scrapeTargetsFor(c.Name, baseURL, c.URLs, true, ingestor != nil)
+		targets, err := scrapeTargetsFor(c.Name, baseURL, c.URLs, true, incidents != nil)
 		if err != nil {
 			return nil, fmt.Errorf("component %q scrape targets: %w", c.Name, err)
 		}
 		scfg.Targets = append(scfg.Targets, targets...)
 	}
 	for _, c := range cfg.ExternalComponents {
-		targets, err := scrapeTargetsFor(c.Name, c.URL, c.URLs, false, ingestor != nil)
+		targets, err := scrapeTargetsFor(c.Name, c.URL, c.URLs, false, incidents != nil)
 		if err != nil {
 			return nil, fmt.Errorf("external component %q scrape targets: %w", c.Name, err)
 		}
@@ -57,8 +60,11 @@ func newComponentScraper(cfg Config, bundle *statekitBundle, ingestor scraper.Es
 	}
 
 	var opts []scraper.Option
-	if ingestor != nil {
-		opts = append(opts, scraper.WithEscalationIngestor(ingestor))
+	if incidents != nil {
+		opts = append(opts, scraper.WithEscalationIngestor(incidents))
+	}
+	if metrics != nil {
+		opts = append(opts, scraper.WithMetricsIngestor(metrics))
 	}
 	sc, err := scraper.New(scfg, opts...)
 	if err != nil {

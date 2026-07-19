@@ -139,11 +139,13 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 
 	if cfg.StateMonitor.Scrape.IsEnabled() {
-		var ingestor scraper.EscalationIngestor
+		var incidents scraper.EscalationIngestor
+		var metrics scraper.MetricsIngestor
 		if this.observer != nil {
-			ingestor = this.observer.store
+			incidents = this.observer.store
+			metrics = this.observer.store.MetricsStore()
 		}
-		sc, err := newComponentScraper(cfg, this.bundle, ingestor, logger)
+		sc, err := newComponentScraper(cfg, this.bundle, incidents, metrics, logger)
 		if err != nil {
 			return nil, err
 		}

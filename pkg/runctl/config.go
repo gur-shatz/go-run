@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -20,6 +21,7 @@ type Config struct {
 	Favicon           FaviconConfig           `yaml:"favicon,omitempty"`
 	Vars              map[string]string       `yaml:"vars,omitempty"`
 	API               APIConfig               `yaml:"api"`
+	Monitor           MonitorConfig           `yaml:"monitor,omitempty"`
 	LogsDir           string                  `yaml:"logs_dir,omitempty"`             // directory for auto-generated log files
 	LogsRotateOnStart *bool                   `yaml:"logs_rotate_on_start,omitempty"` // rename existing log files to *.<timestamp>.log on startup (default: true)
 	Targets           map[string]TargetConfig `yaml:"targets"`
@@ -39,10 +41,29 @@ type APIConfig struct {
 	Port int `yaml:"port"`
 }
 
+// MonitorConfig controls the statekit health monitor. When enabled (default),
+// runctl best-effort scrapes each target's backoffice for /state and /metrics,
+// aggregates the results into a statekit registry, and serves the health
+// console at /health plus the aggregate /state (YAML) and /metrics
+// (Prometheus). Targets that expose no statekit surfaces still show a
+// per-target responsiveness check; the rest is simply absent.
+type MonitorConfig struct {
+	Enabled    *bool         `yaml:"enabled,omitempty"`
+	Interval   time.Duration `yaml:"interval,omitempty"`   // scrape cadence, default 5s
+	Timeout    time.Duration `yaml:"timeout,omitempty"`    // per-request timeout, default 5s
+	Expiration time.Duration `yaml:"expiration,omitempty"` // staleness cutoff for scraped data, default 30s
+}
+
+// IsEnabled reports whether the monitor should run. An unset flag means on.
+func (this MonitorConfig) IsEnabled() bool {
+	return this.Enabled == nil || *this.Enabled
+}
+
 // TargetConfig describes a single managed target.
 type TargetConfig struct {
 	Config  string            `yaml:"config"` // path to config file (relative to runctl.yaml dir)
 	Enabled *bool             `yaml:"enabled,omitempty"`
+	Monitor *bool             `yaml:"monitor,omitempty"` // include in the health monitor scrape (default: true)
 	Links   []Link            `yaml:"links,omitempty"`
 	Vars    map[string]string `yaml:"vars,omitempty"` // per-target template vars (override global vars)
 
@@ -74,6 +95,16 @@ func (this TargetConfig) IsEnabled() bool {
 		return true
 	}
 	return *this.Enabled
+}
+
+// IsMonitored returns whether the health monitor should scrape this target's
+// backoffice (default: true). Set monitor: false for targets that never serve
+// a backoffice (e.g. build-only targets) to keep them off the health console.
+func (this TargetConfig) IsMonitored() bool {
+	if this.Monitor == nil {
+		return true
+	}
+	return *this.Monitor
 }
 
 // RotatesLogsOnStart returns whether existing log files should be renamed to a
@@ -172,6 +203,15 @@ func normalizeTargetName(name string) string {
 func (this *Config) Validate() error {
 	if this.API.Port == 0 {
 		this.API.Port = 9100
+	}
+	if this.Monitor.Interval == 0 {
+		this.Monitor.Interval = 5 * time.Second
+	}
+	if this.Monitor.Timeout == 0 {
+		this.Monitor.Timeout = 5 * time.Second
+	}
+	if this.Monitor.Expiration == 0 {
+		this.Monitor.Expiration = 30 * time.Second
 	}
 	if this.Favicon.Name == "" {
 		this.Favicon.Name = "RC"

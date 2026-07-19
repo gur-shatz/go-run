@@ -36,8 +36,11 @@ api:
   port: [[.RUNUI_PORT| int]]
 
 targets:
+  # monitor: false — these examples do not serve a backoffice, so the health
+  # monitor has nothing to scrape from them. backoffice-demo stays monitored.
   hello-go:
     config: hello-go/execrun.yaml
+    monitor: false
     vars:
       HELLO_GREETING: '{{ .HELLO_GREETING | default "None" }} extended'
     links:
@@ -47,9 +50,11 @@ targets:
 
   build-css:
     config: build-css/execrun.yaml
+    monitor: false
 
   echo-server:
     config: echo-server/execrun.yaml
+    monitor: false
     links:
       - name: Echo
         description: Echo server endpoint
@@ -57,6 +62,7 @@ targets:
 
   ticker:
     config: ticker/execrun.yaml
+    monitor: false
 
   backoffice-demo:
     config: backoffice-demo/execrun.yaml

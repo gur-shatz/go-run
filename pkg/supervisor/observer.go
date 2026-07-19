@@ -37,10 +37,13 @@ type observer struct {
 // that piece to in-memory with a warning: the health console must never
 // block supervision.
 func newObserver(cfg ObserveConfig, registry *statekit.Registry, logger *log.Logger) *observer {
-	opts := []storage.MemoryStoreOption{storage.WithDocumentCache(
-		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](cfg.CacheMB<<20),
-		5*time.Minute,
-	)}
+	opts := []storage.MemoryStoreOption{
+		storage.WithDocumentCache(
+			storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](cfg.CacheMB<<20),
+			5*time.Minute,
+		),
+		storage.WithMetricsStore(storage.NewMemoryMetricsStore(0, 0)),
+	}
 	if cfg.HistoryDir != "" {
 		chart, err := storage.NewFileChartStore(filepath.Join(cfg.HistoryDir, "chart"), time.Minute, 24*60)
 		if err != nil {

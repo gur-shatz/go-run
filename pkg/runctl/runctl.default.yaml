@@ -7,6 +7,8 @@
 # Each target only requires "config" — everything else is optional:
 #   config:  path to execrun config file, relative to runctl.yaml's directory (required)
 #   enabled: start on launch (default: true)
+#   monitor: scrape the target's backoffice for the /health console (default: true).
+#            Set false for targets that never serve a backoffice (e.g. build-only).
 #   links:   named URLs or file paths for the target (default: [])
 #            - url link:  { name: "App", url: "http://localhost:8080" }
 #            - file link: { name: "Config", file: "./config.yaml" }
@@ -32,6 +34,14 @@
 
 api:
   port: 9100  # HTTP API port
+
+# monitor: statekit health aggregation. Scrapes each target's backoffice for
+#          /state and /metrics and serves the console at /health (default: on).
+# monitor:
+#   enabled: true
+#   interval: 5s     # scrape cadence
+#   timeout: 5s      # per-request timeout
+#   expiration: 30s  # staleness cutoff for scraped data
 
 # logs_dir: /tmp/runctl-logs
 
