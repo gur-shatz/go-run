@@ -1,0 +1,72 @@
+# Factory-version demo — the A/B firmware pattern for a "fully baked" yet
+# self-updating container image.
+#
+# The hello component is baked into ./factory/hello (standing in for a
+# read-only image layer, outside the state dir). The state dir starts empty
+# and the file:// origin does not exist yet, so the supervisor falls through
+# to the factory version and runs it. Watch at http://127.0.0.1:9090/.
+#
+# Demo arc (targets in the top-level Makefile):
+#   1. make example-supervisor-factory
+#        boots hello from the factory bundle; current.txt is written with the
+#        factory version name, so later boots are ordinary.
+#   2. make example-supervisor-factory-publish   (second terminal)
+#        publishes v1 into ./fixture — the supervisor's next poll downloads it
+#        and switches away from the factory. Delete ./fixture and restart with
+#        a wiped state dir to land on the factory again.
+#   3. make example-supervisor-factory-limp
+#        same boot, but the state dir is read-only. The supervisor starts
+#        anyway (limp mode): the factory runs, version state lives in memory,
+#        and /metrics reports supervisor_state_writable 0.
+
+state_dir: ./state
+
+stability_time: 30s
+crash_window: 30s
+crash_threshold: 3
+exec_fail_threshold: 2
+kill_grace_period: 2s
+version_folder_retention: 2
+reject_expiry: 2m
+
+supervisor:
+  bind_address: 127.0.0.1:9090
+  favicon:
+    name: FV
+  metric_labels:
+    source: example-supervisor-factory
+
+statemonitor:
+  scrape:
+    enabled: true
+  observe:
+    enabled: true
+
+# Customer-side override of the vendor default GREETING baked into the
+# bundle's manifest.yml — visible on hello's /greet endpoint.
+vars:
+  GREETING: "Hi from the factory demo supervisor.yml"
+
+# file:// origin next to this file. Intentionally absent until the publish
+# target creates it: an unreachable origin at boot is exactly the scenario the
+# factory version exists for (boot must never block on the origin).
+remote:
+  base_url: file://./fixture
+  target: required.txt
+  polling_interval: 5s
+  signature_public_key_path: "" # empty: skip Ed25519 verify (dev / trusted local FS only)
+
+components:
+  - name: hello
+    description: "HTTP server with an image-baked factory fallback"
+    port: 18090
+    command: "./bin/hello --port=18090"
+    # The factory block: a version that is always "prepared". dir resolves
+    # relative to this file and must exist and be non-empty at config load.
+    # Nothing is fetched and no signature is checked for this version name —
+    # trust comes from the image, same as the supervisor binary itself.
+    factory:
+      dir: ./factory/hello
+      version: v0-factory
+    proxy_urls:
+      greet: /greet

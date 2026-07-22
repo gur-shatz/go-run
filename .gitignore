@@ -15,6 +15,9 @@ examples/**/*.sum
 bin/
 build/
 examples/backoffice-demo/generated-logs/
+examples/supervisor-factory/factory/
+examples/supervisor-factory/state/
+examples/supervisor-factory/fixture/
 !examples/supervisor-local/build/
 !examples/supervisor-local/build/hello/
 !examples/supervisor-local/build/hello/current.txt

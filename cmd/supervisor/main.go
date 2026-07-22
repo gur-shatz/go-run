@@ -73,13 +73,17 @@ func run() (err error) {
 		return err
 	}
 
+	// An unusable state dir is not fatal: the supervisor runs degraded (limp
+	// mode) so a container installed without a writable state dir still boots
+	// whatever factory versions its components carry.
 	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
-		return fmt.Errorf("create state_dir %s: %w", cfg.StateDir, err)
+		log.Warn("create state_dir %s: %v; continuing degraded", cfg.StateDir, err)
 	}
 
 	processLog, err := supervisor.StartProcessLog(supervisor.NewPaths(cfg.StateDir), cfg.LogMaxSize, cfg.LogMaxFiles)
 	if err != nil {
-		return err
+		log.Warn("supervisor process log unavailable: %v; logging to console only", err)
+		processLog = nil
 	}
 	var shutdownSignal atomic.Value
 	defer func() {
@@ -99,13 +103,22 @@ func run() (err error) {
 		}
 		_ = processLog.Mark("exited", "")
 	}()
-	log.Status("process log: %s", processLog.Path)
+	if processLog != nil {
+		log.Status("process log: %s", processLog.Path)
+	}
 
+	// A held lock (another supervisor on this state dir) is fatal. A lock that
+	// cannot be created (read-only state dir) is not: containers are single
+	// instance by construction, the lock protects shared-host scenarios.
 	lock, err := supervisor.AcquireLock(supervisor.NewPaths(cfg.StateDir).SupervisorLock())
 	if err != nil {
-		return err
+		if errors.Is(err, supervisor.ErrAlreadyRunning) {
+			return err
+		}
+		log.Warn("cannot create supervisor.lock: %v; continuing without lock", err)
+	} else {
+		defer lock.Release()
 	}
-	defer lock.Release()
 
 	sup, err := supervisor.New(*cfg, supervisor.Options{
 		Verbose: *verbose,

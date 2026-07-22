@@ -9,8 +9,67 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
+
+// stateOverlay keeps a component's version state machine in memory when its
+// state root is not writable (limp mode). Reads fall through to whatever the
+// (possibly read-only) disk holds until a value is written this session;
+// writes only touch memory. Crash counting, rejection, and backoff therefore
+// work for the session but do not survive a supervisor restart — acceptable,
+// because a restart lands back on the factory version.
+type stateOverlay struct {
+	mu         sync.Mutex
+	current    *string
+	stable     *string
+	rejects    []RejectEntry
+	rejectsSet bool
+}
+
+func (this *stateOverlay) get(field **string) (string, bool) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if *field == nil {
+		return "", false
+	}
+	return **field, true
+}
+
+func (this *stateOverlay) set(field **string, value string) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	*field = &value
+}
+
+func (this *stateOverlay) getRejects() ([]RejectEntry, bool) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if !this.rejectsSet {
+		return nil, false
+	}
+	return append([]RejectEntry(nil), this.rejects...), true
+}
+
+func (this *stateOverlay) setRejects(entries []RejectEntry) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	this.rejects = append([]RejectEntry(nil), entries...)
+	this.rejectsSet = true
+}
+
+// probeStateWritable reports whether dir accepts file creation, by creating
+// and removing a probe file. This is the one startup writability check limp
+// mode hangs off.
+func probeStateWritable(dir string) error {
+	probe, err := os.CreateTemp(dir, ".writable.*.probe")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	return os.Remove(name)
+}
 
 // atomicWrite writes data to path via the WriteFile → fsync → Rename pattern.
 // The parent directory is created with 0755 if it does not exist. The temp file
@@ -76,21 +135,39 @@ func writeVersionFile(path, version string) error {
 
 // ReadStable returns the contents of stable.txt for a component, or "" if absent.
 func (this ComponentPaths) ReadStable() (string, error) {
+	if this.overlay != nil {
+		if v, ok := this.overlay.get(&this.overlay.stable); ok {
+			return v, nil
+		}
+	}
 	return readVersionFile(this.Stable())
 }
 
 // WriteStable atomically replaces stable.txt with the given version string.
 func (this ComponentPaths) WriteStable(version string) error {
+	if this.overlay != nil {
+		this.overlay.set(&this.overlay.stable, version)
+		return nil
+	}
 	return writeVersionFile(this.Stable(), version)
 }
 
 // ReadCurrent returns the contents of current.txt for a component, or "" if absent.
 func (this ComponentPaths) ReadCurrent() (string, error) {
+	if this.overlay != nil {
+		if v, ok := this.overlay.get(&this.overlay.current); ok {
+			return v, nil
+		}
+	}
 	return readVersionFile(this.Current())
 }
 
 // WriteCurrent atomically replaces current.txt. This is the commit point of an install.
 func (this ComponentPaths) WriteCurrent(version string) error {
+	if this.overlay != nil {
+		this.overlay.set(&this.overlay.current, version)
+		return nil
+	}
 	return writeVersionFile(this.Current(), version)
 }
 
@@ -108,6 +185,11 @@ type RejectEntry struct {
 // (no timestamp) is preserved with RejectedAt = time.Time{}. Returns an empty
 // slice if the file does not exist.
 func (this ComponentPaths) ReadRejectEntries() ([]RejectEntry, error) {
+	if this.overlay != nil {
+		if entries, ok := this.overlay.getRejects(); ok {
+			return entries, nil
+		}
+	}
 	f, err := os.Open(this.Rejects())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -231,6 +313,10 @@ func (this ComponentPaths) AppendReject(version string) error {
 	}
 	if !replaced {
 		existing = append(existing, RejectEntry{Version: version, RejectedAt: now})
+	}
+	if this.overlay != nil {
+		this.overlay.setRejects(existing)
+		return nil
 	}
 
 	var buf strings.Builder

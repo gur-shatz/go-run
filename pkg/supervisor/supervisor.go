@@ -81,26 +81,43 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	}
 	cfg.StateDir = absStateDir
 
-	if err := os.MkdirAll(absStateDir, 0755); err != nil {
-		return nil, fmt.Errorf("create state_dir %s: %w", absStateDir, err)
-	}
-
-	paths := NewPaths(absStateDir)
-
-	for _, c := range cfg.Components {
-		if err := paths.Component(c.Name).EnsureDirs(); err != nil {
-			return nil, fmt.Errorf("prepare component %q: %w", c.Name, err)
-		}
-		if _, err := CleanOrphanVersions(paths.Component(c.Name), cfg.VersionFolderRetention); err != nil {
-			return nil, fmt.Errorf("gc orphan versions for %q: %w", c.Name, err)
-		}
-	}
-
 	prefix := opts.LogPrefix
 	if prefix == "" {
 		prefix = "[supervisor]"
 	}
 	logger := log.New(prefix, opts.Verbose)
+
+	// State-dir preparation and the one writability probe per component root.
+	// A root that cannot be created or written does not abort startup: the
+	// component runs in limp mode with its version state kept in memory, so a
+	// container installed without a writable state dir (docker run
+	// --read-only, misconfigured volume, full disk) still boots its factory
+	// version instead of crashing.
+	if err := os.MkdirAll(absStateDir, 0755); err != nil {
+		logger.Warn("create state_dir %s: %v; state will not persist", absStateDir, err)
+	}
+
+	paths := NewPaths(absStateDir)
+
+	componentPaths := make(map[string]ComponentPaths, len(cfg.Components))
+	stateUnwritableReason := ""
+	for _, c := range cfg.Components {
+		cpaths := paths.Component(c.Name)
+		probeErr := cpaths.EnsureDirs()
+		if probeErr == nil {
+			probeErr = probeStateWritable(cpaths.Root)
+		}
+		if probeErr != nil {
+			logger.Warn("component %q state root is not writable (%v); running with in-memory state — crash tracking and installed updates will not survive a restart", c.Name, probeErr)
+			cpaths = cpaths.WithMemoryState()
+			if stateUnwritableReason == "" {
+				stateUnwritableReason = probeErr.Error()
+			}
+		} else if _, err := CleanOrphanVersions(cpaths, cfg.VersionFolderRetention); err != nil {
+			return nil, fmt.Errorf("gc orphan versions for %q: %w", c.Name, err)
+		}
+		componentPaths[c.Name] = cpaths
+	}
 
 	// Resolve the signing public key.
 	pub, err := resolvePublicKey(cfg, opts, logger)
@@ -120,11 +137,15 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	this.lastPoll.Store(time.Time{})
 	this.lastPollError.Store("")
 
+	if stateUnwritableReason != "" {
+		this.bundle.observeStateUnwritable("state dir not writable: " + stateUnwritableReason)
+	}
+
 	// Build one Component per config entry.
 	for _, ccfg := range cfg.Components {
 		client := NewRemoteClient(ccfg.Remote.Secret)
 		install := &Installer{Remote: client, PublicKey: pub}
-		comp := NewComponent(ccfg, paths.Component(ccfg.Name), install, cfg, this.makeForcedGetter(ccfg.Name), this.bundle, logger)
+		comp := NewComponent(ccfg, componentPaths[ccfg.Name], install, cfg, this.makeForcedGetter(ccfg.Name), this.bundle, logger)
 		this.components = append(this.components, comp)
 	}
 

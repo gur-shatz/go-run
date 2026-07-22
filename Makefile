@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-runctl example-backoffice-demo example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-runctl example-backoffice-demo example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak example-supervisor-factory example-supervisor-factory-bundle example-supervisor-factory-publish example-supervisor-factory-limp package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -25,6 +25,8 @@ test:
 clean:
 	rm -rf bin
 	rm -rf examples/supervisor/state examples/supervisor/fixture examples/supervisor/origin/keys
+	chmod -R u+w examples/supervisor-factory/state 2>/dev/null || true
+	rm -rf examples/supervisor-factory/state examples/supervisor-factory/fixture examples/supervisor-factory/factory
 	rm -rf examples/supervisor-local/fixture examples/supervisor-local/build/hello/versions
 	rm -rf examples/supervisor-local/build/logs examples/supervisor-local/build/supervisor.lock
 	rm -f examples/supervisor-local/build/hello/hello.bin examples/supervisor-local/build/hello/stable.txt
@@ -94,6 +96,51 @@ example-supervisor-local-external:
 # http://127.0.0.1:9191/ and /backoffice/memory/incidents.
 example-supervisor-leak:
 	LDFLAGS="$(LDFLAGS)" examples/supervisor-local/run-leak-demo.sh
+
+SUPERVISOR_FACTORY_DIR     := examples/supervisor-factory
+SUPERVISOR_FACTORY_VERSION := v1
+
+# Bake the hello component into ./factory/hello — the demo's stand-in for a
+# read-only image layer outside the state dir.
+example-supervisor-factory-bundle:
+	@rm -rf $(SUPERVISOR_FACTORY_DIR)/factory
+	@mkdir -p $(SUPERVISOR_FACTORY_DIR)/factory/hello/bin
+	cd examples/supervisor/hello && go build -o ../../supervisor-factory/factory/hello/bin/hello .
+	cp examples/supervisor/hello/manifest.yml $(SUPERVISOR_FACTORY_DIR)/factory/hello/manifest.yml
+	cp examples/supervisor/hello/greeting.txt.tmpl $(SUPERVISOR_FACTORY_DIR)/factory/hello/greeting.txt.tmpl
+
+# Factory-version demo: empty state dir + no origin → the supervisor falls
+# through to the baked factory bundle and runs it. /state on
+# http://127.0.0.1:9090. Publish v1 (target below) to watch it switch away
+# from the factory; wipe ./state and ./fixture to land on the factory again.
+example-supervisor-factory: example-supervisor-factory-bundle
+	@rm -rf $(SUPERVISOR_FACTORY_DIR)/state $(SUPERVISOR_FACTORY_DIR)/fixture
+	cd $(SUPERVISOR_FACTORY_DIR) && go run -ldflags "$(LDFLAGS)" ../../cmd/supervisor -c supervisor.yml -v
+
+# Publish v1 into the factory demo's file:// fixture (run in a second
+# terminal). The running supervisor's next poll downloads and switches to it.
+example-supervisor-factory-publish:
+	@rm -rf $(SUPERVISOR_FACTORY_DIR)/fixture
+	@mkdir -p $(SUPERVISOR_FACTORY_DIR)/fixture/hello/versions $(SUPERVISOR_FACTORY_DIR)/fixture/hello/images
+	@printf '%s\n' '$(SUPERVISOR_FACTORY_VERSION)' > $(SUPERVISOR_FACTORY_DIR)/fixture/hello/versions/required.txt
+	@rm -rf bin/.factory-stage && mkdir -p bin/.factory-stage/bin
+	cd examples/supervisor/hello && go build -o ../../../bin/.factory-stage/bin/hello .
+	cp examples/supervisor/hello/manifest.yml bin/.factory-stage/manifest.yml
+	cp examples/supervisor/hello/greeting.txt.tmpl bin/.factory-stage/greeting.txt.tmpl
+	tar -C bin/.factory-stage -czf $(SUPERVISOR_FACTORY_DIR)/fixture/hello/images/$(SUPERVISOR_FACTORY_VERSION)_$(SUPERVISOR_GOOS)_$(SUPERVISOR_GOARCH).tar.gz bin/hello manifest.yml greeting.txt.tmpl
+	@rm -rf bin/.factory-stage
+	@echo "published $(SUPERVISOR_FACTORY_VERSION); the running supervisor picks it up on its next poll"
+
+# Limp-mode demo: the same factory boot, but the state dir is read-only
+# (docker run --read-only stand-in). The supervisor starts anyway, runs the
+# factory version with in-memory state, and /metrics reports
+# supervisor_state_writable 0. `make clean` restores the dir's permissions.
+example-supervisor-factory-limp: example-supervisor-factory-bundle
+	@chmod -R u+w $(SUPERVISOR_FACTORY_DIR)/state 2>/dev/null || true
+	@rm -rf $(SUPERVISOR_FACTORY_DIR)/state $(SUPERVISOR_FACTORY_DIR)/fixture
+	@mkdir -p $(SUPERVISOR_FACTORY_DIR)/state
+	@chmod a-w $(SUPERVISOR_FACTORY_DIR)/state
+	cd $(SUPERVISOR_FACTORY_DIR) && go run -ldflags "$(LDFLAGS)" ../../cmd/supervisor -c supervisor.yml -v
 
 package-supervisor:
 	./deploy/supervisor/package.sh

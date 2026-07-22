@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -418,6 +419,21 @@ type ComponentConfig struct {
 	// Memory is this component's slice of the workload budget plus its
 	// tracking flag. nil leaves the component tracked but unbudgeted.
 	Memory *ComponentMemoryConfig `yaml:"memory,omitempty"`
+
+	// Factory is an optional read-only, image-provided fallback version living
+	// outside the state dir (the A/B firmware pattern). The version machinery
+	// treats it as a version that is always prepared: it is the boot target when
+	// nothing usable is in the state dir and the stable of last resort when a
+	// demote has nowhere else to go.
+	Factory *FactoryConfig `yaml:"factory,omitempty"`
+}
+
+// FactoryConfig names the baked bundle directory and the version identity it
+// carries. Both fields are required together. Dir resolves like other config
+// paths: absolute, or relative to the directory holding supervisor.yml.
+type FactoryConfig struct {
+	Dir     string `yaml:"dir"`
+	Version string `yaml:"version"`
 }
 
 // LogFormat selects how captured component logs are parsed in the backoffice
@@ -504,6 +520,9 @@ func LoadConfig(path string, opts ...config.Option) (*Config, error) {
 	for i := range cfg.Components {
 		cfg.Components[i].Remote.BaseURL = resolveFileURL(cfg.Components[i].Remote.BaseURL, absConfigDir)
 		cfg.Components[i].Readme = resolveLocalPath(cfg.Components[i].Readme, absConfigDir)
+		if f := cfg.Components[i].Factory; f != nil {
+			f.Dir = resolveLocalPath(f.Dir, absConfigDir)
+		}
 	}
 	for i := range cfg.ExternalComponents {
 		cfg.ExternalComponents[i].Readme = resolveLocalPath(cfg.ExternalComponents[i].Readme, absConfigDir)
@@ -770,6 +789,9 @@ func (this *Config) Validate() error {
 		if err := validateProxyURLs(c.ProxyURLs); err != nil {
 			return fmt.Errorf("components[%q]: proxy_urls: %w", c.Name, err)
 		}
+		if err := validateFactory(c.Factory); err != nil {
+			return fmt.Errorf("components[%q]: factory: %w", c.Name, err)
+		}
 		portSeen[c.Port] = c.Name
 	}
 	for i, c := range this.ExternalComponents {
@@ -789,6 +811,29 @@ func (this *Config) Validate() error {
 		if err := validateProxyURLs(c.ProxyURLs); err != nil {
 			return fmt.Errorf("external_components[%q]: proxy_urls: %w", c.Name, err)
 		}
+	}
+	return nil
+}
+
+// validateFactory checks a component's factory block. A missing or empty
+// factory dir is an image build error, not a runtime condition, so it fails
+// config load rather than being discovered mid-supervision.
+func validateFactory(f *FactoryConfig) error {
+	if f == nil {
+		return nil
+	}
+	if f.Dir == "" || f.Version == "" {
+		return fmt.Errorf("dir and version are both required")
+	}
+	if f.Version == localVersion {
+		return fmt.Errorf("version must not be %q", localVersion)
+	}
+	entries, err := os.ReadDir(f.Dir)
+	if err != nil {
+		return fmt.Errorf("dir %s is not readable: %w", f.Dir, err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("dir %s is empty", f.Dir)
 	}
 	return nil
 }

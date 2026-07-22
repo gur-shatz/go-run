@@ -78,6 +78,17 @@ type Component struct {
 	// when there are no leaves (non-cgroup2 platform or enforcement disabled).
 	cgroupAttach func(cmd *exec.Cmd) func(pid int)
 
+	// Limp-mode warn-once flags for the launch-path fallbacks (kill socket,
+	// on-disk child log). Only touched by the lifecycle goroutine.
+	warnedNoKillSock bool
+	warnedNoChildLog bool
+
+	// limpPendingUpdate carries this reconcile cycle's "update available but
+	// state dir is not writable" message so the prepared-OK push at the end of
+	// the cycle does not erase it from the update leaf. Set and read by the
+	// updater goroutine only; empty when nothing is pending.
+	limpPendingUpdate string
+
 	// Channel from Updater → Lifecycle. Coalescing: at most one pending
 	// switch at a time; signalSwitch replaces an older queued value.
 	switchCh chan string
@@ -131,6 +142,9 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 	}
 	if cfg.Remote.BaseURL != "" && !cfg.Remote.EnabledSet {
 		cfg.Remote.Enabled = true
+	}
+	if cfg.Factory != nil {
+		paths = paths.WithFactory(cfg.Factory.Dir, cfg.Factory.Version)
 	}
 	return &Component{
 		cfg:             cfg,
@@ -497,7 +511,14 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 		return
 	}
 	if this.bundle != nil {
-		this.bundle.observeUpdateOK(this.cfg.Name, "prepared "+target)
+		if this.limpPendingUpdate != "" {
+			// Keep the "update available, state dir unwritable" signal on the
+			// health surface — it is the operator's cue that the install is
+			// degraded rather than current.
+			this.bundle.observeUpdateWarn(this.cfg.Name, this.limpPendingUpdate)
+		} else {
+			this.bundle.observeUpdateOK(this.cfg.Name, "prepared "+target)
+		}
 	}
 
 	if err := this.SwitchToVersion(ctx, target); err != nil {
@@ -529,6 +550,7 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 // observeUpdateOK / observeUpdateError so the YAML reader always knows
 // "did the supervisor talk to the vendor recently?"
 func (this *Component) computeDesiredVersion(ctx context.Context) (string, error) {
+	this.limpPendingUpdate = ""
 	override := this.getForced()
 	stable, _ := this.paths.ReadStable()
 	current, _ := this.paths.ReadCurrent()
@@ -546,26 +568,59 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 		target = stable
 	default:
 		if !this.cfg.Remote.Enabled {
-			if current == "" {
+			if fv := this.factoryVersion(); fv != "" && !this.versionUsable(current) {
+				if this.bundle != nil {
+					this.bundle.observeUpdateOK(this.cfg.Name, "factory "+fv)
+				}
+				target = fv
+			} else if current == "" {
 				this.markWarn("updates disabled: current.txt is empty")
 				return "", nil
+			} else {
+				if this.bundle != nil {
+					this.bundle.observeUpdateOK(this.cfg.Name, "local current = "+current)
+				}
+				target = current
 			}
-			if this.bundle != nil {
-				this.bundle.observeUpdateOK(this.cfg.Name, "local current = "+current)
-			}
-			target = current
 		} else {
 			remoteVersion, err := this.install.Remote.ResolveVersion(ctx, this.cfg.Remote.BaseURL, this.cfg.Name, this.cfg.Remote.Target)
 			if err != nil {
 				if this.bundle != nil {
 					this.bundle.observeUpdateError(this.cfg.Name, err)
 				}
-				return "", err
+				// Boot must never block on the origin: with nothing usable in
+				// the state dir, fall through to the baked factory version and
+				// let the poll ticker adopt the remote target once it resolves.
+				if fv := this.factoryVersion(); fv != "" && !this.versionUsable(current) {
+					target = fv
+				} else {
+					return "", err
+				}
+			} else {
+				if this.bundle != nil {
+					this.bundle.observeUpdateOK(this.cfg.Name, "remote required = "+remoteVersion)
+				}
+				target = remoteVersion
 			}
-			if this.bundle != nil {
-				this.bundle.observeUpdateOK(this.cfg.Name, "remote required = "+remoteVersion)
-			}
-			target = remoteVersion
+		}
+	}
+
+	// Limp mode: an unusable target cannot be installed (the state dir takes
+	// no writes), so run what is runnable instead — but only after the poll
+	// above, which stays live so health keeps reporting the pending remote
+	// target ("update available, state dir unwritable").
+	if !this.paths.Writable() && !this.versionUsable(target) {
+		this.limpPendingUpdate = "update " + target + " available but state dir is not writable"
+		if this.bundle != nil {
+			this.bundle.observeUpdateWarn(this.cfg.Name, this.limpPendingUpdate)
+		}
+		switch {
+		case this.versionUsable(current):
+			target = current
+		case this.factoryVersion() != "":
+			target = this.factoryVersion()
+		default:
+			return "", nil
 		}
 	}
 
@@ -599,12 +654,31 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 // failure and the version never makes it to current.txt. This is a best-effort
 // check only; the application remains the authority for loading its config.
 func (this *Component) PrepareVersion(ctx context.Context, version string) error {
-	if version != localVersion && !versionExtracted(this.paths.VersionDir(version)) {
+	// The factory version is always "prepared": its content ships in the image,
+	// so nothing is fetched and no signature is checked (trust comes from the
+	// image, same as the supervisor binary).
+	if version != localVersion && version != this.factoryVersion() && !versionExtracted(this.paths.VersionDir(version)) {
 		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version); err != nil {
 			return err
 		}
 	}
 	return this.validateTemplates(version)
+}
+
+// factoryVersion returns the configured factory version name, or "" when the
+// component has no factory block.
+func (this *Component) factoryVersion() string {
+	if this.cfg.Factory == nil {
+		return ""
+	}
+	return this.cfg.Factory.Version
+}
+
+// versionUsable reports whether the named version can be launched right now:
+// non-empty and resolving to a non-empty directory. The factory version is
+// usable by construction (config load verifies its dir).
+func (this *Component) versionUsable(version string) bool {
+	return version != "" && versionExtracted(this.paths.VersionDir(version))
 }
 
 func (this *Component) launchVars(version string) (LaunchVars, error) {
@@ -929,15 +1003,35 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 		this.logger.Status("[%s] kill socket signalled", this.cfg.Name)
 	})
 	if err != nil {
-		return nil, err
+		if this.paths.Writable() {
+			return nil, err
+		}
+		// Limp mode: the kill socket is a graceful-stop nicety; StopChild
+		// already degrades to SIGTERM → SIGKILL without it.
+		if !this.warnedNoKillSock {
+			this.warnedNoKillSock = true
+			this.logger.Warn("[%s] no kill socket (state dir not writable); graceful stop degrades to SIGTERM", this.cfg.Name)
+		}
+		ks = nil
 	}
 
 	// Open the per-version rotating process log. The child also gets logDir via
 	// OP_LOG_DIR so its own application logs can live alongside.
 	childLog, err := openRotatingFile(this.paths.Log(version), this.logMaxSize, this.logMaxFiles)
 	if err != nil {
-		_ = ks.Close()
-		return nil, fmt.Errorf("open component log: %w", err)
+		if this.paths.Writable() {
+			if ks != nil {
+				_ = ks.Close()
+			}
+			return nil, fmt.Errorf("open component log: %w", err)
+		}
+		// Limp mode: pass child output through to the console only — in a
+		// container that is where `docker logs` looks anyway.
+		if !this.warnedNoChildLog {
+			this.warnedNoChildLog = true
+			this.logger.Warn("[%s] no on-disk component log (state dir not writable); child output goes to console only", this.cfg.Name)
+		}
+		childLog = nil
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -945,12 +1039,22 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	// MultiWriter: kubectl-logs-style process output AND the per-version
 	// on-disk copy. The process output uses the original stdout/stderr, so
 	// component output does not pollute the supervisor's own process log.
-	cmd.Stdout = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStdout()), childLog)
-	cmd.Stderr = io.MultiWriter(newPrefixedWriter(this.cfg.Name, processConsoleStderr()), childLog)
+	stdout := io.Writer(newPrefixedWriter(this.cfg.Name, processConsoleStdout()))
+	stderr := io.Writer(newPrefixedWriter(this.cfg.Name, processConsoleStderr()))
+	if childLog != nil {
+		stdout = io.MultiWriter(stdout, childLog)
+		stderr = io.MultiWriter(stderr, childLog)
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.Env, err = this.buildEnv(vars)
 	if err != nil {
-		_ = childLog.Close()
-		_ = ks.Close()
+		if childLog != nil {
+			_ = childLog.Close()
+		}
+		if ks != nil {
+			_ = ks.Close()
+		}
 		return nil, err
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -965,8 +1069,12 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 
 	this.logger.Status("[%s] launching %s port=%d (logs=%s)", this.cfg.Name, version, port, logDir)
 	if err := cmd.Start(); err != nil {
-		_ = childLog.Close()
-		_ = ks.Close()
+		if childLog != nil {
+			_ = childLog.Close()
+		}
+		if ks != nil {
+			_ = ks.Close()
+		}
 		return nil, err
 	}
 	if chargeLeaf != nil {
@@ -1001,18 +1109,23 @@ func (this *Component) StopChild(rc *runningChild) {
 	if rc == nil {
 		return
 	}
-	defer rc.killSocket.Close()
+	if rc.killSocket != nil {
+		defer rc.killSocket.Close()
+	}
 
 	if rc.cmd == nil || rc.cmd.Process == nil {
 		return
 	}
 
-	go tryKillSocketSelf(rc.killSocket.Path())
+	// Without a kill socket (limp mode) skip straight to SIGTERM.
+	if rc.killSocket != nil {
+		go tryKillSocketSelf(rc.killSocket.Path())
 
-	select {
-	case <-rc.exitCh:
-		return
-	case <-time.After(this.killGracePeriod):
+		select {
+		case <-rc.exitCh:
+			return
+		case <-time.After(this.killGracePeriod):
+		}
 	}
 
 	_ = syscall.Kill(-rc.cmd.Process.Pid, syscall.SIGTERM)
@@ -1070,9 +1183,11 @@ func (this *Component) HandleChildExit(rc *runningChild, exit childExit) time.Du
 }
 
 // DemoteToStable handles the bad-version-criterion outcome: append to
-// rejects.txt and either swap current to a different stable (preferred) or
-// keep retrying the rejected version with growing backoff. The lifecycle
-// loop's sleep call (sleepOrSwitch) provides the spacing in both cases.
+// rejects.txt and swap current to a different stable (preferred), fall back
+// to the factory version when stable is absent or unusable (stable of last
+// resort), or keep retrying the rejected version with growing backoff. The
+// lifecycle loop's sleep call (sleepOrSwitch) provides the spacing in all
+// cases.
 func (this *Component) DemoteToStable(version, reason string) {
 	this.logger.Warn("[%s] demoting %s: %s", this.cfg.Name, version, reason)
 	if err := this.paths.AppendReject(version); err != nil {
@@ -1080,7 +1195,9 @@ func (this *Component) DemoteToStable(version, reason string) {
 		return
 	}
 	stable, _ := this.paths.ReadStable()
-	if stable != "" && stable != version {
+	// With a factory configured, an unusable stable no longer counts as a
+	// regression target — the factory floor below catches it instead.
+	if stable != "" && stable != version && (this.factoryVersion() == "" || this.versionUsable(stable)) {
 		if err := this.paths.WriteCurrent(stable); err != nil {
 			this.markFail("write current to stable: " + err.Error())
 			return
@@ -1092,6 +1209,22 @@ func (this *Component) DemoteToStable(version, reason string) {
 			this.bundle.incidentRollback(this.cfg.Name, version, stable, reason)
 		}
 		return
+	}
+	if fv := this.factoryVersion(); fv != "" && fv != version {
+		rejected, _ := this.paths.IsActivelyRejected(fv, time.Now(), this.rejectExpiry)
+		if !rejected {
+			if err := this.paths.WriteCurrent(fv); err != nil {
+				this.markFail("write current to factory: " + err.Error())
+				return
+			}
+			this.counters.Reset()
+			this.backoff.Reset()
+			this.markWarn("demoted to factory " + fv)
+			if this.bundle != nil {
+				this.bundle.incidentRollback(this.cfg.Name, version, fv, reason)
+			}
+			return
+		}
 	}
 	// The demote was logged; the regression to stable failed. Surface the
 	// specific reason as a second warning so an operator scanning logs sees

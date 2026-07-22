@@ -592,6 +592,20 @@ func (this *statekitBundle) observeMemory(name string, current, high, limit int6
 // observeMemorySubsystemHealthy marks the memory-subsystem state pass, with a
 // short detail (typically the resolved mode). A no-op when the subsystem is
 // disabled (leaf not registered).
+// observeStateUnwritable surfaces limp mode on the health console and
+// metrics: a supervisor-scoped "state.writable" leaf at warn plus
+// supervisor_state_writable = 0. Registered lazily (only when degradation is
+// detected at startup) so a healthy supervisor's /state and /metrics output
+// is unchanged. Never flips back within a run — writability is probed once.
+func (this *statekitBundle) observeStateUnwritable(reason string) {
+	st := statekit.NewManualState("state.writable")
+	st.Warn(reason, nil)
+	_ = this.registry.Register(&taggedState{underlying: st, scrapedFrom: "supervisor"})
+	g := statekit.NewGauge("supervisor_state_writable", "1 when the state dir accepts writes; 0 when the supervisor runs with in-memory version state (limp mode).")
+	g.Set(0)
+	_ = this.registry.RegisterCollectors(g)
+}
+
 func (this *statekitBundle) observeMemorySubsystemHealthy(detail string) {
 	if this.memorySubsystem != nil {
 		this.memorySubsystem.Pass(detail, nil)

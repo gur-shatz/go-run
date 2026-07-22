@@ -68,9 +68,44 @@ func (this Paths) Component(name string) ComponentPaths {
 	return ComponentPaths{Root: filepath.Join(this.StateDir, name)}
 }
 
-// ComponentPaths owns every path under state_dir/<component>/.
+// ComponentPaths owns every path under state_dir/<component>/. When a factory
+// version is configured (WithFactory), the factory name resolves to its
+// read-only image-provided directory instead of versions/<name> — the one
+// place version-name → directory mapping is special-cased, so every call site
+// (launch cwd, extracted checks, template validation) agrees.
 type ComponentPaths struct {
 	Root string
+
+	FactoryDir     string
+	FactoryVersion string
+
+	// overlay, when non-nil, keeps the version state files (current/stable/
+	// rejects) in memory because Root is not writable (limp mode). All copies
+	// of this ComponentPaths share the same overlay.
+	overlay *stateOverlay
+}
+
+// WithFactory returns a copy that resolves the given version name to the
+// image-provided factory directory.
+func (this ComponentPaths) WithFactory(dir, version string) ComponentPaths {
+	this.FactoryDir = dir
+	this.FactoryVersion = version
+	return this
+}
+
+// WithMemoryState returns a copy whose state files live in memory (limp
+// mode): reads fall through to whatever disk holds until first written this
+// session, writes never touch disk. Used when the component root fails the
+// startup writability probe.
+func (this ComponentPaths) WithMemoryState() ComponentPaths {
+	this.overlay = &stateOverlay{}
+	return this
+}
+
+// Writable reports whether state files are persisted to disk (true) or kept
+// in memory because the component root is unwritable (false).
+func (this ComponentPaths) Writable() bool {
+	return this.overlay == nil
 }
 
 func (this ComponentPaths) Config() string   { return filepath.Join(this.Root, this.dirName()+".yml") }
@@ -81,9 +116,14 @@ func (this ComponentPaths) KillSock() string { return filepath.Join(this.Root, "
 func (this ComponentPaths) Versions() string { return filepath.Join(this.Root, "versions") }
 
 // VersionDir is the read-only folder holding an extracted image for one version.
+// The factory version resolves to its baked directory unconditionally —
+// downloaded state never shadows the factory name.
 func (this ComponentPaths) VersionDir(version string) string {
 	if version == localVersion {
 		return this.Root
+	}
+	if this.FactoryVersion != "" && version == this.FactoryVersion {
+		return this.FactoryDir
 	}
 	return filepath.Join(this.Versions(), version)
 }
