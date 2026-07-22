@@ -138,7 +138,7 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 	this.lastPollError.Store("")
 
 	if stateUnwritableReason != "" {
-		this.bundle.observeStateUnwritable("state dir not writable: " + stateUnwritableReason)
+		this.bundle.observeStateUnwritable("limp mode: state dir not writable (" + stateUnwritableReason + ")")
 	}
 
 	// Build one Component per config entry.
@@ -175,8 +175,9 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 
 	// Memory tracking (optional). Builds the monitor when the subsystem is
 	// enabled and the platform can sample; nil otherwise. Strictly additive —
-	// it never affects launch or supervision.
-	this.memory = newMemoryMonitor(cfg, paths, this.bundle, this.components, logger)
+	// it never affects launch or supervision. Its on-disk series tier is
+	// dropped when the state dir root fails the writability probe.
+	this.memory = newMemoryMonitor(cfg, paths, probeStateWritable(absStateDir) == nil, this.bundle, this.components, logger)
 	if this.memory != nil {
 		for _, comp := range this.components {
 			comp.SetMemoryIncidentHook(this.memory.captureIncident)

@@ -28,6 +28,19 @@ var ErrRedirectLoop = errors.New("required.txt redirect loop or overflow")
 // polling failure, not a rejection — the vendor simply has not published yet.
 var ErrImageNotFoundForPlatform = errors.New("image not published for this platform")
 
+// ErrNoPublishedVersion is returned when the origin's version pointer
+// (required.txt) itself is missing: the origin answered, but nothing is
+// published there yet (or the URL is wrong). Distinct from
+// ErrImageNotFoundForPlatform, which is about a resolved version lacking an
+// archive for this GOOS/GOARCH.
+var ErrNoPublishedVersion = errors.New("origin has no published version yet (version pointer not found)")
+
+// errNotFound marks a 404 / missing file at the transport layer. Callers
+// translate it into the message that fits what was being fetched — the
+// version pointer (ErrNoPublishedVersion) or a platform image
+// (ErrImageNotFoundForPlatform).
+var errNotFound = errors.New("not found")
+
 // RemoteClient wraps an *http.Client with the timeouts and helpers needed to
 // poll a vendor update endpoint. The zero value is not usable; call NewRemoteClient.
 type RemoteClient struct {
@@ -73,6 +86,9 @@ func (this *RemoteClient) ResolveVersion(ctx context.Context, base, component, t
 	for hop := 0; hop <= MaxRedirectChain; hop++ {
 		body, err := this.fetchText(ctx, current)
 		if err != nil {
+			if errors.Is(err, errNotFound) {
+				return "", fmt.Errorf("%s: %w", current, ErrNoPublishedVersion)
+			}
 			return "", err
 		}
 		body = strings.TrimSpace(body)
@@ -120,7 +136,7 @@ func (this *RemoteClient) FetchArchive(ctx context.Context, base, component, ver
 	if err != nil {
 		return nil, err
 	}
-	return this.fetchBytes(ctx, archiveURL)
+	return this.fetchImageBytes(ctx, archiveURL)
 }
 
 // FetchSignature fetches just the detached .sig.
@@ -129,7 +145,17 @@ func (this *RemoteClient) FetchSignature(ctx context.Context, base, component, v
 	if err != nil {
 		return nil, err
 	}
-	return this.fetchBytes(ctx, sigURL)
+	return this.fetchImageBytes(ctx, sigURL)
+}
+
+// fetchImageBytes fetches an archive or signature URL, reporting a 404 /
+// missing file as ErrImageNotFoundForPlatform.
+func (this *RemoteClient) fetchImageBytes(ctx context.Context, raw string) ([]byte, error) {
+	data, err := this.fetchBytes(ctx, raw)
+	if errors.Is(err, errNotFound) {
+		return nil, fmt.Errorf("%s: %w", raw, ErrImageNotFoundForPlatform)
+	}
+	return data, err
 }
 
 // DownloadImage fetches the platform-appropriate archive and its .sig in one
@@ -180,7 +206,7 @@ func (this *RemoteClient) fetchBytes(ctx context.Context, raw string) ([]byte, e
 	case http.StatusOK:
 		// fallthrough
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("%s: %w", raw, ErrImageNotFoundForPlatform)
+		return nil, fmt.Errorf("%s: %w", raw, errNotFound)
 	default:
 		return nil, fmt.Errorf("GET %s: %s", raw, resp.Status)
 	}
@@ -193,8 +219,8 @@ func (this *RemoteClient) fetchBytes(ctx context.Context, raw string) ([]byte, e
 }
 
 // readFileURL parses a file:// URL and returns the file's bytes. ENOENT is
-// converted to ErrImageNotFoundForPlatform so callers can branch the same way
-// they do for HTTP 404.
+// converted to errNotFound so callers can branch the same way they do for
+// HTTP 404.
 func readFileURL(raw string) ([]byte, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -206,7 +232,7 @@ func readFileURL(raw string) ([]byte, error) {
 	data, err := os.ReadFile(u.Path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%s: %w", raw, ErrImageNotFoundForPlatform)
+			return nil, fmt.Errorf("%s: %w", raw, errNotFound)
 		}
 		return nil, fmt.Errorf("read %s: %w", u.Path, err)
 	}

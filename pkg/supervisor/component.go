@@ -610,7 +610,7 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 	// above, which stays live so health keeps reporting the pending remote
 	// target ("update available, state dir unwritable").
 	if !this.paths.Writable() && !this.versionUsable(target) {
-		this.limpPendingUpdate = "update " + target + " available but state dir is not writable"
+		this.limpPendingUpdate = "limp mode: update " + target + " available but not installable (state dir not writable)"
 		if this.bundle != nil {
 			this.bundle.observeUpdateWarn(this.cfg.Name, this.limpPendingUpdate)
 		}

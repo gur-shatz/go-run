@@ -144,7 +144,10 @@ type memoryMonitor struct {
 // newMemoryMonitor builds the monitor from resolved config, or returns nil when
 // the subsystem is disabled or the platform offers nothing to sample. comps are
 // the live managed components, queried each tick for their current PIDs.
-func newMemoryMonitor(cfg Config, paths Paths, bundle *statekitBundle, comps []*Component, logger *log.Logger) *memoryMonitor {
+// stateWritable=false (limp mode) drops the on-disk series/incidents tier —
+// the persister would otherwise warn on every sample tick — and keeps the
+// monitor fully in-memory.
+func newMemoryMonitor(cfg Config, paths Paths, stateWritable bool, bundle *statekitBundle, comps []*Component, logger *log.Logger) *memoryMonitor {
 	mode := resolveMemoryMode(cfg.Memory)
 	if mode == MemoryModeDisabled {
 		return nil
@@ -196,6 +199,13 @@ func newMemoryMonitor(cfg Config, paths Paths, bundle *statekitBundle, comps []*
 		pssEvery = 0
 	}
 
+	var persist *memoryPersister
+	if stateWritable {
+		persist = newMemoryPersister(memoryDir(paths), cfg.Memory.RawWindow, cfg.Memory.Retention, logger)
+	} else {
+		logger.Warn("memory: state dir not writable; running without on-disk series or incident files")
+	}
+
 	this := &memoryMonitor{
 		cfg:             cfg.Memory,
 		mode:            mode,
@@ -207,7 +217,7 @@ func newMemoryMonitor(cfg Config, paths Paths, bundle *statekitBundle, comps []*
 		comps:           comps,
 		bundle:          bundle,
 		logger:          logger,
-		persist:         newMemoryPersister(memoryDir(paths), cfg.Memory.RawWindow, cfg.Memory.Retention, logger),
+		persist:         persist,
 		now:             time.Now,
 		ringMax:         ringMax,
 		incidentSamples: cfg.Memory.IncidentSamples,

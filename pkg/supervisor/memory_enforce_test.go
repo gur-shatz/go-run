@@ -57,7 +57,7 @@ var _ = Describe("Memory enforcement", func() {
 	Describe("supervisor 'choose' enforcement is decoupled from cgroups (testable on host)", func() {
 		buildMonitor := func(cfg Config) *memoryMonitor {
 			cfg.ApplyDefaults()
-			return newMemoryMonitor(cfg, NewPaths(GinkgoT().TempDir()), newStatekitBundle(cfg), nil, log.New("[t]", false))
+			return newMemoryMonitor(cfg, NewPaths(GinkgoT().TempDir()), true, newStatekitBundle(cfg), nil, log.New("[t]", false))
 		}
 		cfgWithLimit := func(enforce *bool) Config {
 			return Config{
