@@ -396,3 +396,39 @@ var _ = Describe("RouteFolder", func() {
 		Expect(body).To(ContainSubstring("history.pushState(null, '', hash)"))
 	})
 })
+
+var _ = Describe("WildcardFolder instance route capture", func() {
+	It("collapses per-method walk entries and renders wildcard mounts as folders", func() {
+		router := chi.NewRouter()
+		bo := chiutil.NewRouteFolder(router, "/backoffice")
+		ok := func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }
+		bo.WildcardFolder("items", "id", func(r chi.Router) {
+			// Handle registers every HTTP verb; with the bare-prefix redirect
+			// this is the reverse-proxy mount shape.
+			r.Get("/console", ok)
+			r.Handle("/console/*", http.HandlerFunc(ok))
+			r.Get("/page", ok)
+			r.Post("/action", ok)
+		}).Add("alpha", "Alpha")
+
+		req := httptest.NewRequest(http.MethodGet, "/backoffice/items/alpha/index.json", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(w.Body.Bytes(), &index)).To(Succeed())
+
+		byName := map[string]chiutil.RouteEntry{}
+		for _, e := range index.Entries {
+			_, dup := byName[e.Name]
+			Expect(dup).To(BeFalse(), "entry %q listed more than once", e.Name)
+			byName[e.Name] = *e
+		}
+		Expect(byName).To(HaveLen(3))
+		Expect(byName["console"].IsFolder).To(BeTrue())
+		Expect(byName["console"].Path).To(Equal("console/"))
+		Expect(byName["page"].Method).To(Equal(http.MethodGet))
+		Expect(byName["page"].IsFolder).To(BeFalse())
+		Expect(byName["action"].Method).To(Equal(http.MethodPost))
+	})
+})

@@ -101,6 +101,9 @@ type ObjectRoute[T any] struct {
 	Action      Action
 	// Hidden keeps the route callable while omitting it from the backoffice index.
 	Hidden bool
+	// External marks the index entry "open in new tab" (typically a route
+	// that redirects out of this folder's tree, e.g. to a proxied console).
+	External bool
 }
 
 // objectsFolder holds the state for an objects folder.
@@ -224,6 +227,7 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 			Method:      route.Method,
 			Path:        name,
 			Description: route.Description,
+			IsExternal:  route.External,
 		})
 	}
 

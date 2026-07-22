@@ -516,29 +516,52 @@ func (this *WildcardEntries) captureRoutes(r chi.Router) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 
-	// Walk the routes to build the instance index
+	// chi.Walk visits one (method, route) pair per registered method — a
+	// Handle-mounted route appears once per HTTP verb — and a wildcard
+	// mount ("console/*") is the same navigation target as its bare-prefix
+	// redirect ("console"). Collapse both into one entry per target, with
+	// wildcard mounts rendered as navigable folders ("console/") rather
+	// than a literal-star link.
+	byName := make(map[string]*RouteEntry)
+	var order []string
 	walkFunc := func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		// Skip the index routes we added
 		if route == "/" || route == "/index.json" {
 			return nil
 		}
-		// Clean up the route path
+		wildcard := strings.Contains(route, "*")
 		name := strings.TrimPrefix(route, "/")
 		name = strings.TrimSuffix(name, "/")
+		name = strings.TrimSuffix(name, "*")
+		name = strings.TrimSuffix(name, "/")
+		isFolder := wildcard || strings.Contains(name, "/")
+		path := name
+		if wildcard {
+			path = name + "/"
+		}
 
-		// Check if it's a folder (has wildcard or ends with /)
-		isFolder := strings.Contains(name, "/") || strings.Contains(route, "*")
-
-		this.instanceRoutes = append(this.instanceRoutes, &RouteEntry{
-			Name:     name,
-			Method:   method,
-			Path:     name,
-			IsFolder: isFolder,
-		})
+		if e, ok := byName[name]; ok {
+			if wildcard {
+				e.IsFolder = true
+				e.Path = path
+			}
+			if method == http.MethodGet && !e.IsFolder {
+				e.Method = method
+			}
+			return nil
+		}
+		e := &RouteEntry{Name: name, Method: method, Path: path, IsFolder: isFolder}
+		byName[name] = e
+		order = append(order, name)
 		return nil
 	}
 
 	chi.Walk(r, walkFunc)
+
+	this.instanceRoutes = this.instanceRoutes[:0]
+	for _, name := range order {
+		this.instanceRoutes = append(this.instanceRoutes, byName[name])
+	}
 }
 
 // MaxStaticFileSize is the maximum file size that StaticFilesFolder will serve inline.
@@ -820,27 +843,26 @@ func (this *RouteFolder) ExternalLink(path, description string) {
 }
 
 // Mount mounts an http.Handler at the given path and adds it to the index as a folder.
-func (this *RouteFolder) Mount(path string, handler http.Handler) {
-	name := strings.Trim(path, "/")
-	this.entries = append(this.entries, &RouteEntry{
-		Name:     name,
-		Method:   "GET",
-		Path:     name + "/",
-		IsFolder: true,
-	})
-	this.router.Mount(path, handler)
+func (this *RouteFolder) Mount(path string, handler http.Handler, opts ...RouteOption) {
+	this.MountDesc(path, "", handler, opts...)
 }
 
 // MountDesc mounts an http.Handler at the given path with a description.
-func (this *RouteFolder) MountDesc(path, description string, handler http.Handler) {
+// Hidden() keeps the mount routable while omitting it from the index (e.g.
+// a proxied tree reached through an external link rather than navigation).
+func (this *RouteFolder) MountDesc(path, description string, handler http.Handler, opts ...RouteOption) {
 	name := strings.Trim(path, "/")
-	this.entries = append(this.entries, &RouteEntry{
+	entry := &RouteEntry{
 		Name:        name,
 		Method:      "GET",
 		Path:        name + "/",
 		Description: description,
 		IsFolder:    true,
-	})
+	}
+	for _, opt := range opts {
+		opt(entry)
+	}
+	this.entries = append(this.entries, entry)
 	this.router.Mount(path, handler)
 }
 
