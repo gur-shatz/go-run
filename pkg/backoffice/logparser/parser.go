@@ -50,7 +50,11 @@ func (TimestampedParser) ParseLine(line []byte, meta LineMeta) (Entry, bool) {
 		Truncated:  meta.Truncated,
 	}
 
-	fields := strings.Fields(clean)
+	header := clean
+	if newline := strings.IndexByte(header, '\n'); newline >= 0 {
+		header = header[:newline]
+	}
+	fields := strings.Fields(header)
 	if len(fields) < 5 {
 		return entry, true
 	}
@@ -144,14 +148,11 @@ func stripANSIBytes(line []byte) string {
 
 func splitMessageFields(rest string) (string, map[string]string) {
 	tokens := splitShellish(rest)
-	firstKV := -1
-	for i, token := range tokens {
-		if keyStartRE.MatchString(token) {
-			firstKV = i
-			break
-		}
+	firstKV := len(tokens)
+	for firstKV > 0 && keyStartRE.MatchString(tokens[firstKV-1]) {
+		firstKV--
 	}
-	if firstKV < 0 {
+	if firstKV == len(tokens) {
 		return rest, nil
 	}
 

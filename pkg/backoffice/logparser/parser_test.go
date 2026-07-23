@@ -28,6 +28,22 @@ func TestTimestampedParser(t *testing.T) {
 	}
 }
 
+func TestTimestampedParserPreservesKeyValuePairsInsideMessage(t *testing.T) {
+	const message = `Issuer: outbound token exchange failed: account="5PfymfNeaZJ" system="ap5Q4yHxoqffu": rpc error: code = Unavailable desc = Post "https://mcp-bitbucket.sapiens.com/token": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`
+	line := []byte(`2026-07-10T10:00:06.310Z ERROR issuer issuer.go:123 ` + message)
+
+	entry, ok := (TimestampedParser{}).ParseLine(line, LineMeta{})
+	if !ok {
+		t.Fatal("expected parser to keep line")
+	}
+	if entry.Message != message {
+		t.Fatalf("message = %q, want %q", entry.Message, message)
+	}
+	if entry.Fields != nil {
+		t.Fatalf("fields = %#v, want none", entry.Fields)
+	}
+}
+
 func TestNaiveParser(t *testing.T) {
 	entry, ok := (NaiveParser{}).ParseLine([]byte("plain log line\n"), LineMeta{Stream: "app.log", Offset: 3, NextOffset: 18})
 	if !ok {
