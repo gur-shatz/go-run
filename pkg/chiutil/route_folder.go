@@ -114,6 +114,7 @@ func NewRouteFolder(parent chi.Router, path string) *RouteFolder {
 	// Register index endpoints on the folder's router
 	folder.router.Get("/", folder.serveHTML)
 	folder.router.Get("/index.json", folder.serveJSON)
+	registerPageAssets(folder.router)
 
 	// Mount the folder's router on the parent
 	parent.Mount(path, folder.router)
@@ -133,6 +134,7 @@ func NewRouteFolderOn(router chi.Router, path string) *RouteFolder {
 
 	folder.router.Get("/", folder.serveHTML)
 	folder.router.Get("/index.json", folder.serveJSON)
+	registerPageAssets(folder.router)
 
 	router.Mount(path, folder.router)
 
@@ -279,12 +281,14 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 	// /<name>/ serves the instance listing
 	listingFolder.router.Get("/", wildcard.serveHTML)
 	listingFolder.router.Get("/index.json", wildcard.serveJSON)
+	registerPageAssets(listingFolder.router)
 
 	// /<name>/{paramName}/... handles all parameterized routes
 	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
 		// /<name>/{paramName}/ serves the route listing for this instance
 		r.Get("/", wildcard.serveInstanceHTML)
 		r.Get("/index.json", wildcard.serveInstanceJSON)
+		registerPageAssets(r)
 
 		// Register user's routes (e.g., /details, /settings)
 		routes(r)
@@ -525,8 +529,8 @@ func (this *WildcardEntries) captureRoutes(r chi.Router) {
 	byName := make(map[string]*RouteEntry)
 	var order []string
 	walkFunc := func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		// Skip the index routes we added
-		if route == "/" || route == "/index.json" {
+		// Skip the index routes and the hidden shared page assets we added
+		if route == "/" || route == "/index.json" || isPageAssetPath(route) {
 			return nil
 		}
 		wildcard := strings.Contains(route, "*")

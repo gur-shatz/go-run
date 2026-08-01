@@ -234,11 +234,13 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	// Listing endpoints - delegate to mapper.ListItems()
 	listingFolder.router.Get("/", omf.serveHTML)
 	listingFolder.router.Get("/index.json", omf.serveListJSON)
+	registerPageAssets(listingFolder.router)
 
 	// Item routes
 	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
 		r.Get("/", omf.serveItemHTML)
 		r.Get("/index.json", omf.serveItemJSON)
+		registerPageAssets(r)
 
 		// Register each route with automatic item lookup
 		for _, route := range routes {
