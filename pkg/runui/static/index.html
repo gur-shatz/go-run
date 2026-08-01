@@ -191,7 +191,8 @@
         <table id="summary-table">
           <thead>
             <tr>
-              <th>Area</th><th>Status</th><th>Healthy</th><th>Pending</th><th>Failed</th><th>Failing Targets</th>
+              <th>Component</th><th>Build</th><th>Tests</th><th>Run</th>
+              <th>Last Build</th><th>Duration</th><th>Uptime</th><th>Links</th><th>Logs</th><th>Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -248,6 +249,7 @@
         <h4 id="drawer-title">Logs</h4>
         <div class="drawer-actions">
           <button id="btn-marker" title="Append a timestamped marker to the log" onclick="_runuiInsertMarker()">Marker</button>
+          <button id="btn-download" title="Download the full log file" onclick="_runuiDownloadLog()">Download</button>
           <button id="btn-tail" class="btn-tail active" onclick="_runuiToggleTail()">Tail: ON</button>
           <button id="btn-open-tab" style="display:none;" onclick="_runuiOpenBoNewTab()">Open in new tab</button>
           <button onclick="_runuiCloseDrawer()">Close</button>
@@ -460,7 +462,7 @@
     const build = phaseStates.find(function(p) { return p.phase.key === 'build'; }).state;
     const test = phaseStates.find(function(p) { return p.phase.key === 'test'; }).state;
     const run = stageState(targets, 'run');
-    const emojiSuffix = [build.emoji, run.emoji, test.emoji].join('');
+    const emojiSuffix = [build.emoji, test.emoji, run.emoji].join('');
     lastEmojiSuffix = emojiSuffix;
 
     if (!activeTargetName) setBrowserTitle(title);
@@ -482,8 +484,8 @@
     const metricsEl = document.getElementById('summary-metrics');
     const cards = [
       { label: 'Build', state: build },
-      { label: 'Run', state: run },
-      { label: 'Tests', state: test }
+      { label: 'Tests', state: test },
+      { label: 'Run', state: run }
     ];
     metricsEl.innerHTML = cards.map(function(card) {
       return '<div class="summary-card"><h3>' + card.label + '</h3><div class="summary-value">' + card.state.emoji + ' ' + escHtml(card.state.label) + '</div><div class="summary-meta">' + card.state.healthy + ' healthy, ' + card.state.pending + ' pending, ' + card.state.failed + ' failed</div></div>';
@@ -492,25 +494,56 @@
 
   function renderSummaryTable(targets) {
     const tbody = document.querySelector('#summary-table tbody');
-    const rows = PHASES.map(function(phase) {
-      return { label: phase.label, key: phase.key };
-    }).concat([
-      { label: 'Run', key: 'run' },
-    ]);
-    tbody.innerHTML = rows.map(function(row) {
-      const s = stageState(targets, row.key);
-      const failing = s.failing.length
-        ? s.failing.map(function(name) {
-          return '<a href="#target/' + encodeURIComponent(name) + '"><strong>' + escHtml(name) + '</strong></a>';
-        }).join(', ')
+    if (!targets.length) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No targets</td></tr>';
+      return;
+    }
+    tbody.innerHTML = targets.map(function(t) {
+      const isRunning = t.state === 'running';
+      const canStart = t.state !== 'running' && t.state !== 'starting';
+      const canStop = t.state === 'running' || t.state === 'starting';
+
+      const buildCell = t.has_build
+        ? (function() { const s = phaseStatus(t, 'build'); return badge(s.text, s.cls); })()
         : '\u2014';
+      const testCell = t.has_test
+        ? (function() { const s = phaseStatus(t, 'test'); return badge(s.text, s.cls); })()
+        : '\u2014';
+      const runCell = t.has_run
+        ? (function() { const s = runStatus(t); return badge(s.text, s.cls); })()
+        : '\u2014';
+
+      const links = (t.links || []).map(function(l) {
+        const href = l.resolved_url || l.url || '#';
+        const cls = isRunning ? '' : ' class="link-disabled"';
+        return '<a href="' + escHtml(href) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
+      }).join(' ');
+
+      const hasLogs = t.logs && t.logs.run;
+      const logsCell = hasLogs
+        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'run\')">output</span>'
+        : '\u2014';
+
+      const buildBtn = t.has_build
+        ? '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>'
+        : '';
+      const runBtns = t.has_run
+        ? '<button title="Start" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'start\')"' + (canStart ? '' : ' disabled') + '>\u25b6</button>' +
+          '<button title="Stop" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'stop\')"' + (canStop ? '' : ' disabled') + '>\u25a0</button>' +
+          '<button title="Restart" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'restart\')"' + (isRunning ? '' : ' disabled') + '>\u21bb</button>'
+        : '';
+
       return '<tr>' +
-        '<td><strong>' + row.label + '</strong></td>' +
-        '<td>' + badge(s.emoji + ' ' + s.label, s.cls) + '</td>' +
-        '<td>' + s.healthy + '</td>' +
-        '<td>' + s.pending + '</td>' +
-        '<td>' + s.failed + '</td>' +
-        '<td class="wrap">' + (s.failing.length ? '<span class="summary-failing">' + failing + '</span>' : '\u2014') + '</td>' +
+        '<td class="wrap">' + itemHeading(t) + '</td>' +
+        '<td>' + buildCell + '</td>' +
+        '<td>' + testCell + '</td>' +
+        '<td>' + runCell + '</td>' +
+        '<td>' + (t.has_build ? relTime(phaseField(t, 'build', 'time')) : '\u2014') + '</td>' +
+        '<td>' + (t.has_build ? fmtDuration(phaseField(t, 'build', 'duration_secs')) : '\u2014') + '</td>' +
+        '<td>' + (t.has_run ? relTime(t.last_start_time) : '\u2014') + '</td>' +
+        '<td>' + (links || '\u2014') + '</td>' +
+        '<td>' + logsCell + '</td>' +
+        '<td class="actions">' + ((buildBtn + runBtns) || '\u2014') + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -621,6 +654,11 @@
   const FETCH_CHUNK = 500;     // lines per fetch request
   const POLL_INTERVAL = 2000;  // ms between tail polls
   const BOTTOM_PAD_EXTRA = 80; // px of breathing room below last line
+  // Browsers clamp element heights around 2^24 px, so a log cannot get pixel
+  // space for every line once it is a few hundred thousand lines long. The
+  // scroller exposes a tail-anchored window of at most this many lines; older
+  // lines fall out of the scroll space but line numbers stay absolute.
+  const MAX_WINDOW_LINES = 500000;
 
   let drawerTarget = '';
   let drawerStage = '';
@@ -630,9 +668,15 @@
   let autoTail = true;
   let scrollAbortCtrl = null;
 
+  // Number of lines inside the scroll window. All scroll-space math is
+  // window-relative; absolute line numbers are windowStart + index.
+  function vscrollWindowLines() {
+    return vscrollState ? vscrollState.totalLines - vscrollState.windowStart : 0;
+  }
+
   function vscrollOffsetForLine(index) {
     if (!vscrollState) return 0;
-    const clamped = Math.max(0, Math.min(index, vscrollState.totalLines));
+    const clamped = Math.max(0, Math.min(index, vscrollWindowLines()));
     let offset = clamped * LINE_HEIGHT;
     for (const [line, height] of vscrollState.lineHeights) {
       if (line < clamped) offset += height - LINE_HEIGHT;
@@ -641,13 +685,13 @@
   }
 
   function vscrollTotalHeight() {
-    return vscrollOffsetForLine(vscrollState ? vscrollState.totalLines : 0);
+    return vscrollOffsetForLine(vscrollWindowLines());
   }
 
   function vscrollLineForOffset(offset) {
-    if (!vscrollState || vscrollState.totalLines === 0) return 0;
+    if (!vscrollState || vscrollWindowLines() === 0) return 0;
     let lo = 0;
-    let hi = vscrollState.totalLines;
+    let hi = vscrollWindowLines();
     while (lo < hi) {
       const mid = Math.floor((lo + hi) / 2);
       if (vscrollOffsetForLine(mid + 1) <= offset) {
@@ -656,7 +700,42 @@
         hi = mid;
       }
     }
-    return Math.min(lo, vscrollState.totalLines - 1);
+    return Math.min(lo, vscrollWindowLines() - 1);
+  }
+
+  function shiftIndexMap(m, s) {
+    const out = new Map();
+    for (const [k, v] of m) {
+      if (k >= s) out.set(k - s, v);
+    }
+    return out;
+  }
+
+  // Adopt a new absolute line count, sliding the window forward when the log
+  // outgrows MAX_WINDOW_LINES. Window-relative caches shift with it; when the
+  // user is reading (not following) the scroll position is nudged so the same
+  // lines stay in view.
+  function vscrollSetTotal(newTotal) {
+    if (!vscrollState) return;
+    vscrollState.totalLines = newTotal;
+    const newStart = Math.max(vscrollState.windowStart, newTotal - MAX_WINDOW_LINES);
+    const slide = newStart - vscrollState.windowStart;
+    if (slide > 0) {
+      vscrollState.windowStart = newStart;
+      vscrollState.cache = shiftIndexMap(vscrollState.cache, slide);
+      vscrollState.lineHeights = shiftIndexMap(vscrollState.lineHeights, slide);
+      vscrollState.renderedFirst = Math.max(0, vscrollState.renderedFirst - slide);
+      vscrollState.renderedLast = vscrollState.renderedLast - slide;
+      if (vscrollState.renderedLast < 0) {
+        vscrollState.renderedFirst = 0;
+        vscrollState.renderedLast = -1;
+      }
+      if (!vscrollState.followTail) {
+        const viewport = document.getElementById('vscroll-viewport');
+        viewport.scrollTop = Math.max(0, viewport.scrollTop - slide * LINE_HEIGHT);
+      }
+    }
+    vscrollUpdateHeight();
   }
 
   function vscrollDispose() {
@@ -677,6 +756,7 @@
     const bo = document.getElementById('bo-content');
     const tailBtn = document.getElementById('btn-tail');
     const markerBtn = document.getElementById('btn-marker');
+    const downloadBtn = document.getElementById('btn-download');
     const openTabBtn = document.getElementById('btn-open-tab');
     if (mode === 'backoffice') {
       vp.style.display = 'none';
@@ -684,6 +764,7 @@
       bo.style.display = 'block';
       tailBtn.style.display = 'none';
       markerBtn.style.display = 'none';
+      downloadBtn.style.display = 'none';
       openTabBtn.style.display = '';
     } else {
       vp.style.display = '';
@@ -691,6 +772,7 @@
       bo.style.display = 'none';
       tailBtn.style.display = '';
       markerBtn.style.display = '';
+      downloadBtn.style.display = '';
       openTabBtn.style.display = 'none';
     }
   }
@@ -781,6 +863,7 @@
 
     vscrollState = {
       totalLines: 0,
+      windowStart: 0,
       cache: new Map(),
       lineHeights: new Map(),
       renderedFirst: 0,
@@ -836,8 +919,7 @@
           status.textContent = 'Error: ' + data.error;
           return;
         }
-        vscrollState.totalLines = data.totalLines || 0;
-        vscrollUpdateHeight();
+        vscrollSetTotal(data.totalLines || 0);
         if (vscrollState.totalLines === 0) {
           status.textContent = '(empty)';
           return;
@@ -868,7 +950,7 @@
   }
 
   function vscrollOnScroll() {
-    if (!vscrollState || vscrollState.totalLines === 0 || vscrollState.rendering) return;
+    if (!vscrollState || vscrollWindowLines() === 0 || vscrollState.rendering) return;
     const viewport = document.getElementById('vscroll-viewport');
     const viewH = viewport.clientHeight;
     const scrollTop = viewport.scrollTop;
@@ -882,10 +964,10 @@
     }
 
     const firstVisible = vscrollLineForOffset(scrollTop);
-    const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
+    const lastVisible = Math.min(vscrollWindowLines() - 1, vscrollLineForOffset(scrollTop + viewH));
 
     const fetchFirst = Math.max(0, firstVisible - FETCH_BUFFER);
-    const fetchLast = Math.min(vscrollState.totalLines - 1, lastVisible + FETCH_BUFFER);
+    const fetchLast = Math.min(vscrollWindowLines() - 1, lastVisible + FETCH_BUFFER);
 
     // Check if we need to fetch
     let needFetch = false;
@@ -901,7 +983,8 @@
 
     // Update status
     const status = document.getElementById('vscroll-status');
-    status.textContent = (firstVisible + 1) + '-' + (lastVisible + 1) + ' / ' + vscrollState.totalLines +
+    status.textContent = (vscrollState.windowStart + firstVisible + 1) + '-' +
+      (vscrollState.windowStart + lastVisible + 1) + ' / ' + vscrollState.totalLines +
       (vscrollState.followTail ? ' (following)' : '') +
       (!autoTail ? ' (paused)' : '');
   }
@@ -922,7 +1005,7 @@
       const viewH = viewport.clientHeight;
       const scrollTop = viewport.scrollTop;
       const firstVisible = vscrollLineForOffset(scrollTop);
-      const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
+      const lastVisible = Math.min(vscrollWindowLines() - 1, vscrollLineForOffset(scrollTop + viewH));
       vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
       return;
     }
@@ -937,12 +1020,13 @@
       // Center the chunk around the missing range
       const center = Math.floor((missStart + missEnd) / 2);
       offset = Math.max(0, center - Math.floor(FETCH_CHUNK / 2));
-      limit = Math.min(FETCH_CHUNK, vscrollState.totalLines - offset);
+      limit = Math.min(FETCH_CHUNK, vscrollWindowLines() - offset);
     }
 
     vscrollState.fetching = true;
+    const absOffset = vscrollState.windowStart + offset;
     const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs?stage=' + drawerStage +
-      '&offset=' + offset + '&limit=' + limit;
+      '&offset=' + absOffset + '&limit=' + limit;
 
     fetch(url)
       .then(r => r.json())
@@ -954,14 +1038,15 @@
 
         // Update totalLines if server reports newer count
         if (data.totalLines && data.totalLines > vscrollState.totalLines) {
-          vscrollState.totalLines = data.totalLines;
-          vscrollUpdateHeight();
+          vscrollSetTotal(data.totalLines);
         }
 
+        // The server speaks absolute line numbers; the cache is
+        // window-relative. Lines that slid out of the window are dropped.
         const lines = data.lines || [];
-        const base = data.offset != null ? data.offset : offset;
+        const base = (data.offset != null ? data.offset : absOffset) - vscrollState.windowStart;
         for (let i = 0; i < lines.length; i++) {
-          vscrollState.cache.set(base + i, lines[i]);
+          if (base + i >= 0) vscrollState.cache.set(base + i, lines[i]);
         }
 
         // Evict far-away cache entries
@@ -972,7 +1057,7 @@
         const viewH = viewport.clientHeight;
         const scrollTop = viewport.scrollTop;
         const firstVisible = vscrollLineForOffset(scrollTop);
-        const lastVisible = Math.min(vscrollState.totalLines - 1, vscrollLineForOffset(scrollTop + viewH));
+        const lastVisible = Math.min(vscrollWindowLines() - 1, vscrollLineForOffset(scrollTop + viewH));
         vscrollRender(firstVisible, lastVisible, fetchFirst, fetchLast);
       })
       .catch(() => {
@@ -998,7 +1083,7 @@
 
     // Clamp render range to what's cached
     const rf = Math.max(0, renderFirst);
-    const rl = Math.min(vscrollState.totalLines - 1, renderLast);
+    const rl = Math.min(vscrollWindowLines() - 1, renderLast);
 
     // Guard: prevent scroll events triggered by DOM changes from re-entering
     vscrollState.rendering = true;
@@ -1016,9 +1101,16 @@
     }
     content.innerHTML = html;
 
+    // Only wrapped lines are recorded — lineHeights is iterated in full by
+    // vscrollOffsetForLine, so single-height lines must stay out of it.
     const lineEls = content.querySelectorAll('.vscroll-line');
     for (let i = 0; i < lineEls.length; i++) {
-      vscrollState.lineHeights.set(rf + i, Math.max(LINE_HEIGHT, lineEls[i].offsetHeight));
+      const h = Math.max(LINE_HEIGHT, lineEls[i].offsetHeight);
+      if (h > LINE_HEIGHT) {
+        vscrollState.lineHeights.set(rf + i, h);
+      } else {
+        vscrollState.lineHeights.delete(rf + i);
+      }
     }
 
     const contentH = vscrollOffsetForLine(rl + 1) - vscrollOffsetForLine(rf);
@@ -1049,21 +1141,29 @@
         if (newTotal > vscrollState.totalLines) {
           const viewport = document.getElementById('vscroll-viewport');
           const wasFollowing = vscrollState.followTail;
-          const savedScrollTop = viewport.scrollTop;
 
-          vscrollState.totalLines = newTotal;
-          vscrollUpdateHeight();
+          // vscrollSetTotal preserves the reading position when the window
+          // slides; new lines only extend the bottom otherwise.
+          vscrollSetTotal(newTotal);
 
           if (wasFollowing) {
             viewport.scrollTop = viewport.scrollHeight;
-          } else {
-            // Preserve scroll position — new lines only extend the bottom
-            viewport.scrollTop = savedScrollTop;
           }
           vscrollOnScroll();
         }
       })
       .catch(() => {});
+  }
+
+  function downloadLog() {
+    if (!drawerTarget || !drawerStage) return;
+    const url = '/api/targets/' + encodeURIComponent(drawerTarget) + '/logs/download?stage=' + drawerStage;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   function insertMarker() {
@@ -1179,6 +1279,7 @@
   window._runuiCloseDrawer = closeDrawer;
   window._runuiToggleTail = toggleTail;
   window._runuiInsertMarker = insertMarker;
+  window._runuiDownloadLog = downloadLog;
   window._runuiOpenBackoffice = openBackofficeDrawer;
   window._runuiOpenBoNewTab = openBoNewTab;
 

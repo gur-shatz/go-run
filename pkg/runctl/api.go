@@ -29,6 +29,7 @@ func (this *Controller) Routes() chi.Router {
 	r.Post("/targets/{name}/enable", this.handleEnableTarget)
 	r.Post("/targets/{name}/disable", this.handleDisableTarget)
 	r.Get("/targets/{name}/logs", this.handleGetLogs)
+	r.Get("/targets/{name}/logs/download", this.handleDownloadLog)
 	r.Post("/targets/{name}/logs/marker", this.handleInsertLogMarker)
 	r.HandleFunc("/targets/{name}/backoffice/*", this.handleBackofficeProxy)
 	r.Get("/file", this.handleServeFile)
@@ -145,32 +146,34 @@ func (this *Controller) handleDisableTarget(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 
-func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+// resolveLogPath resolves the {name} target and its configured log file for
+// the request's stage query param (default "run"). On failure it writes the
+// error response and returns ok=false.
+func (this *Controller) resolveLogPath(w http.ResponseWriter, r *http.Request) (path, stage string, ok bool) {
 	name := chi.URLParam(r, "name")
 
 	this.mu.RLock()
-	t, ok := this.targets[name]
+	t, found := this.targets[name]
 	this.mu.RUnlock()
-	if !ok {
+	if !found {
 		writeError(w, http.StatusNotFound, "target not found")
-		return
+		return "", "", false
 	}
 
-	stage := r.URL.Query().Get("stage")
+	stage = r.URL.Query().Get("stage")
 	if stage == "" {
 		stage = "run"
 	}
 	if stage != "build" && stage != "test" && stage != "run" {
 		writeError(w, http.StatusBadRequest, "stage must be build, test, or run")
-		return
+		return "", "", false
 	}
 
 	if t.tcfg.Logs == nil {
 		writeError(w, http.StatusBadRequest, "no logs configured for this target")
-		return
+		return "", "", false
 	}
 
-	var path string
 	switch stage {
 	case "build":
 		path = t.tcfg.Logs.Build
@@ -181,6 +184,14 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "no "+stage+" log configured for this target")
+		return "", "", false
+	}
+	return path, stage, true
+}
+
+func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	path, _, ok := this.resolveLogPath(w, r)
+	if !ok {
 		return
 	}
 
@@ -237,42 +248,21 @@ func (this *Controller) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (this *Controller) handleInsertLogMarker(w http.ResponseWriter, r *http.Request) {
+func (this *Controller) handleDownloadLog(w http.ResponseWriter, r *http.Request) {
+	path, stage, ok := this.resolveLogPath(w, r)
+	if !ok {
+		return
+	}
 	name := chi.URLParam(r, "name")
 
-	this.mu.RLock()
-	t, ok := this.targets[name]
-	this.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`-`+stage+`.log"`)
+	http.ServeFile(w, r, path)
+}
+
+func (this *Controller) handleInsertLogMarker(w http.ResponseWriter, r *http.Request) {
+	path, _, ok := this.resolveLogPath(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "target not found")
-		return
-	}
-
-	stage := r.URL.Query().Get("stage")
-	if stage == "" {
-		stage = "run"
-	}
-	if stage != "build" && stage != "test" && stage != "run" {
-		writeError(w, http.StatusBadRequest, "stage must be build, test, or run")
-		return
-	}
-
-	if t.tcfg.Logs == nil {
-		writeError(w, http.StatusBadRequest, "no logs configured for this target")
-		return
-	}
-
-	var path string
-	switch stage {
-	case "build":
-		path = t.tcfg.Logs.Build
-	case "test":
-		path = t.tcfg.Logs.Test
-	case "run":
-		path = t.tcfg.Logs.Run
-	}
-	if path == "" {
-		writeError(w, http.StatusBadRequest, "no "+stage+" log configured for this target")
 		return
 	}
 

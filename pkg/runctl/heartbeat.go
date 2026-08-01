@@ -112,5 +112,5 @@ func (s HeartbeatSummary) HasFailures() bool {
 }
 
 func (s HeartbeatSummary) FailureTuple() string {
-	return fmt.Sprintf("(%d %d %d)", s.BuildFailures, s.RunFailures, s.TestFailures)
+	return fmt.Sprintf("(%d %d %d)", s.BuildFailures, s.TestFailures, s.RunFailures)
 }
