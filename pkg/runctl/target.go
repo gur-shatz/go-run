@@ -347,7 +347,11 @@ func (this *target) markPhaseStart(stage string, at time.Time) {
 	}
 	*p.time = &at
 	this.currentStage = stage
-	this.state = StateStarting
+	// A live managed process keeps the run state authoritative; only show
+	// "starting" when no process is up yet.
+	if this.pid == 0 {
+		this.state = StateStarting
+	}
 }
 
 func (this *target) markPhaseDone(stage string, duration time.Duration, err error, countEnabled bool) {
@@ -360,7 +364,13 @@ func (this *target) markPhaseDone(stage string, duration time.Duration, err erro
 	if err != nil {
 		*p.result = "failed"
 		*p.err = err.Error()
-		this.state = StateError
+		if this.pid != 0 {
+			// The managed process survived the failed phase: the failure is
+			// carried by the phase result, and the run state stays truthful.
+			this.restoreStateAfterPhase(stage)
+		} else {
+			this.state = StateError
+		}
 		return
 	}
 	*p.result = "success"
@@ -372,7 +382,7 @@ func (this *target) markPhaseDone(stage string, duration time.Duration, err erro
 }
 
 // restoreStateAfterPhase leaves the transient starting/<stage> display once a
-// phase succeeds without a process (re)start following it: a test-only trigger
+// phase finishes without a process (re)start following it: a test-only trigger
 // keeps the managed process running, and build-only targets have no run stage
 // at all. In a full start/restart sequence the next phase or markRunStart
 // overwrites this immediately.

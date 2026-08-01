@@ -21,7 +21,7 @@ var _ = Describe("target phase state", func() {
 			Expect(t.state).To(Equal(StateRunning))
 
 			t.markPhaseStart("test", time.Now())
-			Expect(t.state).To(Equal(StateStarting))
+			Expect(t.state).To(Equal(StateRunning))
 			Expect(t.currentStage).To(Equal("test"))
 
 			t.markPhaseDone("test", 2*time.Second, nil, true)
@@ -63,15 +63,31 @@ var _ = Describe("target phase state", func() {
 			Expect(t.currentStage).To(Equal(""))
 		})
 
-		It("keeps the error state when a phase fails", func() {
+		It("stays running when a phase fails while the process is up", func() {
 			t := newRunTarget()
 			t.markRunStart(1234, time.Now())
 
 			t.markPhaseStart("test", time.Now())
 			t.markPhaseDone("test", time.Second, errors.New("boom"), true)
-			Expect(t.state).To(Equal(StateError))
-			Expect(t.currentStage).To(Equal("test"))
+			Expect(t.state).To(Equal(StateRunning))
+			Expect(t.currentStage).To(Equal("run"))
 			Expect(t.lastTestResult).To(Equal("failed"))
+
+			t.markPhaseStart("build", time.Now())
+			t.markPhaseDone("build", time.Second, errors.New("boom"), true)
+			Expect(t.state).To(Equal(StateRunning))
+			Expect(t.currentStage).To(Equal("run"))
+			Expect(t.lastBuildResult).To(Equal("failed"))
+		})
+
+		It("sets the error state when a phase fails with no process up", func() {
+			t := newRunTarget()
+
+			t.markPhaseStart("build", time.Now())
+			t.markPhaseDone("build", time.Second, errors.New("boom"), true)
+			Expect(t.state).To(Equal(StateError))
+			Expect(t.currentStage).To(Equal("build"))
+			Expect(t.lastBuildResult).To(Equal("failed"))
 		})
 	})
 })

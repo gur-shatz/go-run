@@ -407,6 +407,17 @@
     return { text: t.state || 'pending', cls: 'starting', state: 'pending' };
   }
 
+  function phaseFailBadges(t) {
+    let extra = '';
+    if (t.has_build && phaseField(t, 'build', 'result') === 'failed') {
+      extra += ' ' + badge('build failed', 'failed');
+    }
+    if (t.has_test && phaseField(t, 'test', 'result') === 'failed') {
+      extra += ' ' + badge('tests failed', 'failed');
+    }
+    return extra;
+  }
+
   function stageState(targets, stage) {
     const phase = phaseConfig(stage);
     const relevant = targets.filter(function(t) {
@@ -576,7 +587,7 @@
       '<div class="detail-grid">' +
       descriptionCard +
       '<section class="detail-card"><h3>Run</h3><dl class="detail-kv">' +
-      '<dt>State</dt><dd>' + badge(run.text, run.cls) + '</dd>' +
+      '<dt>State</dt><dd>' + badge(run.text, run.cls) + phaseFailBadges(t) + '</dd>' +
       '<dt>Stage</dt><dd>' + escHtml(stageLabel(t)) + '</dd>' +
       '<dt>Enabled</dt><dd>' + (t.enabled ? 'Yes' : 'No') + '</dd>' +
       '<dt>PID</dt><dd>' + (t.pid || '\u2014') + '</dd>' +
@@ -1235,7 +1246,7 @@
 
       return '<tr>' +
         '<td class="wrap">' + itemHeading(t) + '</td>' +
-        '<td>' + badge(t.state) + '</td>' +
+        '<td>' + badge(t.state) + phaseFailBadges(t) + '</td>' +
         '<td>' + (t.pid || '\u2014') + '</td>' +
         '<td>' + relTime(t.last_start_time) + '</td>' +
         '<td>' + t.restart_count + '</td>' +
