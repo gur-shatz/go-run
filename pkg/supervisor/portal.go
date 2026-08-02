@@ -306,6 +306,12 @@ func fmtAgo(rfc3339 string) string {
 	if err != nil {
 		return rfc3339
 	}
+	return agoSince(t)
+}
+
+// agoSince renders how long ago t was, e.g. "5m ago", collapsing anything
+// under a minute to "just now".
+func agoSince(t time.Time) string {
 	d := time.Since(t)
 	if d < time.Minute {
 		return "just now"

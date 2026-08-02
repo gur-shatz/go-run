@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,8 +114,6 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 			if stateUnwritableReason == "" {
 				stateUnwritableReason = probeErr.Error()
 			}
-		} else if _, err := CleanOrphanVersions(cpaths, cfg.VersionFolderRetention); err != nil {
-			return nil, fmt.Errorf("gc orphan versions for %q: %w", c.Name, err)
 		}
 		componentPaths[c.Name] = cpaths
 	}
@@ -148,6 +147,11 @@ func New(cfg Config, opts Options) (*Supervisor, error) {
 		comp := NewComponent(ccfg, componentPaths[ccfg.Name], install, cfg, this.makeForcedGetter(ccfg.Name), this.bundle, logger)
 		this.components = append(this.components, comp)
 	}
+
+	// First orphan sweep, before anything is running. Run starts the recurring
+	// one. A sweep failure is housekeeping noise, not a boot failure: it lands
+	// on the versions.gc state as warn and the supervisor carries on.
+	this.sweepOrphanVersions()
 
 	// State monitoring. scrape (default on) polls each component into the
 	// registry; observe (default off) persists that state and serves /health.
@@ -349,6 +353,13 @@ func (this *Supervisor) Run(ctx context.Context) error {
 	// individual components see overrides via this.getForced() at decision time).
 	wg.Go(func() { this.runForcedRefresher(ctx) })
 
+	// Version GC: New already swept once at startup; this keeps the sweep
+	// going on a daily cadence so a supervisor that stays up for months does
+	// not accumulate orphan version folders between restarts.
+	if this.cfg.VersionGCInterval > 0 {
+		wg.Go(func() { this.runVersionGC(ctx) })
+	}
+
 	// Scraper (optional): polls each component's /healthz, /state, /metrics
 	// and feeds the results into the supervisor's statekit registry.
 	if this.scraper != nil {
@@ -405,6 +416,54 @@ func (this *Supervisor) runForcedRefresher(ctx context.Context) {
 			this.refreshForced()
 		}
 	}
+}
+
+// runVersionGC sweeps orphan version folders on a fixed cadence (daily by
+// default) until ctx is cancelled.
+func (this *Supervisor) runVersionGC(ctx context.Context) {
+	t := time.NewTicker(this.cfg.VersionGCInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			this.sweepOrphanVersions()
+		}
+	}
+}
+
+// sweepOrphanVersions runs one GC pass over every component with a writable
+// state root, then records the outcome on the versions.gc state. Except at
+// startup it runs concurrently with the component goroutines: the age floor in
+// the policy is what keeps it off folders an installer may be extracting into
+// or that were current moments ago.
+//
+// One component's failure does not stop the others — every component is swept,
+// the errors are collected, and the state reports them together.
+func (this *Supervisor) sweepOrphanVersions() {
+	policy := this.cfg.versionGCPolicy()
+	sizes := make(map[string]int64, len(this.components))
+	deleted := 0
+	var failures []string
+
+	for _, comp := range this.components {
+		if !comp.paths.Writable() {
+			continue
+		}
+		res, err := CleanOrphanVersions(comp.paths, policy)
+		if err != nil {
+			this.logger.Warn("[%s] version gc: %v", comp.Name(), err)
+			failures = append(failures, comp.Name()+": "+err.Error())
+		}
+		if len(res.Deleted) > 0 {
+			deleted += len(res.Deleted)
+			this.logger.Status("[%s] version gc removed %d orphan version(s): %v", comp.Name(), len(res.Deleted), res.Deleted)
+		}
+		sizes[comp.Name()] = dirSize(comp.paths.Versions())
+	}
+
+	this.bundle.observeVersionGC(time.Now(), deleted, sizes, strings.Join(failures, "; "))
 }
 
 func (this *Supervisor) refreshForced() {

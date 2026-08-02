@@ -37,6 +37,18 @@ type Config struct {
 	KillGracePeriod        time.Duration `yaml:"kill_grace_period"`
 	VersionFolderRetention int           `yaml:"version_folder_retention"`
 
+	// VersionFolderMinAge is the age floor for orphan version folders: one is
+	// only collected when it has not been touched for at least this long
+	// (default 7 days). It keeps the sweep clear of folders that are being
+	// extracted or were only just demoted, which is what makes a periodic
+	// sweep safe alongside running components.
+	VersionFolderMinAge time.Duration `yaml:"version_folder_min_age"`
+
+	// VersionGCInterval is the cadence of the background orphan sweep (default
+	// 24h). A sweep also runs once at startup regardless. Negative disables
+	// the background sweep, leaving only the startup pass.
+	VersionGCInterval time.Duration `yaml:"version_gc_interval"`
+
 	// RejectExpiry: how long an autonomously-recorded rejection stays
 	// active. After this duration the supervisor stops treating the
 	// version as rejected and is willing to re-install it if the remote
@@ -595,6 +607,18 @@ func (this *Config) ApplyDefaults() {
 	}
 	if this.VersionFolderRetention == 0 {
 		this.VersionFolderRetention = 2
+	}
+	if this.VersionFolderMinAge == 0 {
+		this.VersionFolderMinAge = 7 * 24 * time.Hour
+	} else if this.VersionFolderMinAge < 0 {
+		this.VersionFolderMinAge = 0
+	}
+	// Like LogMaxFiles, an int-typed zero can't be told apart from "unset";
+	// a negative value is the explicit opt-out.
+	if this.VersionGCInterval == 0 {
+		this.VersionGCInterval = 24 * time.Hour
+	} else if this.VersionGCInterval < 0 {
+		this.VersionGCInterval = 0
 	}
 	// RejectExpiry has NO default — unset means "no autonomous clearing,
 	// rejections stay active forever". Operators who want auto-clearing

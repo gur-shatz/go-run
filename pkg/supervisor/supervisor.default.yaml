@@ -5,7 +5,16 @@ crash_window: 1m
 crash_threshold: 3
 exec_fail_threshold: 2
 kill_grace_period: 5s
+
+# Orphan version-folder GC. A folder under versions/ that is not named by
+# current.txt, stable.txt or rejects.txt is an orphan. The newest
+# version_folder_retention orphans are always kept (manual rollback); the rest
+# are deleted once they have gone untouched for version_folder_min_age. The
+# sweep runs at startup and then every version_gc_interval; set the interval
+# negative to keep only the startup pass.
 version_folder_retention: 2
+version_folder_min_age: 168h
+version_gc_interval: 24h
 
 # reject_expiry: how long an autonomously-recorded rejection stays active.
 # After this duration the supervisor will re-attempt the version if the

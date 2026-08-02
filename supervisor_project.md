@@ -260,7 +260,11 @@ A crash before step 4 leaves `current.txt` unchanged and the partially extracted
 
 #### Orphan folder cleanup
 
-On startup the supervisor lists `versions/*` and identifies any folder whose name is not in `stable.txt`, `current.txt`, or `rejects.txt`. The newest `version_folder_retention` orphans (default 2) are kept in case a manual rollback is wanted. The rest are deleted.
+The supervisor lists `versions/*` and identifies any folder whose name is not in `stable.txt`, `current.txt`, or `rejects.txt`. The newest `version_folder_retention` orphans (default 2) are kept in case a manual rollback is wanted. Of the rest, a folder is deleted only once it has gone untouched for `version_folder_min_age` (default 7 days), along with its logs.
+
+The sweep runs once at startup and then every `version_gc_interval` (default 24h), so a supervisor that stays up for months does not accumulate orphans between restarts. Set the interval to a negative duration to keep only the startup pass. The age floor is what makes the periodic sweep safe next to running components: a folder being extracted into, or one that was current moments ago, is far too young to qualify.
+
+Every sweep records itself on the `versions.gc` statekit state (see §"Own State") — last run, orphans removed, `versions/` size per component, and the last error. A sweep that fails does not abort startup or stop the other components from being swept; it warns.
 
 #### Launch environment
 
@@ -419,6 +423,8 @@ The supervisor's `<name>.supervisorstate` is an AggregateState with two leaves:
 - `uptime` (important): the lifecycle — `pass` when the child is running cleanly, `warn` when pinned to stable as a fallback or restarting/installing, `fail` when running a still-rejected version. Carries the per-state metrics (`runcount`, `uptime_seconds`, `fast_crashes`, `exec_failures`).
 - `update` (informational): the update flow — `pass` after a successful remote poll, `fail` on poll/prepare error (capped at warn in the aggregate because failures here mean "we couldn't reach the vendor", not "the workload is broken").
 
+Alongside the per-component aggregates the supervisor registers `versions.gc` (informational, `scraped_from: supervisor`): the orphan version-folder sweep. It is `pass` after a clean sweep and `warn` when the last one failed — housekeeping never fails the supervisor, so it goes no further. Its metrics are `last_run_timestamp_seconds`, `deleted_last_run`, `deleted_total` and `versions_size_mbytes`; its `data` block carries `last_run` / `last_run_ago`, `runs`, `deleted`, `deleted_total`, `versions_size`, the per-component `versions/` sizes, and `last_error` / `last_error_at` / `last_error_ago`. The `_ago` fields are computed when the state is read, not when the sweep wrote it — with a daily cadence a value frozen at write time would read "just now" for the next 24 hours. The last error is sticky: it stays in `data` after a later clean sweep, so a failure that has since recovered is still on record. Per-component sizes are also exported as `component_versions_size_mbytes` in `/metrics`.
+
 `state.json` (statekit-owned, optional) would be a journal of transitions on disk; presently statekit's history is in-memory only and reset on supervisor restart.
 
 ## Force version, Force stable
@@ -454,6 +460,8 @@ crash_threshold: 3
 exec_fail_threshold: 2
 kill_grace_period: 5s
 version_folder_retention: 2
+version_folder_min_age: 168h  # orphan versions must be this stale before GC deletes them
+version_gc_interval: 24h      # background orphan sweep cadence (negative = startup only)
 reject_expiry: 0           # 0 = rejections never auto-clear; e.g. 24h to opt in
 
 # Per-version stdout.log / stderr.log rotation (see §"Logs").

@@ -239,7 +239,7 @@ var _ = Describe("Factory version", func() {
 		}
 		Expect(factoryPaths.WriteCurrent(factoryVersion)).To(Succeed())
 
-		result, err := supervisor.CleanOrphanVersions(factoryPaths, 0)
+		result, err := supervisor.CleanOrphanVersions(factoryPaths, supervisor.VersionGCPolicy{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Deleted).To(ConsistOf("old-1", "old-2"))
 

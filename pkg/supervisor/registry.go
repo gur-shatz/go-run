@@ -94,6 +94,20 @@ type statekitBundle struct {
 	// as a top-level state so it appears in /state and emits state_level.
 	memorySubsystem *statekit.ManualState
 
+	// versionGC is a supervisor-scoped state for the orphan version-folder
+	// sweep: pass after a clean pass, warn when the last pass hit an error.
+	// Housekeeping never fails the supervisor, so it never goes past warn. Its
+	// attached metrics carry the numbers behind the verdict; versionsBytes is
+	// the registry-level per-component view for /metrics.
+	versionGC        *statekit.ManualState
+	versionGCLive    *versionGCLiveState
+	gcTracker        versionGCTracker
+	gcLastRun        *statekit.Gauge
+	gcDeleted        *statekit.Gauge
+	gcDeletedTotal   *statekit.Counter
+	gcVersionsMBytes *statekit.Gauge
+	versionsBytes    *statekit.GaugeVec
+
 	// Per-component scalar metrics attached to the "uptime" leaf via
 	// AddMetric — they appear inside the leaf's "metrics:" block in /state.
 	perComponentRunCount     map[string]*statekit.Counter
@@ -163,6 +177,7 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 		memoryEvents:             statekit.NewCounterVec("component_memory_events_total", "Leaf memory.events increments observed by the supervisor.", "component", "event"),
 		memoryRestarts:           statekit.NewCounterVec("component_memory_restarts_total", "Memory-driven restarts/stops the supervisor performed.", "component", "reason"),
 		supervisorRSS:            statekit.NewGauge("supervisor_self_memory_rss_mbytes", "The supervisor process's own RSS in MiB."),
+		versionsBytes:            statekit.NewGaugeVec("component_versions_size_mbytes", "Size of the component's versions/ folder in MiB, measured after each orphan sweep.", "component"),
 		perComponentRunCount:     make(map[string]*statekit.Counter, len(cfg.Components)),
 		perComponentUptime:       make(map[string]*statekit.Gauge, len(cfg.Components)),
 		perComponentFastCrashes:  make(map[string]*statekit.Gauge, len(cfg.Components)),
@@ -170,8 +185,21 @@ func newStatekitBundle(cfg Config) *statekitBundle {
 	}
 	_ = reg.RegisterCollectors(b.fastCrashes, b.execFailures, b.runCount, b.uptimeSeconds, b.monitorPort,
 		b.memoryCurrent, b.memoryHigh, b.memoryLimit, b.memoryMode, b.podLimit, b.machineTotal, b.cgroupLimit, b.podCurrent, b.podWorkingSet, b.workloadCur, b.workloadWorkingSet, b.memorySampleT,
-		b.memoryRSS, b.memoryEvents, b.memoryRestarts, b.supervisorRSS)
+		b.memoryRSS, b.memoryEvents, b.memoryRestarts, b.supervisorRSS, b.versionsBytes)
 	reg.RegisterEscalations(b.escalations)
+
+	// Orphan version-folder GC leaf. Always registered — the sweep runs at
+	// startup even when the background cadence is disabled, so the state
+	// always has something truthful to report.
+	b.versionGC = statekit.NewManualState("versions.gc", statekit.WithImportance(statekit.Informational))
+	b.gcLastRun = statekit.NewGauge("last_run_timestamp_seconds", "Unix time of the last orphan version-folder sweep.")
+	b.gcDeleted = statekit.NewGauge("deleted_last_run", "Orphan version folders deleted by the last sweep.")
+	b.gcDeletedTotal = statekit.NewCounter("deleted_total", "Orphan version folders deleted since the supervisor started.")
+	b.gcVersionsMBytes = statekit.NewGauge("versions_size_mbytes", "Total size of every component's versions/ folder in MiB, measured after the last sweep.")
+	b.versionGC.AddMetric(b.gcLastRun, b.gcDeleted, b.gcDeletedTotal, b.gcVersionsMBytes)
+	b.versionGC.Pass("no sweep yet", nil)
+	b.versionGCLive = &versionGCLiveState{underlying: b.versionGC, tracker: &b.gcTracker}
+	_ = reg.Register(&taggedState{underlying: b.versionGCLive, scrapedFrom: "supervisor"})
 
 	// Memory-subsystem health leaf — a supervisor-scoped state, separate from any
 	// component's memory pressure. Pass while the subsystem does what its mode
@@ -604,6 +632,53 @@ func (this *statekitBundle) observeStateUnwritable(reason string) {
 	g := statekit.NewGauge("supervisor_state_writable", "1 when the state dir accepts writes; 0 when the supervisor runs with in-memory version state (limp mode).")
 	g.Set(0)
 	_ = this.registry.RegisterCollectors(g)
+}
+
+// observeVersionGC folds one orphan sweep into the tracker and renders it into
+// the versions.gc state: warn when that pass hit an error, pass otherwise. The
+// data map carries what an operator wants after the fact — when it last ran,
+// what it removed, how much each component's versions/ folder still occupies,
+// and the last error even once a later pass has succeeded. The "ago" fields
+// are added at read time by versionGCLiveState.
+func (this *statekitBundle) observeVersionGC(at time.Time, deleted int, sizes map[string]int64, errText string) {
+	if this == nil || this.versionGC == nil {
+		return
+	}
+	rep := this.gcTracker.record(at, deleted, sizes, errText)
+	this.gcLastRun.Set(rep.At.Unix())
+	this.gcDeleted.Set(int64(rep.Deleted))
+	this.gcDeletedTotal.Add(uint64(rep.Deleted))
+	this.gcVersionsMBytes.Set(bytesToMiB(rep.Bytes))
+
+	components := make(map[string]any, len(rep.Components))
+	for name, size := range rep.Components {
+		this.versionsBytes.WithLabelValues(name).Set(bytesToMiB(size))
+		components[name] = humanBytes(size)
+	}
+
+	data := map[string]any{
+		"last_run":            rep.At.UTC().Format(time.RFC3339),
+		"runs":                rep.Runs,
+		"deleted":             rep.Deleted,
+		"deleted_total":       rep.DeletedTotal,
+		"versions_size":       humanBytes(rep.Bytes),
+		"versions_size_bytes": rep.Bytes,
+	}
+	if len(components) > 0 {
+		data["components"] = components
+	}
+	if rep.LastError != "" {
+		data["last_error"] = rep.LastError
+		data["last_error_at"] = rep.LastErrorAt.UTC().Format(time.RFC3339)
+	}
+
+	// The pass that just ran is the one that decides the status; a stale error
+	// from an earlier pass stays visible in the data map only.
+	if rep.LastError != "" && rep.LastErrorAt.Equal(rep.At) {
+		this.versionGC.Warn(rep.LastError, data)
+		return
+	}
+	this.versionGC.Pass(fmt.Sprintf("%d removed, %s in versions/", rep.Deleted, humanBytes(rep.Bytes)), data)
 }
 
 func (this *statekitBundle) observeMemorySubsystemHealthy(detail string) {

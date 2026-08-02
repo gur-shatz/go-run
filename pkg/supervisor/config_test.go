@@ -25,6 +25,8 @@ var _ = Describe("Config", func() {
 			Expect(cfg.ExecFailThreshold).To(Equal(2))
 			Expect(cfg.KillGracePeriod).To(Equal(5 * time.Second))
 			Expect(cfg.VersionFolderRetention).To(Equal(2))
+			Expect(cfg.VersionFolderMinAge).To(Equal(7 * 24 * time.Hour))
+			Expect(cfg.VersionGCInterval).To(Equal(24 * time.Hour))
 			Expect(cfg.Supervisor.BindAddress).To(Equal("127.0.0.1:9090"))
 			Expect(cfg.Supervisor.Favicon.Name).To(Equal("GR"))
 			Expect(cfg.Remote.Target).To(Equal("required.txt"))
@@ -44,6 +46,17 @@ var _ = Describe("Config", func() {
 			Expect(cfg.StabilityTime).To(Equal(1 * time.Minute))
 			Expect(cfg.CrashThreshold).To(Equal(7))
 			Expect(cfg.ExecFailThreshold).To(Equal(4))
+		})
+
+		It("maps a negative version gc interval and min age to disabled", func() {
+			cfg := supervisor.Config{
+				VersionFolderMinAge: -time.Second,
+				VersionGCInterval:   -time.Second,
+			}
+			cfg.ApplyDefaults()
+
+			Expect(cfg.VersionFolderMinAge).To(BeZero())
+			Expect(cfg.VersionGCInterval).To(BeZero())
 		})
 
 		It("inherits remote settings into each component", func() {
