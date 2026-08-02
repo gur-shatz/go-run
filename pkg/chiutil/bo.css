@@ -83,5 +83,10 @@ button.ghost:hover { border-color: #6ea8fe; color: #93c0ff; }
 .card-col h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #9ba1ab; }
 @media (max-width: 860px) { .card-cols { grid-template-columns: 1fr; } .card-col + .card-col { border-left: 0; border-top: 1px solid #2a2f38; } }
 
-/* htmx: while a fragment request is in flight the trigger dims. */
-.htmx-request { opacity: 0.55; transition: opacity 150ms ease-in; }
+/* Alpine: x-cloak hides markup until the bindings have run, so a page
+   never flashes its unbound skeleton. Alpine removes the attribute once
+   it initializes. */
+[x-cloak] { display: none !important; }
+
+/* A control dims while the request it fired is in flight. */
+button[disabled] { opacity: 0.55; cursor: default; }

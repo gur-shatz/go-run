@@ -11,15 +11,15 @@ import (
 )
 
 // TestPageAssetsServedAndUnlisted pins the shared-asset contract: every
-// folder serves bo.css / htmx.min.js / bo.js as sibling routes, so pages
-// reference them relatively at any mount depth — and none of them appear
-// in the folder's index.
+// folder serves bo.css / alpine.min.js / bo.js as sibling routes, so
+// pages reference them relatively at any mount depth — and none of them
+// appear in the folder's index.
 func TestPageAssetsServedAndUnlisted(t *testing.T) {
 	r := chi.NewRouter()
 	folder := NewRouteFolder(r, "/bo")
 	folder.GetDesc("/page", "a page", func(w http.ResponseWriter, _ *http.Request) {})
 
-	for _, path := range []string{"/bo/bo.css", "/bo/htmx.min.js", "/bo/bo.js"} {
+	for _, path := range []string{"/bo/bo.css", "/bo/alpine.min.js", "/bo/bo.js"} {
 		resp := httptest.NewRecorder()
 		r.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
 		if resp.Code != http.StatusOK || resp.Body.Len() == 0 {
