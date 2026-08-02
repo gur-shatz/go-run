@@ -121,6 +121,7 @@
     .actions button:disabled { opacity: 0.3; cursor: not-allowed; background: transparent !important; }
     a.link-disabled { pointer-events: none; opacity: 0.4; }
     .log-link { cursor: pointer; color: var(--pico-primary); text-decoration: underline; font-size: 0.85rem; }
+    .log-link + .log-link { margin-left: 0.5rem; }
     .empty-state { text-align: center; padding: 2rem; color: var(--pico-muted-color); }
     /* Log side panel */
     .drawer {
@@ -492,6 +493,23 @@
     }).join('');
   }
 
+  // logLinks renders one drawer link per stage the target actually has and that
+  // has a log file configured.
+  const LOG_STAGES = [
+    { key: 'build', hasField: 'has_build' },
+    { key: 'run', hasField: 'has_run' },
+    { key: 'test', hasField: 'has_test' }
+  ];
+
+  function logLinks(t) {
+    if (!t.logs) return '';
+    return LOG_STAGES.filter(function(s) { return t[s.hasField] && t.logs[s.key]; })
+      .map(function(s) {
+        const stage = s.key;
+        return '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'' + stage + '\')">' + stage + '</span>';
+      }).join(' ');
+  }
+
   function renderSummaryTable(targets) {
     const tbody = document.querySelector('#summary-table tbody');
     if (!targets.length) {
@@ -519,10 +537,7 @@
         return '<a href="' + escHtml(href) + '" target="_blank"' + cls + '>' + escHtml(l.name) + '</a>';
       }).join(' ');
 
-      const hasLogs = t.logs && t.logs.run;
-      const logsCell = hasLogs
-        ? '<span class="log-link" onclick="_runuiOpenDrawer(\'' + escHtml(t.name) + '\',\'run\')">output</span>'
-        : '\u2014';
+      const logsCell = logLinks(t) || '\u2014';
 
       const buildBtn = t.has_build
         ? '<button title="Build" onclick="_runuiAction(\'' + escHtml(t.name) + '\',\'build\')">\u{1F528}</button>'
