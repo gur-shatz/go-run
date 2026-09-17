@@ -110,6 +110,16 @@ supervisor:
 
 updates:
   enabled: true
+  # mode: who names the version each component runs.
+  #   remote_directed  (default) the vendor endpoint's channel pointer
+  #                    (remote.target, usually required.txt) is polled.
+  #   locally_directed a local agent, normally the running child, writes
+  #                    <state_dir>/<component>/target.txt; the optional
+  #                    operator-owned <state_dir>/<component>/location.yml
+  #                    (base_url + secret / secret_env / secret_file) says
+  #                    where to fetch from, else the remote: block below.
+  #                    The signing key always comes from remote: below.
+  # mode: remote_directed
 
 remote:
   base_url: https://updates.example.com

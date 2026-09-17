@@ -67,6 +67,18 @@ type Component struct {
 	// Forced overrides snapshot accessor — read each Updater tick.
 	getForced func() ForcedOverride
 
+	// locallyDirected is updates.mode == locally_directed: target.txt names
+	// the version and location.yml (optional) names the remote. The fields
+	// below it are updater-goroutine state for that mode: the last readable
+	// contents of each file (an unparsable rewrite keeps the previous good
+	// value and warns), the warn to keep on the update leaf for this tick,
+	// and the remote PrepareVersion should fetch from this tick.
+	locallyDirected  bool
+	lastGoodTarget   LocalTarget
+	lastGoodLocation *Location
+	localWarn        string
+	tickRemote       RemoteConfig
+
 	// memIncident, when set, captures a memory incident (a snapshot of recent
 	// samples) on an abnormal child exit. nil when the memory subsystem is off.
 	// Set after construction via SetMemoryIncidentHook.
@@ -160,6 +172,8 @@ func NewComponent(cfg ComponentConfig, paths ComponentPaths, install *Installer,
 		logMaxFiles:     top.LogMaxFiles,
 		supervisorVars:  top.Vars,
 		getForced:       getForced,
+		locallyDirected: top.Updates.LocallyDirected(),
+		tickRemote:      cfg.Remote,
 		switchCh:        make(chan string, 1),
 		controlCh:       make(chan componentControlRequest),
 		counters:        NewCounters(top.CrashWindow, top.CrashThreshold, top.ExecFailThreshold),
@@ -511,12 +525,18 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 		return
 	}
 	if this.bundle != nil {
-		if this.limpPendingUpdate != "" {
+		switch {
+		case this.limpPendingUpdate != "":
 			// Keep the "update available, state dir unwritable" signal on the
 			// health surface — it is the operator's cue that the install is
 			// degraded rather than current.
 			this.bundle.observeUpdateWarn(this.cfg.Name, this.limpPendingUpdate)
-		} else {
+		case this.localWarn != "":
+			// Same for a locally directed input the supervisor could not
+			// honour (unparsable target.txt / location.yml): the tick ran on
+			// the last good reading and the operator should know.
+			this.bundle.observeUpdateWarn(this.cfg.Name, this.localWarn)
+		default:
 			this.bundle.observeUpdateOK(this.cfg.Name, "prepared "+target)
 		}
 	}
@@ -540,7 +560,9 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 //
 // The decision is intentionally first-principles:
 //
-//  1. Resolve the target (forced override beats remote; remote beats nothing).
+//  1. Resolve the target (forced override beats the mode's own source: the
+//     remote pointer in remote directed mode, target.txt in locally directed
+//     mode, current.txt when updates are disabled).
 //  2. If the target is in rejects.txt AND differs from current, the
 //     supervisor refuses to switch onto it — return empty (lifecycle keeps
 //     current going).
@@ -551,6 +573,8 @@ func (this *Component) reconcileTarget(ctx context.Context) {
 // "did the supervisor talk to the vendor recently?"
 func (this *Component) computeDesiredVersion(ctx context.Context) (string, error) {
 	this.limpPendingUpdate = ""
+	this.localWarn = ""
+	this.tickRemote = this.effectiveRemote()
 	override := this.getForced()
 	stable, _ := this.paths.ReadStable()
 	current, _ := this.paths.ReadCurrent()
@@ -582,8 +606,14 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 				}
 				target = current
 			}
+		} else if this.locallyDirected {
+			var err error
+			target, err = this.localTarget(ctx, current, stable)
+			if err != nil || target == "" {
+				return "", err
+			}
 		} else {
-			remoteVersion, err := this.install.Remote.ResolveVersion(ctx, this.cfg.Remote.BaseURL, this.cfg.Name, this.cfg.Remote.Target)
+			remoteVersion, err := this.install.ResolveVersion(ctx, this.cfg.Name, this.tickRemote, this.cfg.Remote.Target)
 			if err != nil {
 				if this.bundle != nil {
 					this.bundle.observeUpdateError(this.cfg.Name, err)
@@ -632,12 +662,136 @@ func (this *Component) computeDesiredVersion(ctx context.Context) (string, error
 	if target != current {
 		if rejected, _ := this.paths.IsActivelyRejected(target, time.Now(), this.rejectExpiry); rejected {
 			if this.bundle != nil {
-				this.bundle.observeUpdateWarn(this.cfg.Name, "target "+target+" is rejected; holding current")
+				what := "target "
+				if this.locallyDirected && override.Kind == ForcedKindNone {
+					what = "local target "
+				}
+				this.bundle.observeUpdateWarn(this.cfg.Name, what+target+" is rejected; holding current")
 			}
 			return "", nil
 		}
 	}
 	return target, nil
+}
+
+// localTarget is the locally directed mode resolve step: read target.txt and
+// turn it into a concrete version. It sits below rejects.txt in precedence
+// (the caller applies that check) and never halts the component: when the
+// file is absent, empty, unparsable or asks for a stable that does not exist,
+// the component keeps running what it has, with the reason on the update
+// leaf. Returns "" for "nothing runnable at all".
+func (this *Component) localTarget(ctx context.Context, current, stable string) (string, error) {
+	lt, err := ReadLocalTarget(this.paths.Target())
+	if err != nil {
+		lt = this.lastGoodTarget
+		this.noteLocalWarn("target.txt invalid (" + err.Error() + "); using last good reading " + quoteTarget(lt))
+	} else {
+		this.lastGoodTarget = lt
+	}
+
+	holdCurrent := func(reason string) (string, error) {
+		switch {
+		case this.versionUsable(current):
+			if this.bundle != nil && this.localWarn == "" {
+				this.bundle.observeUpdateOK(this.cfg.Name, reason+"; current = "+current)
+			}
+			return current, nil
+		case this.factoryVersion() != "":
+			if this.bundle != nil && this.localWarn == "" {
+				this.bundle.observeUpdateOK(this.cfg.Name, reason+"; factory "+this.factoryVersion())
+			}
+			return this.factoryVersion(), nil
+		case current != "":
+			// Not extracted yet but named: let prepare fetch it as usual.
+			if this.bundle != nil && this.localWarn == "" {
+				this.bundle.observeUpdateOK(this.cfg.Name, reason+"; current = "+current)
+			}
+			return current, nil
+		default:
+			this.markWarn(reason + " and current.txt is empty: nothing to run")
+			return "", nil
+		}
+	}
+
+	switch lt.Kind {
+	case LocalTargetVersion:
+		if this.bundle != nil && this.localWarn == "" {
+			this.bundle.observeUpdateOK(this.cfg.Name, "local target = "+lt.Version)
+		}
+		return lt.Version, nil
+	case LocalTargetStable:
+		if stable == "" {
+			this.noteLocalWarn("target.txt = stable but no stable.txt; holding current")
+			return holdCurrent("no stable")
+		}
+		if this.bundle != nil && this.localWarn == "" {
+			this.bundle.observeUpdateOK(this.cfg.Name, "local target = stable ("+stable+")")
+		}
+		return stable, nil
+	case LocalTargetPointer:
+		resolved, err := this.install.ResolveVersion(ctx, this.cfg.Name, this.tickRemote, lt.Version)
+		if err != nil {
+			if this.bundle != nil {
+				this.bundle.observeUpdateError(this.cfg.Name, fmt.Errorf("local target @%s: %w", lt.Version, err))
+			}
+			// Same boot rule as remote directed mode: never block on the
+			// origin when a factory version can run instead.
+			if fv := this.factoryVersion(); fv != "" && !this.versionUsable(current) {
+				return fv, nil
+			}
+			return "", err
+		}
+		if this.bundle != nil && this.localWarn == "" {
+			this.bundle.observeUpdateOK(this.cfg.Name, "local target @"+lt.Version+" = "+resolved)
+		}
+		return resolved, nil
+	default:
+		return holdCurrent("no target.txt")
+	}
+}
+
+// effectiveRemote is the RemoteConfig this tick fetches from: the configured
+// remote: block, with base_url and bearer replaced by location.yml when the
+// mode is locally directed and the file is present. An unparsable
+// location.yml keeps the previous good reading and warns, so a half-written
+// file cannot flip a component back to the vendor endpoint.
+func (this *Component) effectiveRemote() RemoteConfig {
+	if !this.locallyDirected {
+		return this.cfg.Remote
+	}
+	loc, present, err := ReadLocation(this.paths.Location())
+	switch {
+	case err != nil:
+		this.noteLocalWarn("location.yml invalid (" + err.Error() + "); using last good reading")
+	case present:
+		this.lastGoodLocation = &loc
+	default:
+		this.lastGoodLocation = nil
+	}
+	if this.lastGoodLocation == nil {
+		return this.cfg.Remote
+	}
+	return this.lastGoodLocation.Apply(this.cfg.Remote)
+}
+
+// noteLocalWarn records a locally directed mode warning for this tick and
+// pushes it to the update leaf. The first warning of a tick wins; it is
+// re-pushed at the end of reconcileTarget so a later "prepared" pass does not
+// erase it.
+func (this *Component) noteLocalWarn(msg string) {
+	if this.localWarn == "" {
+		this.localWarn = msg
+	}
+	if this.bundle != nil {
+		this.bundle.observeUpdateWarn(this.cfg.Name, this.localWarn)
+	}
+}
+
+func quoteTarget(lt LocalTarget) string {
+	if lt.Kind == LocalTargetNone {
+		return "(none)"
+	}
+	return "\"" + lt.String() + "\""
 }
 
 // PrepareVersion is the four-step install pipeline:
@@ -658,7 +812,7 @@ func (this *Component) PrepareVersion(ctx context.Context, version string) error
 	// so nothing is fetched and no signature is checked (trust comes from the
 	// image, same as the supervisor binary).
 	if version != localVersion && version != this.factoryVersion() && !versionExtracted(this.paths.VersionDir(version)) {
-		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.cfg.Remote, this.paths, version); err != nil {
+		if err := this.install.PrepareVersion(ctx, this.cfg.Name, this.tickRemote, this.paths, version); err != nil {
 			return err
 		}
 	}
@@ -687,12 +841,14 @@ func (this *Component) launchVars(version string) (LaunchVars, error) {
 		return LaunchVars{}, fmt.Errorf("version dir %s is missing", versionDir)
 	}
 	return LaunchVars{
-		Version:     version,
-		VersionDir:  versionDir,
-		StateDir:    this.paths.Root,
-		MonitorPort: this.cfg.Port,
-		KillSock:    this.paths.KillSock(),
-		LogDir:      this.paths.LogsDir(version),
+		Version:      version,
+		VersionDir:   versionDir,
+		StateDir:     this.paths.Root,
+		MonitorPort:  this.cfg.Port,
+		KillSock:     this.paths.KillSock(),
+		LogDir:       this.paths.LogsDir(version),
+		TargetFile:   this.paths.Target(),
+		LocationFile: this.paths.Location(),
 	}, nil
 }
 
@@ -976,12 +1132,14 @@ func (this *Component) LaunchChild(_ context.Context, version string) (*runningC
 	port := this.cfg.Port
 	logDir := this.paths.LogsDir(version)
 	vars := LaunchVars{
-		Version:     version,
-		VersionDir:  versionDir,
-		StateDir:    this.paths.Root,
-		MonitorPort: port,
-		KillSock:    this.paths.KillSock(),
-		LogDir:      logDir,
+		Version:      version,
+		VersionDir:   versionDir,
+		StateDir:     this.paths.Root,
+		MonitorPort:  port,
+		KillSock:     this.paths.KillSock(),
+		LogDir:       logDir,
+		TargetFile:   this.paths.Target(),
+		LocationFile: this.paths.Location(),
 	}
 
 	argv, err := shlex.Split(this.cfg.Command)

@@ -23,6 +23,11 @@ type LaunchVars struct {
 	// creates on the child's behalf. The child may write any files it wants in
 	// this directory.
 	LogDir string
+	// TargetFile and LocationFile are the locally directed mode inputs
+	// (target.txt / location.yml). Exported in every mode so a child can find
+	// them; they only steer the updater when updates.mode is locally_directed.
+	TargetFile   string
+	LocationFile string
 }
 
 // EnvMap returns the launch environment variables a child can read.
@@ -33,12 +38,14 @@ type LaunchVars struct {
 func EnvMap(vars LaunchVars) map[string]string {
 	monitorPort := fmt.Sprintf("%d", vars.MonitorPort)
 	return map[string]string{
-		"OP_VERSION":      vars.Version,
-		"OP_VERSION_DIR":  vars.VersionDir,
-		"OP_STATE_DIR":    vars.StateDir,
-		"OP_MONITOR_PORT": monitorPort,
-		"OP_KILL_SOCK":    vars.KillSock,
-		"OP_LOG_DIR":      vars.LogDir,
+		"OP_VERSION":       vars.Version,
+		"OP_VERSION_DIR":   vars.VersionDir,
+		"OP_STATE_DIR":     vars.StateDir,
+		"OP_MONITOR_PORT":  monitorPort,
+		"OP_KILL_SOCK":     vars.KillSock,
+		"OP_LOG_DIR":       vars.LogDir,
+		"OP_TARGET_FILE":   vars.TargetFile,
+		"OP_LOCATION_FILE": vars.LocationFile,
 
 		"VERSION":          vars.Version,
 		"REQUIRED_VERSION": vars.Version,
@@ -63,6 +70,8 @@ func EnvSlice(vars LaunchVars) []string {
 		"OP_MONITOR_PORT=" + env["OP_MONITOR_PORT"],
 		"OP_KILL_SOCK=" + env["OP_KILL_SOCK"],
 		"OP_LOG_DIR=" + env["OP_LOG_DIR"],
+		"OP_TARGET_FILE=" + env["OP_TARGET_FILE"],
+		"OP_LOCATION_FILE=" + env["OP_LOCATION_FILE"],
 		"VERSION=" + env["VERSION"],
 		"REQUIRED_VERSION=" + env["REQUIRED_VERSION"],
 		"VERSION_DIR=" + env["VERSION_DIR"],

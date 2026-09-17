@@ -113,6 +113,14 @@ func (this ComponentPaths) Stable() string   { return filepath.Join(this.Root, "
 func (this ComponentPaths) Current() string  { return filepath.Join(this.Root, "current.txt") }
 func (this ComponentPaths) Rejects() string  { return filepath.Join(this.Root, "rejects.txt") }
 func (this ComponentPaths) KillSock() string { return filepath.Join(this.Root, "kill.sock") }
+
+// Target is the locally directed mode input: one version string (or "stable",
+// or "@<pointer>") written by the running child or a local control agent.
+func (this ComponentPaths) Target() string { return filepath.Join(this.Root, "target.txt") }
+
+// Location is the optional operator-owned override of where locally directed
+// mode fetches from (base_url plus bearer). Absent means the remote: block.
+func (this ComponentPaths) Location() string { return filepath.Join(this.Root, "location.yml") }
 func (this ComponentPaths) Versions() string { return filepath.Join(this.Root, "versions") }
 
 // VersionDir is the read-only folder holding an extracted image for one version.

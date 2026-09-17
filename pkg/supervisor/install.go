@@ -7,15 +7,54 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // Installer performs the download → verify → extract → swap pipeline for a
-// single component. It is stateless; one instance can be reused across
-// install attempts.
+// single component. One instance can be reused across install attempts.
+//
+// Remote is the client built from the configured remote: block. When a call
+// arrives with a RemoteConfig carrying a different bearer (locally directed
+// mode, where location.yml may redirect a component), the installer keeps
+// one extra client for that bearer and swaps it when the bearer changes.
 type Installer struct {
 	Remote    *RemoteClient
 	PublicKey ed25519.PublicKey
+
+	altMu     sync.Mutex
+	alt       *RemoteClient
+	altBearer string
 }
+
+// client returns the RemoteClient to use for remote: the configured one when
+// remote names no bearer or the same bearer, otherwise a cached client
+// carrying remote.Secret.
+func (this *Installer) client(remote RemoteConfig) *RemoteClient {
+	if this.Remote == nil || remote.Secret == "" || remote.Secret == this.Remote.bearer {
+		return this.Remote
+	}
+	this.altMu.Lock()
+	defer this.altMu.Unlock()
+	if this.alt == nil || this.altBearer != remote.Secret {
+		c := NewRemoteClient(remote.Secret)
+		c.SetPlatform(this.Remote.goos, this.Remote.goarch)
+		this.alt, this.altBearer = c, remote.Secret
+	}
+	return this.alt
+}
+
+// ResolveVersion resolves a channel pointer at remote using the client that
+// matches remote's bearer.
+func (this *Installer) ResolveVersion(ctx context.Context, component string, remote RemoteConfig, target string) (string, error) {
+	if remote.BaseURL == "" {
+		return "", errNoRemote
+	}
+	return this.client(remote).ResolveVersion(ctx, remote.BaseURL, component, target)
+}
+
+// errNoRemote is returned when a version must be fetched but neither the
+// remote: block nor location.yml names a base URL.
+var errNoRemote = errors.New("no remote configured (remote.base_url and location.yml are both absent)")
 
 // Install resolves the latest version per the remote target, fetches the
 // platform-appropriate archive and signature, verifies, extracts into
@@ -25,7 +64,7 @@ type Installer struct {
 // the version on the remote matches current.txt already and nothing changed.
 // The caller decides whether that warrants a relaunch.
 func (this *Installer) Install(ctx context.Context, component string, remote RemoteConfig, paths ComponentPaths) (string, error) {
-	version, err := this.Remote.ResolveVersion(ctx, remote.BaseURL, component, remote.Target)
+	version, err := this.ResolveVersion(ctx, component, remote, remote.Target)
 	if err != nil {
 		return "", fmt.Errorf("resolve version: %w", err)
 	}
@@ -87,7 +126,11 @@ func (this *Installer) PrepareVersion(ctx context.Context, component string, rem
 		return nil
 	}
 
-	archive, err := this.Remote.FetchArchive(ctx, remote.BaseURL, component, version)
+	if remote.BaseURL == "" {
+		return fmt.Errorf("download %s: %w", version, errNoRemote)
+	}
+	client := this.client(remote)
+	archive, err := client.FetchArchive(ctx, remote.BaseURL, component, version)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", version, err)
 	}
@@ -95,7 +138,7 @@ func (this *Installer) PrepareVersion(ctx context.Context, component string, rem
 	// Intended for file:// remotes in trusted dev environments; production
 	// HTTP remotes should always set remote.signature_public_key_path.
 	if this.PublicKey != nil {
-		sig, err := this.Remote.FetchSignature(ctx, remote.BaseURL, component, version)
+		sig, err := client.FetchSignature(ctx, remote.BaseURL, component, version)
 		if err != nil {
 			return fmt.Errorf("download signature %s: %w", version, err)
 		}

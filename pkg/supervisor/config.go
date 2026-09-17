@@ -374,17 +374,40 @@ type BackofficeStaticDirConfig struct {
 	Description string `yaml:"description,omitempty"`
 }
 
+// UpdateMode says who names the version a component should run.
+//
+// UpdateModeRemoteDirected is today's behaviour: the vendor endpoint's channel
+// pointer (remote.target, usually required.txt) is polled and followed.
+//
+// UpdateModeLocallyDirected turns the supervisor into an upgrade engine only:
+// a local agent (normally the running child itself) writes
+// <state_dir>/<component>/target.txt naming the version to run, and an
+// optional operator-owned <state_dir>/<component>/location.yml says where to
+// fetch it from. Nothing is polled unless target.txt asks for a pointer.
+type UpdateMode string
+
+const (
+	UpdateModeRemoteDirected  UpdateMode = "remote_directed"
+	UpdateModeLocallyDirected UpdateMode = "locally_directed"
+)
+
 // UpdatesConfig is the operator-facing update switch. When enabled is false,
 // the supervisor does not poll an update source and runs current.txt locally.
 // The remaining fields mirror remote: and are copied into the effective
 // RemoteConfig during ApplyDefaults.
 type UpdatesConfig struct {
 	Enabled                *bool         `yaml:"enabled,omitempty"`
+	Mode                   UpdateMode    `yaml:"mode,omitempty"`
 	BaseURL                string        `yaml:"base_url,omitempty"`
 	Target                 string        `yaml:"target,omitempty"`
 	PollingInterval        time.Duration `yaml:"polling_interval,omitempty"`
 	Secret                 string        `yaml:"secret,omitempty"`
 	SignaturePublicKeyPath string        `yaml:"signature_public_key_path,omitempty"`
+}
+
+// LocallyDirected reports whether updates.mode is locally_directed.
+func (this UpdatesConfig) LocallyDirected() bool {
+	return this.Mode == UpdateModeLocallyDirected
 }
 
 // RemoteConfig describes the vendor's update endpoint. Per-component overrides may set any subset.
@@ -640,6 +663,9 @@ func (this *Config) ApplyDefaults() {
 	if this.Supervisor.Favicon.Name == "" {
 		this.Supervisor.Favicon.Name = "GR"
 	}
+	if this.Updates.Mode == "" {
+		this.Updates.Mode = UpdateModeRemoteDirected
+	}
 	this.Remote = applyUpdates(this.Remote, this.Updates)
 	if this.Remote.Target == "" {
 		this.Remote.Target = "required.txt"
@@ -763,6 +789,11 @@ func applyExternalURLDefaults(u URLsConfig) URLsConfig {
 
 // Validate checks that the resolved config is internally consistent.
 func (this *Config) Validate() error {
+	switch this.Updates.Mode {
+	case "", UpdateModeRemoteDirected, UpdateModeLocallyDirected:
+	default:
+		return fmt.Errorf("updates.mode: unknown value %q (want %s or %s)", this.Updates.Mode, UpdateModeRemoteDirected, UpdateModeLocallyDirected)
+	}
 	if name := strings.TrimSpace(this.Supervisor.Favicon.Name); len([]rune(name)) > 2 {
 		return fmt.Errorf("supervisor.favicon.name must be at most two characters")
 	}
@@ -802,7 +833,7 @@ func (this *Config) Validate() error {
 		if other, ok := portSeen[c.Port]; ok {
 			return fmt.Errorf("components[%q]: port %d already used by component %q", c.Name, c.Port, other)
 		}
-		if c.Remote.Enabled && c.Remote.BaseURL == "" {
+		if c.Remote.Enabled && c.Remote.BaseURL == "" && !this.Updates.LocallyDirected() {
 			return fmt.Errorf("components[%q]: updates are enabled but remote.base_url is empty", c.Name)
 		}
 		if c.Memory != nil && strings.TrimSpace(c.Memory.OverflowPath) != "" {
@@ -1016,7 +1047,9 @@ func applyUpdates(remote RemoteConfig, updates UpdatesConfig) RemoteConfig {
 	if updates.Enabled != nil {
 		remote.Enabled = *updates.Enabled
 		remote.EnabledSet = true
-	} else if remote.BaseURL != "" {
+	} else if remote.BaseURL != "" || updates.LocallyDirected() {
+		// Locally directed mode needs no base_url up front: location.yml may
+		// supply it per component, and a target already on disk needs none.
 		remote.Enabled = true
 	}
 	return remote

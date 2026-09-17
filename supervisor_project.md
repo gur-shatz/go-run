@@ -60,6 +60,8 @@ state_dir/
     stable.txt
     current.txt
     rejects.txt
+    target.txt                 # locally directed mode: the version a local agent asks for
+    location.yml               # locally directed mode: optional operator-owned remote override
     versions/
       <version>/               # one folder per known version
         ...image contents...
@@ -447,6 +449,50 @@ Precedence: `forced_versions.txt` > `rejects.txt` > remote required. The supervi
 
 If `* = stable` is in force and a component has no `stable.txt`, that component reports `forced_no_stable` and is halted until a stable exists or the override is changed.
 
+## Locally directed updates
+
+`updates.mode` selects who names the version a component runs. The default, `remote_directed`, is everything described under "Remote update": the supervisor polls the vendor endpoint's channel pointer. `locally_directed` turns the supervisor into an upgrade engine only. A local agent, normally the running child itself, says what to run; the supervisor still fetches, verifies, extracts, launches, counts crashes, promotes, rejects and rolls back exactly as before.
+
+```yaml
+updates:
+  mode: locally_directed
+```
+
+Two per-component files carry the intent. They are split because they have different authors and change at different rates.
+
+```
+state_dir/<component>/target.txt      # the version to run; app-written, changes often
+state_dir/<component>/location.yml    # where to fetch from; operator-written, changes rarely
+```
+
+`target.txt` holds one line: a concrete version, the word `stable`, or `@<pointer>`. The child finds the path in `OP_TARGET_FILE` (and `OP_LOCATION_FILE` for the other file); both variables are exported in every mode. Writers must replace the file atomically (write a temp file, then rename). The value is checked to be a safe version-folder name before it is used.
+
+- `<version>`: prepare and switch to that version, fetching it from the effective remote when it is not on disk.
+- `stable`: run whatever `stable.txt` names. With no `stable.txt` the component holds current and reports a warn; it is not halted the way a forced `stable` is.
+- `@<pointer>`: resolve `<base_url>/<component>/versions/<pointer>` at the effective remote, following `@redirect` chains as in remote directed mode. This is "the app picks the remote, the vendor still picks the version".
+- absent or empty: run `current.txt`, or the factory version when nothing usable is on disk. On first boot this is the same answer as `updates.enabled: false`; an image may also ship a seed `target.txt`.
+
+`location.yml` is optional. When present it replaces the remote's `base_url` and, if it names one, the bearer:
+
+```yaml
+base_url: https://updates.example.com/tenant-42
+secret: eyJ...          # or secret_env: NAME, or secret_file: /path
+```
+
+When absent, the `remote:` block applies, so an operator who prefers to keep credentials out of the application's reach configures the remote in `supervisor.yml` and lets the application write only `target.txt`. A location without a secret keeps the `remote:` block's bearer. The signing public key is never read from `location.yml`; it stays under `supervisor.yml` / `Options.PublicKey`, so `location.yml` can move where bits come from but not who is trusted to sign them. `remote.base_url` may be left empty in this mode; a version that then has to be fetched fails prepare with "no remote configured".
+
+Both files are re-read on every polling tick. A file that fails to parse is treated as "no change since the last good reading": the tick runs on the previous value and the update sub-state reports a warn naming the file and the parse error. A half-written file therefore cannot flip a component to a wrong remote or an unsafe version.
+
+Precedence in locally directed mode:
+
+```
+forced_versions.txt  >  rejects.txt  >  target.txt  >  current.txt  >  factory
+```
+
+The operator's break-glass stays on top. The application's request sits below `rejects.txt`: when `target.txt` names a version the supervisor has rejected, it holds current and reports "local target X is rejected; holding current". This is the one semantic that separates `target.txt` from `forced_versions.txt`, and it is what makes an application-written file safe: an application that keeps asking for a version that crashes cannot drag the host through repeated crash cycles.
+
+`updates.enabled: false` still wins over the mode and runs `current.txt` without consulting either file.
+
 ## Configuration
 
 YAML, loaded at startup.
@@ -476,6 +522,10 @@ vars:
 
 supervisor:
   bind_address: 127.0.0.1:9090
+
+updates:
+  enabled: true
+  mode: remote_directed  # or locally_directed, see §"Locally directed updates"
 
 remote: # defaults shared across components
   base_url: https://updates.example.com

@@ -118,6 +118,43 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Components[0].Remote.Enabled).To(BeFalse())
 		})
 
+		It("defaults updates.mode to remote_directed", func() {
+			cfg := supervisor.Config{Components: []supervisor.ComponentConfig{{Name: "x", Port: 8080, Command: "/bin/x"}}}
+			cfg.ApplyDefaults()
+			Expect(cfg.Updates.Mode).To(Equal(supervisor.UpdateModeRemoteDirected))
+			Expect(cfg.Updates.LocallyDirected()).To(BeFalse())
+		})
+
+		It("enables updates in locally directed mode without a base_url", func() {
+			cfg := supervisor.Config{
+				Updates:    supervisor.UpdatesConfig{Mode: supervisor.UpdateModeLocallyDirected},
+				Components: []supervisor.ComponentConfig{{Name: "x", Port: 8080, Command: "/bin/x"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Components[0].Remote.Enabled).To(BeTrue())
+			Expect(cfg.Components[0].Remote.BaseURL).To(BeEmpty())
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("lets updates.enabled false win over locally directed mode", func() {
+			disabled := false
+			cfg := supervisor.Config{
+				Updates:    supervisor.UpdatesConfig{Mode: supervisor.UpdateModeLocallyDirected, Enabled: &disabled},
+				Components: []supervisor.ComponentConfig{{Name: "x", Port: 8080, Command: "/bin/x"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Components[0].Remote.Enabled).To(BeFalse())
+		})
+
+		It("rejects an unknown updates.mode", func() {
+			cfg := supervisor.Config{
+				Updates:    supervisor.UpdatesConfig{Mode: "vendor_directed"},
+				Components: []supervisor.ComponentConfig{{Name: "x", Port: 8080, Command: "/bin/x"}},
+			}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("updates.mode")))
+		})
+
 		It("fills default URL paths on each component", func() {
 			cfg := supervisor.Config{
 				Remote:     supervisor.RemoteConfig{BaseURL: "https://x"},

@@ -9,12 +9,14 @@ import (
 
 var _ = Describe("LaunchVars / EnvSlice", func() {
 	vars := supervisor.LaunchVars{
-		Version:     "1.4.2",
-		VersionDir:  "/var/lib/go-run/api/versions/1.4.2",
-		StateDir:    "/var/lib/go-run/api",
-		MonitorPort: 38271,
-		KillSock:    "/var/lib/go-run/api/kill.sock",
-		LogDir:      "/var/lib/go-run/logs/api/1.4.2",
+		Version:      "1.4.2",
+		VersionDir:   "/var/lib/go-run/api/versions/1.4.2",
+		StateDir:     "/var/lib/go-run/api",
+		MonitorPort:  38271,
+		KillSock:     "/var/lib/go-run/api/kill.sock",
+		LogDir:       "/var/lib/go-run/logs/api/1.4.2",
+		TargetFile:   "/var/lib/go-run/api/target.txt",
+		LocationFile: "/var/lib/go-run/api/location.yml",
 	}
 
 	Describe("EnvSlice", func() {
@@ -27,6 +29,8 @@ var _ = Describe("LaunchVars / EnvSlice", func() {
 				"OP_MONITOR_PORT=38271",
 				"OP_KILL_SOCK=/var/lib/go-run/api/kill.sock",
 				"OP_LOG_DIR=/var/lib/go-run/logs/api/1.4.2",
+				"OP_TARGET_FILE=/var/lib/go-run/api/target.txt",
+				"OP_LOCATION_FILE=/var/lib/go-run/api/location.yml",
 				"VERSION=1.4.2",
 				"REQUIRED_VERSION=1.4.2",
 				"VERSION_DIR=/var/lib/go-run/api/versions/1.4.2",
