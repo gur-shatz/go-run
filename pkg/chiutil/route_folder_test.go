@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"testing/fstest"
 
 	"github.com/gur-shatz/go-run/pkg/chiutil"
 
@@ -430,5 +431,42 @@ var _ = Describe("WildcardFolder instance route capture", func() {
 		Expect(byName["page"].Method).To(Equal(http.MethodGet))
 		Expect(byName["page"].IsFolder).To(BeFalse())
 		Expect(byName["action"].Method).To(Equal(http.MethodPost))
+	})
+})
+
+var _ = Describe("StaticFSFolder", func() {
+	It("lists an fs.FS with registered routes first, serves files, and keeps traversal inside", func() {
+		router := chi.NewRouter()
+		root := chiutil.NewRouteFolder(router, "/hub")
+		fsys := fstest.MapFS{
+			"index.yaml":       {Data: []byte("apiVersion: v1\n")},
+			"chart/Chart.yaml": {Data: []byte("name: x")},
+		}
+		charts := root.StaticFSFolder("charts", fsys)
+		charts.GetDesc("/README.md", "rendered per request", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("# hello"))
+		})
+
+		get := func(target string) *httptest.ResponseRecorder {
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+			return w
+		}
+		var index chiutil.FolderIndex
+		Expect(json.Unmarshal(get("/hub/charts/index.json").Body.Bytes(), &index)).To(Succeed())
+		names := []string{}
+		for _, e := range index.Entries {
+			names = append(names, e.Name)
+		}
+		Expect(names).To(Equal([]string{"README.md", "chart", "index.yaml"}))
+		Expect(index.Path).To(Equal("/charts/"))
+
+		Expect(get("/hub/charts/README.md").Body.String()).To(Equal("# hello"), "registered route wins over the file wildcard")
+		Expect(get("/hub/charts/index.yaml").Body.String()).To(Equal("apiVersion: v1\n"))
+		Expect(get("/hub/charts/chart/Chart.yaml").Body.String()).To(Equal("name: x"))
+		Expect(json.Unmarshal(get("/hub/charts/chart/index.json").Body.Bytes(), &index)).To(Succeed())
+		Expect(index.Entries).To(HaveLen(1))
+		Expect(get("/hub/charts/../hub/index.json").Code).NotTo(Equal(http.StatusOK))
+		Expect(get("/hub/charts/nope").Code).To(Equal(http.StatusNotFound))
 	})
 })

@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -576,6 +576,15 @@ const MaxStaticFileSize = 1 << 20 // 1 MB
 // It registers a wildcard route that serves directories as navigable indexes
 // and files with their content. Files larger than MaxStaticFileSize return an error.
 func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
+	return this.StaticFSFolder(name, os.DirFS(fsRoot))
+}
+
+// StaticFSFolder is StaticFilesFolder over any fs.FS: an embed, an overlay,
+// a sub-tree. Routes registered on the returned folder (GetDesc, Link, a
+// sub-folder) are listed at its root beside the files, so a tree can carry
+// rendered pages next to composed ones; chi routes them ahead of the file
+// wildcard.
+func (this *RouteFolder) StaticFSFolder(name string, fsys fs.FS) *RouteFolder {
 	cleanName := strings.Trim(name, "/")
 
 	folder := &RouteFolder{
@@ -595,9 +604,14 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 			urlPath = strings.TrimSuffix(urlPath, "index.json")
 		}
 
-		fsPath := filepath.Join(fsRoot, urlPath)
+		// Clean before use so a "../" segment cannot leave the tree
+		// (fs.FS rejects it anyway; this keeps the listing paths sane).
+		fsPath := strings.Trim(path.Clean("/"+urlPath), "/")
+		if fsPath == "" {
+			fsPath = "."
+		}
 
-		info, err := os.Stat(fsPath)
+		info, err := fs.Stat(fsys, fsPath)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -605,7 +619,11 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 
 		if info.IsDir() {
 			if isIndexJSON {
-				serveDirJSON(w, fsPath, relativeToRoot(folder.basePath+"/"+urlPath, folder.rootPath), folder.serviceName)
+				var extra []*RouteEntry
+				if fsPath == "." {
+					extra = resolveEntries(folder.entries)
+				}
+				serveDirJSON(w, fsys, fsPath, relativeToRoot(folder.basePath+"/"+urlPath, folder.rootPath), folder.serviceName, extra)
 			} else {
 				folder.serveHTML(w, r)
 			}
@@ -621,9 +639,9 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 			}
 			// Force download with Content-Disposition if requested
 			if r.URL.Query().Get("download") == "true" {
-				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(fsPath)))
+				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(fsPath)))
 			}
-			http.ServeFile(w, r, fsPath)
+			http.ServeFileFS(w, r, fsys, fsPath)
 		}
 	}
 
@@ -653,26 +671,42 @@ func (this *RouteFolder) StaticFilesFolder(name, fsRoot string) *RouteFolder {
 	return folder
 }
 
-func serveDirJSON(w http.ResponseWriter, fsPath, urlPath, serviceName string) {
-	files, _ := os.ReadDir(fsPath)
-	entries := make([]*RouteEntry, 0, len(files))
+// serveDirJSON lists a directory of fsys as a folder index, with extra
+// (registered) entries first.
+func serveDirJSON(w http.ResponseWriter, fsys fs.FS, fsPath, urlPath, serviceName string, extra []*RouteEntry) {
+	files, _ := fs.ReadDir(fsys, fsPath)
+	entries := make([]*RouteEntry, 0, len(files)+len(extra))
+	entries = append(entries, extra...)
+	// A registered route shadows a file of the same name (chi serves the
+	// route), so the listing shows it once.
+	registered := make(map[string]bool, len(extra))
+	for _, e := range extra {
+		registered[e.Name] = true
+	}
 
 	for _, f := range files {
-		path := f.Name()
+		if registered[f.Name()] {
+			continue
+		}
+		p := f.Name()
 		if f.IsDir() {
-			path += "/"
+			p += "/"
 		}
 		entries = append(entries, &RouteEntry{
 			Name:     f.Name(),
-			Path:     path,
+			Path:     p,
 			IsFolder: f.IsDir(),
 			Method:   "GET",
 		})
 	}
 
+	title := path.Base(fsPath)
+	if fsPath == "." {
+		title = path.Base(urlPath)
+	}
 	index := FolderIndex{
 		ServiceName: serviceName,
-		Title:       filepath.Base(fsPath),
+		Title:       title,
 		Path:        urlPath,
 		Entries:     entries,
 	}
