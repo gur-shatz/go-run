@@ -360,6 +360,12 @@ func (this *Supervisor) Run(ctx context.Context) error {
 		wg.Go(func() { this.runVersionGC(ctx) })
 	}
 
+	// Status reporter: tells an HTTP update origin what this supervisor
+	// runs and how it fares, once per poll interval, until it declines.
+	if url := statusReportURL(this.cfg.Remote); url != "" {
+		wg.Go(func() { this.runStatusReporter(ctx, url) })
+	}
+
 	// Scraper (optional): polls each component's /healthz, /state, /metrics
 	// and feeds the results into the supervisor's statekit registry.
 	if this.scraper != nil {

@@ -26,3 +26,6 @@ func (this *Component) ComputeDesiredVersionForTest(ctx context.Context) (string
 func NewStatekitBundleForTest(cfg Config) *statekitBundle {
 	return newStatekitBundle(cfg)
 }
+
+// StatusReportURLForTest exposes the derived report URL.
+func StatusReportURLForTest(remote RemoteConfig) string { return statusReportURL(remote) }

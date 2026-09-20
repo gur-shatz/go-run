@@ -127,6 +127,10 @@ remote:
   polling_interval: 1m
   secret: ""
   signature_public_key_path: /etc/go-run/update.pub
+  # After every poll the supervisor also POSTs its status (the /info
+  # snapshot plus host, build, and cadence) to <base_url>/status as
+  # Bearer <secret>; an origin answering 404 or 405 is never asked again.
+  # Any server collects it with supervisor.StatusCollector.
 
 # Each component below is required to have:
 #   - name:    unique identifier
