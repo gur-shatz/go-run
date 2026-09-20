@@ -45,7 +45,7 @@ var _ = Describe("status reports", func() {
 	}
 
 	It("stores what an authenticated reporter sends and refuses the rest", func() {
-		rep := report(supervisor.ComponentSnapshot{Name: "gateway", Current: "v2", Status: "running", GlobalState: "pass"})
+		rep := report(supervisor.ComponentSnapshot{Name: "gateway", Current: "v2", Status: "pass", GlobalState: "pass"})
 		Expect((&supervisor.StatusReporter{URL: server.URL, Bearer: "tok-a"}).Send(context.Background(), rep)).To(Succeed())
 
 		got, ok := collector.Load("install-a")
@@ -78,24 +78,36 @@ var _ = Describe("status reports", func() {
 	It("judges a report by freshness and its components", func() {
 		now := time.Now()
 		fresh := report(
-			supervisor.ComponentSnapshot{Name: "backend", Status: "running", GlobalState: "pass"},
-			supervisor.ComponentSnapshot{Name: "gateway", Status: "running", GlobalState: "pass"})
+			supervisor.ComponentSnapshot{Name: "backend", Status: "pass", StatusReason: "running v1 (pid=41)", GlobalState: "pass"},
+			supervisor.ComponentSnapshot{Name: "gateway", Status: "pass", StatusReason: "running v1 (pid=42)", GlobalState: "pass"})
 		v := supervisor.JudgeStatus(fresh, now)
 		Expect(v.Status).To(Equal(statekit.Pass))
 		Expect(v.Reason).To(Equal("2 components running"))
 		Expect(v.Stale).To(BeFalse())
 
-		warn := report(supervisor.ComponentSnapshot{Name: "gateway", Status: "running", GlobalState: "pass", UpdateState: "warn", UpdateReason: "target v3 is rejected; holding current"})
+		warn := report(supervisor.ComponentSnapshot{Name: "gateway", Status: "pass", GlobalState: "pass", UpdateState: "warn", UpdateReason: "target v3 is rejected; holding current"})
 		v = supervisor.JudgeStatus(warn, now)
 		Expect(v.Status).To(Equal(statekit.Warn))
-		Expect(v.Reason).To(Equal("gateway target v3 is rejected; holding current"))
+		Expect(v.Reason).To(Equal("gateway update: target v3 is rejected; holding current"))
+
+		health := report(supervisor.ComponentSnapshot{Name: "backend", Status: "pass", GlobalState: "warn", UpdateState: "pass", UpdateReason: "prepared v1"})
+		v = supervisor.JudgeStatus(health, now)
+		Expect(v.Status).To(Equal(statekit.Pass), "a component's own health is not the origin's concern")
+
+		both := report(supervisor.ComponentSnapshot{Name: "backend", Status: "warn", StatusReason: "restarting (exit 1)", GlobalState: "fail", UpdateState: "warn", UpdateReason: "holding"})
+		Expect(supervisor.JudgeStatus(both, now).Reason).To(Equal("backend restarting (exit 1); backend update: holding"))
+
+		down := report(supervisor.ComponentSnapshot{Name: "gateway", Status: "down", StatusReason: "not started"})
+		v = supervisor.JudgeStatus(down, now)
+		Expect(v.Status).To(Equal(statekit.Fail))
+		Expect(v.Reason).To(Equal("gateway not started"))
 
 		fail := report(
-			supervisor.ComponentSnapshot{Name: "backend", Status: "halted", StatusReason: "crash loop"},
-			supervisor.ComponentSnapshot{Name: "gateway", Status: "running", GlobalState: "warn"})
+			supervisor.ComponentSnapshot{Name: "backend", Status: "fail", StatusReason: "halted: crash loop"},
+			supervisor.ComponentSnapshot{Name: "gateway", Status: "pass", GlobalState: "fail"})
 		v = supervisor.JudgeStatus(fail, now)
 		Expect(v.Status).To(Equal(statekit.Fail))
-		Expect(v.Reason).To(Equal("backend halted"))
+		Expect(v.Reason).To(Equal("backend halted: crash loop"))
 
 		pollErr := fresh
 		pollErr.Snapshot.LastPollError = "dial tcp: refused"
@@ -117,8 +129,8 @@ var _ = Describe("status reports", func() {
 	})
 
 	It("aggregates every reporter into one state", func() {
-		Expect(collector.Store("a", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "running", GlobalState: "pass"}))).To(Succeed())
-		Expect(collector.Store("b", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "halted"}))).To(Succeed())
+		Expect(collector.Store("a", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "pass", GlobalState: "pass"}))).To(Succeed())
+		Expect(collector.Store("b", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "fail", StatusReason: "halted: crash loop"}))).To(Succeed())
 		state := supervisor.NewReportsState(collector, func() []string { return []string{"b", "a", "c"} })
 		Expect(state.Name()).To(Equal("reports"))
 		snap := state.Snapshot()
@@ -128,7 +140,7 @@ var _ = Describe("status reports", func() {
 		Expect(snap.Data["c"]).To(HaveKeyWithValue("level", "none"))
 		Expect(snap.Data["b"]).To(HaveKeyWithValue("level", "fail"))
 		Expect(snap.ChangedAt).NotTo(BeZero())
-		Expect(collector.Store("b", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "running", GlobalState: "pass"}))).To(Succeed())
+		Expect(collector.Store("b", report(supervisor.ComponentSnapshot{Name: "gateway", Status: "pass", GlobalState: "pass"}))).To(Succeed())
 		later := state.Snapshot()
 		Expect(later.Status).To(Equal(statekit.Pass))
 		Expect(later.ChangedAt).To(BeTemporally(">=", snap.ChangedAt))
@@ -158,5 +170,63 @@ var _ = Describe("status reports", func() {
 		Expect(supervisor.StatusReportURLForTest(supervisor.RemoteConfig{Enabled: true, BaseURL: "https://hub.example/versions/"})).To(Equal("https://hub.example/versions/status"))
 		Expect(supervisor.StatusReportURLForTest(supervisor.RemoteConfig{Enabled: true, BaseURL: "file:///srv/origin"})).To(BeEmpty(), "a file origin collects nothing")
 		Expect(supervisor.StatusReportURLForTest(supervisor.RemoteConfig{Enabled: false, BaseURL: "https://hub.example/versions"})).To(BeEmpty(), "updates off, nothing to report to")
+	})
+})
+
+var _ = Describe("stages", func() {
+	var store *supervisor.StageStore
+
+	BeforeEach(func() {
+		store = supervisor.NewStageStore(GinkgoT().TempDir())
+	})
+
+	It("keeps one record per reporter with each component's three stages", func() {
+		Expect(store.Load("a").Components).To(BeEmpty())
+		Expect(store.Requested("a", "gateway", "v1")).To(Succeed())
+		Expect(store.Downloaded("a", "gateway", "v1")).To(Succeed())
+		Expect(store.Requested("a", "backend", "")).To(Succeed())
+		at := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+		Expect(store.Running("a", "gateway", "v1", "pass", at)).To(Succeed())
+
+		s := store.Load("a")
+		Expect(s.Names()).To(Equal([]string{"backend", "gateway"}))
+		gw := s.Components["gateway"]
+		Expect(gw.Requested.Version).To(Equal("v1"))
+		Expect(gw.Downloaded.Version).To(Equal("v1"))
+		Expect(gw.Running).To(Equal(supervisor.Stage{Version: "v1", At: at, Note: "pass"}))
+		Expect(gw.Summary()).To(Equal("running v1"))
+		be := s.Components["backend"]
+		Expect(be.Requested.Note).To(Equal("nothing to run"))
+		Expect(be.Summary()).To(Equal("asked, nothing to run"))
+
+		Expect(store.Requested("a", "gateway", "v2")).To(Succeed())
+		Expect(store.Load("a").Components["gateway"].Summary()).To(Equal("told v2, running v1"))
+		Expect(store.Downloaded("a", "gateway", "v2")).To(Succeed())
+		Expect(store.Load("a").Components["gateway"].Summary()).To(Equal("downloaded v2, still running v1"))
+		Expect(store.Running("a", "gateway", "v2", "pass", at.Add(time.Minute))).To(Succeed())
+		Expect(store.Load("a").Components["gateway"].Summary()).To(Equal("running v2"))
+
+		Expect((supervisor.ComponentStages{}).Summary()).To(Equal("no contact"))
+		Expect((supervisor.ComponentStages{Requested: supervisor.Stage{Version: "v1", At: at}}).Summary()).To(Equal("told v1, not downloaded"))
+		Expect((supervisor.ComponentStages{Requested: supervisor.Stage{Version: "v1", At: at}, Downloaded: supervisor.Stage{Version: "v1", At: at}}).Summary()).To(Equal("downloaded v1, not running yet"))
+		Expect((supervisor.ComponentStages{Running: supervisor.Stage{Version: "v1", At: at}}).Summary()).To(Equal("running v1, never asked"))
+
+		Expect(store.Requested("../x", "gateway", "v1")).To(MatchError(supervisor.ErrBadReporterID))
+		Expect(store.Remove("a")).To(Succeed())
+		Expect(store.Load("a").Components).To(BeEmpty())
+		Expect(store.Remove("a")).To(Succeed())
+	})
+
+	It("is fed by the collector with what each component runs and its run state", func() {
+		collector := supervisor.NewStatusCollector(GinkgoT().TempDir())
+		collector.Stages = store
+		at := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+		rep := supervisor.StatusReport{SentAt: at, IntervalSeconds: 60, Snapshot: supervisor.SupervisorSnapshot{Components: []supervisor.ComponentSnapshot{
+			{Name: "gateway", Current: "v1", Status: "pass", StatusReason: "running v1 (pid=7)", GlobalState: "pass"},
+			{Name: "backend", Status: "down", StatusReason: "not started"}}}}
+		Expect(collector.Store("a", rep)).To(Succeed())
+		s := store.Load("a")
+		Expect(s.Components["gateway"].Running).To(Equal(supervisor.Stage{Version: "v1", At: at, Note: "pass"}))
+		Expect(s.Components["backend"].Running).To(Equal(supervisor.Stage{At: at, Note: "down"}))
 	})
 })

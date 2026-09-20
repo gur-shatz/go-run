@@ -194,8 +194,11 @@ var ErrBadReporterID = errors.New("invalid reporter id")
 
 // StatusCollector keeps the last report of every reporter as
 // <dir>/<id>.status. The id is whatever the server's authentication names.
+// With Stages set, every stored report also marks what each component
+// runs on the reporter's stage record.
 type StatusCollector struct {
-	dir string
+	dir    string
+	Stages *StageStore
 }
 
 func NewStatusCollector(dir string) *StatusCollector {
@@ -226,7 +229,15 @@ func (this *StatusCollector) Store(id string, rep StatusReport) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	if err := os.Rename(tmp, p); err != nil {
+		return err
+	}
+	if this.Stages != nil {
+		for _, c := range rep.Snapshot.Components {
+			_ = this.Stages.Running(id, c.Name, c.Current, c.Status, rep.SentAt)
+		}
+	}
+	return nil
 }
 
 // Load is the reporter's last report, if any.
@@ -307,9 +318,10 @@ const (
 )
 
 // JudgeStatus reads a report: stale is down; else the worst of its
-// components, where a halted component or one whose health is fail or
-// down fails the reporter, and a restart, a degraded health, a failed
-// poll, or an update warning warns it.
+// components by the supervisor's own view, run and update: a lifecycle at
+// fail or down (halted, not started) fails the reporter, one at warn
+// (restarting), a failed poll, or an update warning warns it. What a component says of its own health is
+// its business, not the origin's. The reason names every trip.
 func JudgeStatus(rep StatusReport, now time.Time) StatusVerdict {
 	age := now.Sub(rep.SentAt)
 	limit := time.Duration(rep.IntervalSeconds) * time.Second * statusStaleAfter
@@ -325,11 +337,16 @@ func JudgeStatus(rep StatusReport, now time.Time) StatusVerdict {
 	}
 	var fails, warns []string
 	for _, c := range rep.Snapshot.Components {
-		switch {
-		case c.Status == "halted" || c.GlobalState == "fail" || c.GlobalState == "down":
-			fails = append(fails, c.Name+" "+firstNonEmpty(c.GlobalState, c.Status))
-		case c.Status == "restarting" || c.GlobalState == "warn" || c.UpdateState == "warn" || c.UpdateState == "fail":
-			warns = append(warns, c.Name+" "+firstNonEmpty(c.UpdateReason, c.StatusReason, c.GlobalState))
+		// Status is the lifecycle leaf's statekit status; the reason says
+		// what the process does (running, restarting, halted, not started).
+		switch c.Status {
+		case "fail", "down":
+			fails = append(fails, c.Name+" "+firstNonEmpty(c.StatusReason, c.Status))
+		case "warn":
+			warns = append(warns, c.Name+" "+firstNonEmpty(c.StatusReason, c.Status))
+		}
+		if c.UpdateState == "warn" || c.UpdateState == "fail" {
+			warns = append(warns, c.Name+" update: "+firstNonEmpty(c.UpdateReason, c.UpdateState))
 		}
 	}
 	if rep.Snapshot.LastPollError != "" {
