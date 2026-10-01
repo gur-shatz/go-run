@@ -343,16 +343,31 @@ type FaviconConfig struct {
 
 // BasicAuthConfig is the optional login gate on the supervisor's HTTP server.
 // When Enabled, an unauthenticated request is redirected to a plain /login
-// form; submitting the configured username and password mints a session cookie
-// that grants access for up to 12 hours. The cookie is a signed
-// "<timestamp>.<hash>" pair (hash = sha256(timestamp|username|password)), so
-// nothing is stored server-side and changing the password invalidates every
-// outstanding cookie. Disabled by default so the surface stays open unless an
-// operator opts in.
+// form; submitting the configured username and password (and, when
+// TOTPSecret is set, a one-time code) mints a session cookie that grants
+// access for up to 12 hours. The cookie is a signed "<timestamp>.<hash>" pair
+// (hash = sha256(timestamp|username|password|totp-secret)), so nothing is
+// stored server-side and changing the password or the TOTP secret invalidates
+// every outstanding cookie. Disabled by default so the surface stays open
+// unless an operator opts in.
+//
+// Username and Password may both be left empty: the gate then starts in setup
+// mode and the first visitor creates the operator account through /setup,
+// persisted under <state_dir>/auth.yml. Likewise an empty TOTPSecret can be
+// enrolled later from /security (QR code), and the portal shows a banner until
+// it is. Values given here always win over the persisted file.
 type BasicAuthConfig struct {
 	Enabled  bool   `yaml:"enabled"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+
+	// TOTPSecret, when set, adds a second factor: the login form gains a
+	// "one-time code" field validated as RFC 6238 TOTP (SHA1, 30s, 6 digits,
+	// the defaults of Google Authenticator, 1Password, Authy, etc.). The value
+	// is the base32 shared secret; `supervisor totp-secret` mints one together
+	// with the otpauth:// URI to enrol an authenticator app. HTTP Basic
+	// clients (git, curl) append the current code to the password.
+	TOTPSecret string `yaml:"totp_secret,omitempty"`
 
 	// Hint is an optional human-readable line shown under the login form —
 	// handy for demos where the credentials aren't secret (e.g.
@@ -798,8 +813,15 @@ func (this *Config) Validate() error {
 		return fmt.Errorf("supervisor.favicon.name must be at most two characters")
 	}
 	if ba := this.Supervisor.BasicAuth; ba.Enabled {
-		if ba.Username == "" || ba.Password == "" {
-			return fmt.Errorf("supervisor.basic_auth: username and password are required when enabled")
+		// Both empty is setup mode (the account gets created through the
+		// UI on first visit); exactly one of them is a mistake.
+		if (ba.Username == "") != (ba.Password == "") {
+			return fmt.Errorf("supervisor.basic_auth: username and password must be set together")
+		}
+		if ba.TOTPSecret != "" {
+			if _, err := decodeTOTPSecret(ba.TOTPSecret); err != nil {
+				return fmt.Errorf("supervisor.basic_auth.totp_secret: %w", err)
+			}
 		}
 	}
 	if err := this.validateMemory(); err != nil {

@@ -41,7 +41,9 @@ func run() (err error) {
 		fmt.Fprintf(os.Stderr, "  (default)  Run the supervisor in the foreground\n")
 		fmt.Fprintf(os.Stderr, "  install    Install supervisor as a system service (not yet implemented)\n")
 		fmt.Fprintf(os.Stderr, "  uninstall  Remove the installed system service (not yet implemented)\n")
-		fmt.Fprintf(os.Stderr, "  version    Print version and exit\n\n")
+		fmt.Fprintf(os.Stderr, "  version    Print version and exit\n")
+		fmt.Fprintf(os.Stderr, "  totp-secret [account]\n")
+		fmt.Fprintf(os.Stderr, "             Mint a basic_auth.totp_secret and its otpauth:// enrolment URI\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -63,6 +65,17 @@ func run() (err error) {
 			return nil
 		case "install", "uninstall":
 			return fmt.Errorf("%s: not yet implemented", args[0])
+		case "totp-secret":
+			account := "admin"
+			if len(args) > 1 {
+				account = args[1]
+			}
+			secret, uri, err := supervisor.NewTOTPEnrolment("supervisor", account)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("totp_secret: %s\n%s\n", secret, uri)
+			return nil
 		default:
 			return fmt.Errorf("unknown command %q", args[0])
 		}

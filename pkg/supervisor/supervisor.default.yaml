@@ -37,12 +37,26 @@ supervisor:
   # enabled, every route redirects unauthenticated visitors to a plain /login
   # form — including the /backoffice/healthz probe, so point any
   # liveness/readiness probe at the component port or expect a redirect. A
-  # correct login sets a signed session cookie valid for 12h. username and
-  # password are required.
+  # correct login sets a signed session cookie valid for 12h.
+  # Every failed login (form or HTTP Basic) locks all logins for 2 seconds
+  # (answered 429), which dampens password and one-time-code guessing.
+  #
+  # Leave username and password out to set the account up in the browser
+  # instead: the first visit lands on /setup, and the result is persisted in
+  # <state_dir>/auth.yml (password hashed). Values here always win over that
+  # file.
+  #
+  # totp_secret adds a second factor: the login form also asks for a 6-digit
+  # one-time code from an authenticator app (RFC 6238 TOTP). Leave it out and
+  # enrol from the browser at /security (QR code); the portal shows a banner
+  # until MFA is on. To provide it from config, mint a secret with
+  # `supervisor totp-secret`. HTTP Basic clients (git, curl) that can't
+  # present a third field append the current code to the password.
   # basic_auth:
   #   enabled: true
   #   username: admin
   #   password: changeme   # template with env to avoid hard-coding a secret
+  #   totp_secret: JBSWY3DPEHPK3PXP   # base32; template with env as well
   #   hint: "demo login: admin / changeme"  # shown under the form; demos only
 
 # backoffice: optional operator-facing folders under /backoffice.

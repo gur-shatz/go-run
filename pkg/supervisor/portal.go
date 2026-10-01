@@ -40,6 +40,14 @@ type portal struct {
 	healthEnabled bool // observer role on -> show links to the /health console
 	mem           *memoryMonitor
 	logger        *log.Logger
+	// mfaMissing, when set, reports that the login gate has an account but no
+	// second factor; the pages then carry a banner pointing at /security.
+	mfaMissing func() bool
+}
+
+// nudgeMFA is the banner condition for a rendered page.
+func (this *portal) nudgeMFA() bool {
+	return this.mfaMissing != nil && this.mfaMissing()
 }
 
 type portalConfig struct {
@@ -160,6 +168,8 @@ type portalHomeView struct {
 	RunningFor    string
 	RootRel       string
 	HealthEnabled bool
+	AuthEnabled   bool // login gate on: link to /security and /logout
+	MFAWarn       bool
 	Components    []portalComponent
 }
 
@@ -167,6 +177,7 @@ type portalComponentView struct {
 	portalComponent
 	RootRel          string
 	HealthEnabled    bool
+	MFAWarn          bool
 	ReadmeHTML       template.HTML
 	ReadmeConfigured bool
 	ReadmeMissing    bool
@@ -359,6 +370,8 @@ func (this *portal) home(w http.ResponseWriter, _ *http.Request) {
 		StartedAt:     snap.StartedAt,
 		RunningFor:    fmtRunningFor(snap.StartedAt),
 		HealthEnabled: this.healthEnabled,
+		AuthEnabled:   this.mfaMissing != nil,
+		MFAWarn:       this.nudgeMFA(),
 	}
 	for _, c := range snap.Components {
 		view.Components = append(view.Components, this.card(c))
@@ -379,6 +392,7 @@ func (this *portal) component(w http.ResponseWriter, r *http.Request) {
 		portalComponent:  this.card(snap),
 		RootRel:          "../../",
 		HealthEnabled:    this.healthEnabled,
+		MFAWarn:          this.nudgeMFA(),
 		ReadmeConfigured: cfg.Readme != "",
 		URLs:             snap.MonitorURLs,
 	}

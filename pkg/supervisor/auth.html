@@ -1,0 +1,150 @@
+{{define "styles"}}<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #f4f5f7; color: #1f2329; }
+  .card { width: 340px; padding: 32px 28px; border-radius: 12px; background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.08); }
+  .card.wide { width: 420px; }
+  h1 { margin: 0 0 20px; font-size: 20px; font-weight: 600; text-align: center; }
+  p { margin: 0 0 14px; font-size: 14px; color: #444b54; }
+  label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 14px; color: #444b54; }
+  input { width: 100%; margin-top: 6px; padding: 10px 12px; font-size: 14px;
+          border: 1px solid #d0d4da; border-radius: 8px; background: #fff; color: inherit; }
+  input:focus { outline: none; border-color: #2d6cdf; box-shadow: 0 0 0 3px rgba(45,108,223,.15); }
+  button, a.btn { display: block; width: 100%; margin-top: 8px; padding: 11px; font-size: 15px; font-weight: 600;
+           text-align: center; text-decoration: none;
+           color: #fff; background: #2d6cdf; border: 0; border-radius: 8px; cursor: pointer; }
+  button:hover, a.btn:hover { background: #2a61c6; }
+  button.quiet, a.btn.quiet { background: transparent; color: #2d6cdf; border: 1px solid #d0d4da; }
+  button.quiet:hover, a.btn.quiet:hover { background: #f0f3f8; }
+  .err { margin: 0 0 16px; padding: 10px 12px; font-size: 13px; border-radius: 8px;
+         color: #a1271b; background: #fdecea; }
+  .ok { margin: 0 0 16px; padding: 10px 12px; font-size: 13px; border-radius: 8px;
+        color: #1e6b3a; background: #e6f6ec; }
+  .warn { margin: 0 0 16px; padding: 10px 12px; font-size: 13px; border-radius: 8px;
+          color: #7a4b00; background: #fff4d6; }
+  .hint { margin: 18px 0 0; font-size: 12px; text-align: center; color: #707880; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid #e7e9ee; font-size: 14px; }
+  .row:first-of-type { border-top: 0; }
+  .row .k { color: #707880; }
+  .row .v { font-weight: 500; text-align: right; }
+  .qr { display: block; margin: 0 auto 14px; width: 220px; height: 220px; border-radius: 8px; background: #fff; }
+  code { font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  .secret { display: block; text-align: center; margin: 0 0 16px; padding: 10px; border-radius: 8px; background: #f0f3f8; letter-spacing: 1px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #15171c; color: #e6e8eb; }
+    .card { background: #20242b; box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5); }
+    p, label { color: #aeb4bd; }
+    input { background: #181b20; border-color: #353b44; }
+    .err { color: #f3b5ad; background: #3a201d; }
+    .ok { color: #9be0b3; background: #1d3a27; }
+    .warn { color: #f5d78a; background: #3d3012; }
+    .row { border-top-color: #2c313a; }
+    .secret, button.quiet:hover, a.btn.quiet:hover { background: #181b20; }
+    button.quiet, a.btn.quiet { border-color: #353b44; color: #8db4ff; }
+  }
+</style>{{end}}
+
+{{define "login"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>{{template "styles" .}}</head>
+<body>
+<form class="card" method="post" action="login">
+  <h1>Sign in</h1>
+  {{if .Failed}}<p class="err">Incorrect {{if .OTP}}username, password or code{{else}}username or password{{end}}.</p>{{end}}
+  {{if .Locked}}<p class="err">Too many failed attempts. Wait a few seconds and try again.</p>{{end}}
+  <input type="hidden" name="next" value="{{.Next}}">
+  <label>Username
+    <input name="username" autocomplete="username" autofocus required>
+  </label>
+  <label>Password
+    <input name="password" type="password" autocomplete="current-password" required>
+  </label>
+  {{if .OTP}}<label>One-time code
+    <input name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code from your authenticator" required>
+  </label>{{end}}
+  <button type="submit">Sign in</button>
+  {{if .Hint}}<p class="hint">{{.Hint}}</p>{{end}}
+</form>
+</body>
+</html>{{end}}
+
+{{define "setup"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up supervisor access</title>{{template "styles" .}}</head>
+<body>
+<form class="card" method="post" action="setup">
+  <h1>Create the operator account</h1>
+  <p>No login has been configured yet. Choose the username and password this supervisor will ask for.</p>
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  {{if .ReadOnly}}<p class="warn">The state directory is not writable, so the account can't be saved here. Set <code>basic_auth.username</code> and <code>password</code> in the config instead.</p>{{end}}
+  <label>Username
+    <input name="username" autocomplete="username" value="{{.Username}}" autofocus required{{if .ReadOnly}} disabled{{end}}>
+  </label>
+  <label>Password
+    <input name="password" type="password" autocomplete="new-password" minlength="8" required{{if .ReadOnly}} disabled{{end}}>
+  </label>
+  <label>Confirm password
+    <input name="confirm" type="password" autocomplete="new-password" minlength="8" required{{if .ReadOnly}} disabled{{end}}>
+  </label>
+  <button type="submit"{{if .ReadOnly}} disabled{{end}}>Create account</button>
+  <p class="hint">You can add two-factor authentication right after.</p>
+</form>
+</body>
+</html>{{end}}
+
+{{define "security"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security &middot; Supervisor</title>{{template "styles" .}}</head>
+<body>
+<div class="card wide">
+  <h1>Security</h1>
+  {{if .Notice}}<p class="ok">{{.Notice}}</p>{{end}}
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  {{if not .MFA}}<p class="warn">Two-factor authentication is off. Anyone who learns the password can sign in.</p>{{end}}
+  <div class="row"><span class="k">Account</span><span class="v">{{.Username}}{{if .CredsFromConfig}} <small>(from config)</small>{{end}}</span></div>
+  <div class="row"><span class="k">Two-factor (TOTP)</span><span class="v">{{if .MFA}}On{{if .MFAFromConfig}} <small>(from config)</small>{{end}}{{else}}Off{{end}}</span></div>
+  {{if not .MFA}}
+    {{if .ReadOnly}}
+    <p class="hint">The state directory is not writable; set <code>basic_auth.totp_secret</code> in the config to enable MFA.</p>
+    {{else}}
+    <a class="btn" href="security/mfa">Enable two-factor authentication</a>
+    {{end}}
+  {{else if not .MFAFromConfig}}
+  <form method="post" action="security/mfa/disable">
+    <label>Current code
+      <input name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+    </label>
+    <button class="quiet" type="submit">Turn off two-factor authentication</button>
+  </form>
+  {{end}}
+  <a class="btn quiet" href="./">Back to supervisor</a>
+</div>
+</body>
+</html>{{end}}
+
+{{define "mfa"}}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enable two-factor &middot; Supervisor</title>{{template "styles" .}}</head>
+<body>
+<form class="card wide" method="post" action="mfa">
+  <h1>Enable two-factor authentication</h1>
+  <p>Scan this code with an authenticator app (Google Authenticator, 1Password, Authy, Microsoft Authenticator), then enter the 6-digit code it shows to confirm.</p>
+  <img class="qr" src="{{.QR}}" alt="QR code for the authenticator app">
+  <p class="hint">Can't scan? Enter this key manually:</p>
+  <code class="secret">{{.Secret}}</code>
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <label>Code from the app
+    <input name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autofocus required>
+  </label>
+  <button type="submit">Confirm and enable</button>
+  <a class="btn quiet" href="../security">Cancel</a>
+</form>
+</body>
+</html>{{end}}

@@ -26,6 +26,12 @@ func (this Paths) ForcedVersions() string {
 	return filepath.Join(this.StateDir, "forced_versions.txt")
 }
 
+// AuthFile is where credentials set up through the UI (first-run setup,
+// MFA enrolment) are persisted. Absent when everything comes from config.
+func (this Paths) AuthFile() string {
+	return filepath.Join(this.StateDir, "auth.yml")
+}
+
 // LogsRoot is the per-supervisor top-level logs directory.
 func (this Paths) LogsRoot() string {
 	return filepath.Join(this.StateDir, "logs")

@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -654,6 +656,14 @@ var _ = Describe("proxy urls", func() {
 })
 
 var _ = Describe("login gate", func() {
+	// Most specs fail a login and then succeed straight away; the failure
+	// lock has its own specs below that turn it back on.
+	BeforeEach(func() {
+		saved := authFailLock
+		authFailLock = 0
+		DeferCleanup(func() { authFailLock = saved })
+	})
+
 	// newAuthedServer wires a supervisor HTTP server with the login gate
 	// enabled for user "op" / pass "s3cret".
 	newAuthedServer := func() *httptest.Server {
@@ -787,7 +797,7 @@ var _ = Describe("login gate", func() {
 
 		// A signature the server would accept, but minted 13h ago — past the
 		// 12h max age. Same credentials => same deterministic signature.
-		stale := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret"}).
+		stale := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret"}, "", nil).
 			mint(time.Now().Add(-13 * time.Hour))
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
 		req.AddCookie(&http.Cookie{Name: authCookieName, Value: stale})
@@ -812,6 +822,387 @@ var _ = Describe("login gate", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
 	})
 
+	// RFC 6238 reference secret ("12345678901234567890" in base32).
+	const otpSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	otpKey, _ := decodeTOTPSecret(otpSecret)
+	currentCode := func(offset int64) string { return totpCode(otpKey, totpCounter(time.Now())+offset) }
+
+	// newOTPServer is newAuthedServer with a TOTP secret configured.
+	newOTPServer := func() *httptest.Server {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		auth := BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", TOTPSecret: otpSecret}
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, nil, BuildInfo{}, auth, FaviconConfig{}, log.New("[t]", false))
+		return httptest.NewServer(hs.server.Handler)
+	}
+
+	It("shows the one-time code field only when a TOTP secret is configured", func() {
+		plain := newAuthedServer()
+		defer plain.Close()
+		Expect(readBody(must2(noRedirect(plain).Get(plain.URL + "/login")))).NotTo(ContainSubstring(`name="otp"`))
+
+		otp := newOTPServer()
+		defer otp.Close()
+		Expect(readBody(must2(noRedirect(otp).Get(otp.URL + "/login")))).To(ContainSubstring(`name="otp"`))
+	})
+
+	It("rejects a correct password without or with a wrong one-time code", func() {
+		srv := newOTPServer()
+		defer srv.Close()
+
+		resp, err := noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(readBody(resp)).To(ContainSubstring("Incorrect username, password or code"))
+
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}, "otp": {currentCode(5)}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		resp.Body.Close()
+	})
+
+	It("logs in with a valid one-time code and refuses its replay", func() {
+		srv := newOTPServer()
+		defer srv.Close()
+		code := currentCode(0)
+
+		resp, err := noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}, "otp": {code}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		Expect(resp.Header.Get("Set-Cookie")).To(ContainSubstring(authCookieName + "="))
+
+		// Same code again: refused even though it is still within the window.
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}, "otp": {code}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+	})
+
+	It("does not burn a one-time code on a failed password", func() {
+		srv := newOTPServer()
+		defer srv.Close()
+		code := currentCode(0)
+
+		resp, err := noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"wrong"}, "otp": {code}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login",
+			url.Values{"username": {"op"}, "password": {"s3cret"}, "otp": {code}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	It("requires HTTP Basic clients to append the code to the password", func() {
+		srv := newOTPServer()
+		defer srv.Close()
+		get := func(pass string) int {
+			req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+			req.Header.Set("Accept", "application/json")
+			req.SetBasicAuth("op", pass)
+			resp, err := noRedirect(srv).Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		Expect(get("s3cret")).To(Equal(http.StatusUnauthorized))
+		Expect(get("s3cret" + currentCode(0))).To(Equal(http.StatusOK))
+		Expect(get("s3cret" + currentCode(0))).To(Equal(http.StatusUnauthorized)) // replay
+	})
+
+	It("invalidates outstanding cookies when the TOTP secret changes", func() {
+		srv := newOTPServer()
+		defer srv.Close()
+
+		// Minted by a gate with the same user/password but no TOTP secret.
+		other := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret"}, "", nil).mint(time.Now())
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+		req.AddCookie(&http.Cookie{Name: authCookieName, Value: other})
+		resp, err := noRedirect(srv).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	// newSetupServer enables the gate with no credentials in config, so the
+	// account (and later MFA) must be created through the UI and persisted
+	// under the state dir. Returns the server and its state dir.
+	newSetupServer := func(cfgAuth BasicAuthConfig) (*httptest.Server, string) {
+		dir := GinkgoT().TempDir()
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		cfgAuth.Enabled = true
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, nil, BuildInfo{}, cfgAuth, FaviconConfig{}, log.New("[t]", false))
+		return httptest.NewServer(hs.server.Handler), dir
+	}
+	jarClient := func() *http.Client {
+		jar, err := cookiejar.New(nil)
+		Expect(err).NotTo(HaveOccurred())
+		return &http.Client{Jar: jar}
+	}
+	// setUp drives the /setup form and returns a logged-in client.
+	setUp := func(srv *httptest.Server) *http.Client {
+		client := jarClient()
+		resp, err := client.PostForm(srv.URL+"/setup",
+			url.Values{"username": {"op"}, "password": {"longenough"}, "confirm": {"longenough"}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.Request.URL.Path).To(Equal("/security"))
+		return client
+	}
+	// enrol drives the /security/mfa flow and returns the TOTP key it enrolled.
+	enrol := func(srv *httptest.Server, client *http.Client) []byte {
+		body := readBody(must2(client.Get(srv.URL + "/security/mfa")))
+		Expect(body).To(ContainSubstring(`src="data:image/png;base64,`))
+		m := regexp.MustCompile(`<code class="secret">([A-Z2-7 ]+)</code>`).FindStringSubmatch(body)
+		Expect(m).To(HaveLen(2))
+		key, err := decodeTOTPSecret(m[1])
+		Expect(err).NotTo(HaveOccurred())
+
+		// A wrong code leaves MFA off and the same secret pending.
+		resp, err := client.PostForm(srv.URL+"/security/mfa", url.Values{"otp": {"000000"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(readBody(resp)).To(ContainSubstring(m[1]))
+
+		resp, err = client.PostForm(srv.URL+"/security/mfa",
+			url.Values{"otp": {totpCode(key, totpCounter(time.Now()))}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.Request.URL.Path).To(Equal("/security"))
+		return key
+	}
+
+	It("lands every request on /setup until an account exists", func() {
+		srv, _ := newSetupServer(BasicAuthConfig{})
+		defer srv.Close()
+		for _, path := range []string{"/", "/backoffice/version", "/login"} {
+			resp, err := noRedirect(srv).Get(srv.URL + path)
+			Expect(err).NotTo(HaveOccurred())
+			resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusSeeOther), path)
+			Expect(resp.Header.Get("Location")).To(Equal("/setup"), path)
+		}
+		Expect(readBody(must2(noRedirect(srv).Get(srv.URL + "/setup")))).To(ContainSubstring("Create the operator account"))
+	})
+
+	It("validates the setup form", func() {
+		srv, _ := newSetupServer(BasicAuthConfig{})
+		defer srv.Close()
+		post := func(v url.Values) string {
+			resp, err := noRedirect(srv).PostForm(srv.URL+"/setup", v)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			return readBody(resp)
+		}
+		Expect(post(url.Values{"password": {"longenough"}, "confirm": {"longenough"}})).To(ContainSubstring("Username is required"))
+		Expect(post(url.Values{"username": {"op"}, "password": {"short"}, "confirm": {"short"}})).To(ContainSubstring("at least 8"))
+		Expect(post(url.Values{"username": {"op"}, "password": {"longenough"}, "confirm": {"different"}})).To(ContainSubstring("do not match"))
+	})
+
+	It("creates the account, persists a hash, and retires /setup", func() {
+		srv, dir := newSetupServer(BasicAuthConfig{})
+		defer srv.Close()
+		client := setUp(srv)
+
+		// Persisted with owner-only permissions and no clear-text password.
+		info, err := os.Stat(filepath.Join(dir, "auth.yml"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0600)))
+		raw, _ := os.ReadFile(filepath.Join(dir, "auth.yml"))
+		Expect(string(raw)).To(ContainSubstring("username: op"))
+		Expect(string(raw)).To(ContainSubstring("password_hash: pbkdf2-sha256$"))
+		Expect(string(raw)).NotTo(ContainSubstring("longenough"))
+
+		// The setup session is live, /setup is gone, and the new password
+		// logs a fresh client in.
+		code, _ := getBody(client, srv.URL+"/backoffice/version")
+		Expect(code).To(Equal(http.StatusOK))
+		resp, err := noRedirect(srv).Get(srv.URL + "/setup")
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.Header.Get("Location")).To(Equal("/"))
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"longenough"}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"wrong"}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+	})
+
+	It("shows the MFA banner on the portal until a second factor is enrolled", func() {
+		srv, dir := newSetupServer(BasicAuthConfig{})
+		defer srv.Close()
+		client := setUp(srv)
+		_, body := getBody(client, srv.URL+"/")
+		Expect(body).To(ContainSubstring("Set up MFA"))
+		Expect(body).To(ContainSubstring(`href="security"`))
+
+		key := enrol(srv, client)
+		_, body = getBody(client, srv.URL+"/")
+		Expect(body).NotTo(ContainSubstring("Set up MFA"))
+		Expect(body).To(ContainSubstring(`href="security">Security</a>`)) // still reachable from the nav
+		Expect(body).To(ContainSubstring(`href="logout"`))
+		raw, _ := os.ReadFile(filepath.Join(dir, "auth.yml"))
+		Expect(string(raw)).To(ContainSubstring("totp_secret: " + totpEncoding.EncodeToString(key)))
+
+		// The enrolling session stays valid (cookie re-minted), and the next
+		// login needs a code.
+		code, _ := getBody(client, srv.URL+"/backoffice/version")
+		Expect(code).To(Equal(http.StatusOK))
+		resp, err := noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"longenough"}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		resp, err = noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"longenough"},
+			"otp": {totpCode(key, totpCounter(time.Now())+1)}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusSeeOther))
+	})
+
+	It("lets a config-provided account enrol MFA from the UI", func() {
+		srv, _ := newSetupServer(BasicAuthConfig{Username: "op", Password: "s3cret"})
+		defer srv.Close()
+		client := jarClient()
+		resp, err := client.PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"s3cret"}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		_, body := getBody(client, srv.URL+"/security")
+		Expect(body).To(ContainSubstring("(from config)"))
+		Expect(body).To(ContainSubstring("Enable two-factor"))
+		enrol(srv, client)
+		_, body = getBody(client, srv.URL+"/security")
+		Expect(body).To(ContainSubstring("Turn off two-factor"))
+	})
+
+	It("treats a config-provided TOTP secret as fixed", func() {
+		srv, _ := newSetupServer(BasicAuthConfig{Username: "op", Password: "s3cret", TOTPSecret: otpSecret})
+		defer srv.Close()
+		client := jarClient()
+		resp, err := client.PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"s3cret"}, "otp": {currentCode(0)}})
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		_, body := getBody(client, srv.URL+"/")
+		Expect(body).NotTo(ContainSubstring("Set up MFA"))
+		_, body = getBody(client, srv.URL+"/security")
+		Expect(body).NotTo(ContainSubstring("Turn off two-factor"))
+		Expect(body).NotTo(ContainSubstring("Enable two-factor"))
+	})
+
+	It("turns UI-enrolled MFA off again with a current code", func() {
+		srv, _ := newSetupServer(BasicAuthConfig{})
+		defer srv.Close()
+		client := setUp(srv)
+		key := enrol(srv, client)
+
+		resp, err := client.PostForm(srv.URL+"/security/mfa/disable", url.Values{"otp": {"000000"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(readBody(resp)).To(ContainSubstring("Enter a current code"))
+		resp, err = client.PostForm(srv.URL+"/security/mfa/disable",
+			url.Values{"otp": {totpCode(key, totpCounter(time.Now())+1)}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(readBody(resp)).To(ContainSubstring("Two-factor authentication is off"))
+		_, body := getBody(client, srv.URL+"/")
+		Expect(body).To(ContainSubstring("Set up MFA"))
+	})
+
+	It("refuses every request when the auth file is unreadable", func() {
+		dir := GinkgoT().TempDir()
+		Expect(os.WriteFile(filepath.Join(dir, "auth.yml"), []byte("username: [broken"), 0600)).To(Succeed())
+		cfg := Config{StateDir: dir}
+		cfg.ApplyDefaults()
+		bundle := newStatekitBundle(cfg)
+		hs := newHTTPServer("127.0.0.1:0", stubStateProvider{name: "hello"}, nil, nil, NewPaths(dir), bundle, nil, nil, nil, nil, BuildInfo{}, BasicAuthConfig{Enabled: true}, FaviconConfig{}, log.New("[t]", false))
+		srv := httptest.NewServer(hs.server.Handler)
+		defer srv.Close()
+		resp, err := noRedirect(srv).Get(srv.URL + "/")
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusServiceUnavailable))
+	})
+
+	Context("failure lock", func() {
+		BeforeEach(func() { authFailLock = 2 * time.Second })
+
+		It("refuses every check for authFailLock after a failure, without extending it", func() {
+			g := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret"}, "", nil)
+			t0 := time.Now()
+			Expect(g.checkCredentials("op", "nope", "", t0)).To(Equal(authFailed))
+			Expect(g.checkCredentials("op", "s3cret", "", t0.Add(time.Second))).To(Equal(authLocked))
+			// A refused attempt is not evaluated, so it doesn't push the lock out.
+			Expect(g.checkCredentials("op", "nope", "", t0.Add(1900*time.Millisecond))).To(Equal(authLocked))
+			Expect(g.checkCredentials("op", "s3cret", "", t0.Add(2*time.Second))).To(Equal(authOK))
+		})
+
+		It("lets only one of a burst of parallel guesses be evaluated", func() {
+			g := newAuthGate(BasicAuthConfig{Username: "op", Password: "s3cret", TOTPSecret: otpSecret}, "", nil)
+			now := time.Now()
+			results := make(chan authCheck, 50)
+			var wg sync.WaitGroup
+			for i := range 50 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					results <- g.checkCredentials("op", "s3cret", fmt.Sprintf("%06d", i), now)
+				}()
+			}
+			wg.Wait()
+			close(results)
+			evaluated := 0
+			for r := range results {
+				if r != authLocked {
+					evaluated++
+				}
+			}
+			Expect(evaluated).To(Equal(1))
+		})
+
+		It("answers a locked form login with 429 and a retry hint", func() {
+			srv := newAuthedServer()
+			defer srv.Close()
+
+			resp := must2(noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"nope"}}))
+			resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+
+			resp = must2(noRedirect(srv).PostForm(srv.URL+"/login", url.Values{"username": {"op"}, "password": {"s3cret"}}))
+			Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
+			Expect(resp.Header.Get("Retry-After")).To(Equal("2"))
+			Expect(readBody(resp)).To(ContainSubstring("Too many failed attempts"))
+		})
+
+		It("answers a locked HTTP Basic request with 429, not a 401 that would drop git's stored password", func() {
+			srv := newAuthedServer()
+			defer srv.Close()
+			get := func(pass string) *http.Response {
+				req, _ := http.NewRequest(http.MethodGet, srv.URL+"/backoffice/version", nil)
+				req.Header.Set("User-Agent", "git/2.45.0")
+				req.SetBasicAuth("op", pass)
+				resp := must2(noRedirect(srv).Do(req))
+				resp.Body.Close()
+				return resp
+			}
+			Expect(get("wrong").StatusCode).To(Equal(http.StatusUnauthorized))
+			resp := get("s3cret")
+			Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
+			Expect(resp.Header.Get("WWW-Authenticate")).To(BeEmpty())
+		})
+	})
+
 	It("logs out by clearing the session cookie", func() {
 		srv := newAuthedServer()
 		defer srv.Close()
@@ -827,6 +1218,11 @@ var _ = Describe("login gate", func() {
 func must(u *url.URL, err error) *url.URL {
 	Expect(err).NotTo(HaveOccurred())
 	return u
+}
+
+func must2(resp *http.Response, err error) *http.Response {
+	Expect(err).NotTo(HaveOccurred())
+	return resp
 }
 
 func readBody(resp *http.Response) string {

@@ -99,12 +99,22 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 	// surface — portal, proxy, /health, and the whole /backoffice tree (the
 	// healthz probe included). Unauthenticated requests are bounced to a
 	// /login form; the /login and /logout endpoints stay open.
+	// With credentials missing from config the gate starts in setup mode
+	// (/setup creates the account, persisted under the state dir), and until
+	// a second factor exists the portal nudges toward /security to enrol one.
+	var gate *authGate
 	if auth.Enabled {
-		gate := newAuthGate(auth)
+		gate = newAuthGate(auth, paths.AuthFile(), logger)
 		router.Use(gate.middleware)
 		router.Get("/login", gate.loginPage)
 		router.Post("/login", gate.loginSubmit)
 		router.Get("/logout", gate.logout)
+		router.Get("/setup", gate.setupPage)
+		router.Post("/setup", gate.setupSubmit)
+		router.Get("/security", gate.securityPage)
+		router.Get("/security/mfa", gate.mfaPage)
+		router.Post("/security/mfa", gate.mfaSubmit)
+		router.Post("/security/mfa/disable", gate.mfaDisable)
 	}
 
 	// keep the root router free for supervisor specific routes.
@@ -114,7 +124,11 @@ func newHTTPServer(addr string, sp stateProvider, ra rejectAPI, ca controlAPI, p
 
 	// Portal: the user-facing home page (component cards) at "/" and a
 	// per-component page at "/components/<name>/".
-	newPortal(sp, ca, componentCfgs, externalCfgs, obs != nil, mem, logger).mount(router)
+	portal := newPortal(sp, ca, componentCfgs, externalCfgs, obs != nil, mem, logger)
+	if gate != nil {
+		portal.mfaMissing = gate.mfaMissing
+	}
+	portal.mount(router)
 
 	// /proxy/<component>/* reverse-proxies to the component's own port.
 	mountComponentProxy(router, sp, logger)

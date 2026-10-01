@@ -344,16 +344,37 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(MatchError(ContainSubstring("http:// or https://")))
 		})
 
-		It("rejects basic auth enabled without a username or password", func() {
+		It("rejects basic auth with a username but no password", func() {
 			cfg := supervisor.Config{}
 			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op"}
 			cfg.ApplyDefaults()
-			Expect(cfg.Validate()).To(MatchError(ContainSubstring("username and password are required")))
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("must be set together")))
+		})
+
+		It("accepts basic auth with neither, which is setup mode", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
 		})
 
 		It("accepts basic auth with both credentials", func() {
 			cfg := supervisor.Config{}
 			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret"}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects a totp_secret that is not base32", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", TOTPSecret: "not!base32"}
+			cfg.ApplyDefaults()
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("totp_secret")))
+		})
+
+		It("accepts basic auth with a valid totp_secret", func() {
+			cfg := supervisor.Config{}
+			cfg.Supervisor.BasicAuth = supervisor.BasicAuthConfig{Enabled: true, Username: "op", Password: "s3cret", TOTPSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"}
 			cfg.ApplyDefaults()
 			Expect(cfg.Validate()).To(Succeed())
 		})
