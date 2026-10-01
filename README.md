@@ -38,6 +38,7 @@ The example targets cover:
 - `examples/build-css` — build-only target
 - `examples/echo-server` — shell-based HTTP server
 - `examples/backoffice-demo` — embedded backoffice demo
+- `examples/backoffice-scopes` — chiutil object hierarchy reference (`make example-backoffice-scopes`)
 
 ## Install
 
@@ -719,7 +720,7 @@ Use `Folder()` to get the root `chiutil.RouteFolder` and register endpoints:
 ```go
 // Single endpoints
 bo.Folder().GetDesc("/metrics", "Prometheus metrics", metricsHandler)
-bo.Folder().PostDesc("/cache/flush", "Flush cache", flushHandler)
+bo.Folder().PostFunc(chiutil.PostArgs{Path: "/cache/flush", Description: "Flush cache", Handler: flushHandler})
 
 // Sub-folders group related endpoints
 app := bo.Folder().Folder("/app")
@@ -855,7 +856,7 @@ folder.Title("Admin Panel")
 
 // Register routes — they appear in the auto-generated index
 folder.GetDesc("/health", "Health check", healthHandler)
-folder.PostDesc("/cache/flush", "Flush all caches", flushHandler)
+folder.PostFunc(chiutil.PostArgs{Path: "/cache/flush", Description: "Flush all caches", Handler: flushHandler})
 ```
 
 Each folder serves:
@@ -871,7 +872,7 @@ api.GetDesc("/users", "List users", usersHandler)
 api.GetDesc("/config", "Configuration", configHandler)
 
 admin := folder.Folder("/admin")
-admin.PostDesc("/restart", "Restart service", restartHandler)
+admin.PostFunc(chiutil.PostArgs{Path: "/restart", Description: "Restart service", Handler: restartHandler})
 ```
 
 Sub-folders appear as navigable directories in the parent's index.
@@ -884,8 +885,9 @@ All methods register the route on the underlying chi router and add it to the fo
 | ------------ | ----------------------------- |
 | `Get`        | GET route                     |
 | `GetDesc`    | GET route with description    |
-| `Post`       | POST route                    |
-| `PostDesc`   | POST route with description   |
+| `GetHandler` / `GetHandlerDesc` | GET route backed by an `http.Handler` |
+| `PostFunc`   | POST route; an optional `Action` form answers GET on the same path |
+| `Endpoint`   | Any method, plus GET on the same path served by the same handler |
 | `Put`        | PUT route                     |
 | `PutDesc`    | PUT route with description    |
 | `Patch`      | PATCH route                   |
@@ -930,13 +932,233 @@ This creates:
 - `/accounts/acct-123/` — lists routes for that instance
 - `/accounts/acct-123/details` — your handler
 
+Only listed instances are served: a name that was never `Add()`ed, or was `Remove()`d, is a 404 for its index and every route below it (see [Not-Found Pages](#not-found-pages)). Handlers still read the instance name with `chi.URLParam(r, "accountId")`.
+
+### Object Folders
+
+`ObjectsFolder` exposes a collection behind an `ObjectMapper[T]`: the mapper lists items, looks one up by id, and declares the routes every item has. Handlers are method expressions that receive the item.
+
+```go
+type AccountMapper struct{ store *Store }
+
+func (m *AccountMapper) ListItems() []chiutil.ObjectEntry { /* one entry per account */ }
+func (m *AccountMapper) GetItem(id string) (*Account, bool) { return m.store.Get(id) }
+func (m *AccountMapper) Routes() []chiutil.ObjectRoute[*Account] {
+    return []chiutil.ObjectRoute[*Account]{
+        {Method: "GET", Path: "/details", Handler: (*Account).Details, Description: "Account details"},
+        {Method: "POST", Path: "/suspend", Handler: (*Account).Suspend, Description: "Suspend",
+            Action: chiutil.Form("Suspend account", []string{"reason"})},
+    }
+}
+
+accounts := chiutil.ObjectsFolder(folder, "accounts", &AccountMapper{store}).
+    Title("Accounts").
+    Description("Customer accounts")
+```
+
+This creates:
+
+- `/accounts/` — lists `ListItems()`
+- `/accounts/{id}/` — the item's index: its routes plus anything registered on its scope (below)
+- `/accounts/{id}/details` — `(*Account).Details` called with the resolved account
+
+The item is looked up once per request. An unknown id is a 404 for every path below it, including the item index and action forms.
+
+Options and extras:
+
+| Call | Effect |
+| ---- | ------ |
+| `chiutil.WithParam("accountId")` | Names the chi URL param (default `"id"`) |
+| `.FlatJSON()` | Adds `/accounts/{id}.json` encoding the item itself |
+| `.Index(h)` | Collection page shown when no item is selected |
+| `.ItemIndex(h)` | Per-item page shown in place of the item's route listing |
+
+### Item Scopes
+
+An item is a full `RouteFolder`. `Scope()` returns it, so anything you can hang on a folder can hang under every item: plain folders, routes, wildcard folders and further object collections. Handlers read the resolved item from the request with `chiutil.ItemOf[T]`:
+
+```go
+account := accounts.Scope() // /accounts/{id}/
+
+billing := account.Folder("billing").Description("Plan and invoices")
+billing.GetDesc("/invoices", "Invoices", func(w http.ResponseWriter, r *http.Request) {
+    acc, _ := chiutil.ItemOf[*Account](r)
+    writeInvoices(w, acc.ID)
+})
+
+regions := account.WildcardFolder("regions", "region", func(r chi.Router) {
+    r.Get("/status", func(w http.ResponseWriter, r *http.Request) {
+        acc, _ := chiutil.ItemOf[*Account](r)
+        writeRegionStatus(w, acc, chi.URLParam(r, "region"))
+    })
+})
+regions.Add("us-east-1", "N. Virginia")
+```
+
+Everything registered on the scope is listed on each item's index, so the package that owns a store can mount its own per-item view without the collection knowing about it.
+
+`ItemOf` keys the context by type: scopes of different item types nest freely, and an inner scope of the same type shadows the outer one.
+
+### Scoped Collections
+
+A collection that lives inside an item uses `ScopedObjectMapper[S, T]`, which receives the enclosing item `S` instead of reading it from the request:
+
+```go
+type ConsumerMapper struct{ store *Store }
+
+func (m *ConsumerMapper) ListItems(acc *Account) []chiutil.ObjectEntry { /* acc's consumers */ }
+func (m *ConsumerMapper) GetItem(acc *Account, id string) (*Consumer, bool) { return m.store.Consumer(acc.ID, id) }
+func (m *ConsumerMapper) Routes() []chiutil.ObjectRoute[*Consumer] { /* ... */ }
+
+consumers := chiutil.ScopedObjectsFolder(account, "consumers", &ConsumerMapper{store})
+```
+
+`/accounts/acc1/consumers/` lists only acc1's consumers, and `/accounts/acc2/consumers/c1/details` is a 404 when c1 belongs to acc1. Scoped folders have their own `Scope()`, so the hierarchy goes as deep as needed; handlers at any depth can read every enclosing item:
+
+```go
+func (c *Consumer) Details(w http.ResponseWriter, r *http.Request) {
+    acc, _ := chiutil.ItemOf[*Account](r)
+    // c is the consumer, acc the account it was resolved under
+}
+```
+
+Nested levels may reuse the same param name: each level resolves its own segment, and the index `path` of every level carries the real ids (`/accounts/acc1/consumers/c1`), so the breadcrumb and relative links work at any depth.
+
+Not supported under a scope: `Static()`, which strips a fixed prefix (use `StaticFSFolder`). A `WildcardFolder` under a scope shares one instance list across items; its handlers still see the enclosing item.
+
+### Nesting Folders
+
+Collections nest through item scopes: every `ObjectsFolder` item is a `RouteFolder`, so anything that hangs on a folder can hang under every item, at any depth. A typical tree:
+
+```
+/backoffice/orgs/                                   ObjectsFolder          ObjectsFolder(bo, "orgs", m, WithParam("orgId"))
+/backoffice/orgs/{orgId}/                           item scope             orgs.Scope()
+  billing/                                          plain folder           org.Folder("billing")
+  regions/{region}/                                 WildcardFolder         org.WildcardFolder("regions", "region", ...)
+  projects/                                         scoped ObjectsFolder   ScopedObjectsFolder(org, "projects", m)
+  projects/{id}/                                    item scope             projects.Scope()
+    deployments/{id}/                               scoped ObjectsFolder   ScopedObjectsFolder(project, "deployments", m)
+    environments/{env}/                             WildcardFolder         project.WildcardFolder("environments", "env", ...)
+```
+
+What can go where:
+
+| Parent | Child you can mount | How |
+| ------ | ------------------- | --- |
+| any `RouteFolder` (root, `Folder()`, a `Scope()`) | plain folder | `parent.Folder("name")` |
+| any `RouteFolder` | `ObjectsFolder` over a flat store | `chiutil.ObjectsFolder(parent, "name", mapper)` |
+| an item `Scope()` | `ObjectsFolder` filtered by the item | `chiutil.ScopedObjectsFolder(scope, "name", scopedMapper)` |
+| any `RouteFolder` | `WildcardFolder` | `parent.WildcardFolder("name", "param", routes)` |
+| a `WildcardFolder` instance | routes only | the `func(chi.Router)` callback |
+
+A `WildcardFolder` instance is a bare `chi.Router`, not a folder, so it is always a leaf: nothing that needs a `*RouteFolder` can be mounted inside it. When instances need children, model them as an `ObjectsFolder` (a mapper over the same list) and use its `Scope()`.
+
+#### Building a nested tree
+
+```go
+bo := chiutil.NewRouteFolder(router, "/backoffice")
+
+// Level 1: a flat store.
+orgs := chiutil.ObjectsFolder(bo, "orgs", orgMapper{}, chiutil.WithParam("orgId")).Title("Organizations")
+org := orgs.Scope()
+
+// Per-org plain folder and wildcard folder.
+org.Folder("billing").GetDesc("/plan", "Current plan", func(w http.ResponseWriter, r *http.Request) {
+    o, _ := chiutil.ItemOf[*Org](r)
+    writeJSON(w, o.Plan)
+})
+regions := org.WildcardFolder("regions", "region", func(r chi.Router) {
+    r.Get("/status", func(w http.ResponseWriter, r *http.Request) {
+        o, _ := chiutil.ItemOf[*Org](r)
+        writeRegionStatus(w, o, chi.URLParam(r, "region"))
+    })
+})
+regions.Add("us-east-1", "N. Virginia")
+
+// Level 2: projects of the org; level 3: deployments of the project.
+projects := chiutil.ScopedObjectsFolder(org, "projects", projectMapper{})          // ScopedObjectMapper[*Org, *Project]
+chiutil.ScopedObjectsFolder(projects.Scope(), "deployments", deploymentMapper{})  // ScopedObjectMapper[*Project, *Deployment]
+```
+
+Each package that owns a store can mount its own per-item view on a scope it is handed; the parent collection does not need to know what is mounted under its items.
+
+#### How a nested request resolves
+
+For `GET /backoffice/orgs/acme/projects/api/deployments/d-101/details`:
+
+1. The `orgs` item scope reads `orgId` = `acme`, calls `orgMapper.GetItem("acme")`, and stores the org in the request context. Unknown org: 404 here, nothing below runs.
+2. The `projects` item scope calls `projectMapper.GetItem(org, "api")` with the org from step 1 and stores the project.
+3. The `deployments` item scope calls `deploymentMapper.GetItem(project, "d-101")` and stores the deployment.
+4. The `/details` handler receives the deployment and can read every enclosing item with `ItemOf[*Org](r)` and `ItemOf[*Project](r)`.
+
+Each lookup runs once per request, and a scoped mapper only ever sees its own parent, so `/orgs/globex/projects/api/...` is a 404 when `api` belongs to `acme`.
+
+#### Rules
+
+- **Param names.** Every level defaults to `"id"`, and reusing it is safe: each level resolves its own segment, and the published index `path` carries every real id (`/orgs/acme/projects/api/deployments/d-101`). `chi.URLParam(r, "id")` returns the innermost value only, so use `WithParam` for distinct names when handlers read raw params rather than `ItemOf`.
+- **Item types.** `ItemOf[T]` is keyed by type. Levels with different types nest freely; when two levels share a type, the inner one shadows the outer.
+- **Index pages.** Everything registered on a scope (routes, folders, collections) is listed on each item's index next to the mapper's routes, sorted by name.
+- **Wildcard instances under a scope.** The `Add()`/`Remove()` list is one list shared by every item of the scope; handlers still see the enclosing item through `ItemOf`.
+- **Not found.** A miss at any level gives the navigable 404 page for the nearest folder that exists (see below).
+- **Not supported under a scope.** `Static()` strips a fixed path prefix and breaks once the path holds an id; use `StaticFSFolder`.
+
+`make example-backoffice-scopes` serves exactly this tree (see [Live Reference](#live-reference)).
+
+### Not-Found Pages
+
+A miss anywhere in a folder tree (an unknown item id, a mistyped route, a missing file in a static folder) answers a browser navigation with a 404 page that leads back up: a breadcrumb from home to the missed path, where every existing ancestor is a link, and a "Back to <folder>" link to the nearest folder that exists:
+
+```
+404 Not found
+Projects has no item "nope"
+home / orgs / acme / projects / nope / deployments
+← Back to projects
+```
+
+A `WildcardFolder` instance that was never `Add()`ed (or was `Remove()`d) gets the same 404 on its index and every route below it, so handlers no longer need to check the name themselves.
+
+Handlers that find nothing to serve answer with `chiutil.NotFound(w, r)` instead of `http.NotFound`, and get the same page, leading back to the handler's folder:
+
+```go
+billing.GetDesc("/contract", "Signed contract", func(w http.ResponseWriter, r *http.Request) {
+    acc, _ := chiutil.ItemOf[*Account](r)
+    contract, ok := contracts.For(acc.ID)
+    if !ok {
+        chiutil.NotFound(w, r)
+        return
+    }
+    writeJSON(w, contract)
+})
+```
+
+Outside a folder tree `chiutil.NotFound` is plain `http.NotFound`.
+
+All links are relative, so the page works behind a path-stripping reverse proxy. Requests that are not browser navigations (no `Accept: text/html`, `index.json` fetches, `?preview=true` viewer fetches, API clients) keep the plain `404 page not found` body.
+
+### Live Reference
+
+`make example-backoffice-scopes` (`examples/backoffice-scopes`, port `SCOPES_PORT`, default 18084) serves a three-level hierarchy that exercises everything above:
+
+```
+/backoffice/orgs/{orgId}/                 ObjectsFolder, WithParam, POST action with a form
+  billing/                                plain folder reading the org
+  regions/{region}/                       WildcardFolder inside a scope
+  members/{id}/  (+ {id}.json)            ScopedObjectsFolder with FlatJSON
+  projects/{id}/                          ScopedObjectsFolder
+    deployments/{id}/                     scoped again, reusing the param name "id"
+    environments/{env}/                   WildcardFolder reading org and project
+/backoffice/services/{name}/              top-level WildcardFolder
+```
+
+Not-found pages to try: `/backoffice/orgs/acme/projects/nope/deployments/` (unknown item), `/backoffice/orgs/globex/billing/refunds` (mistyped route), `/backoffice/orgs/globex/billing/contract` (`chiutil.NotFound` from a handler), `/backoffice/orgs/acme/regions/ap-south-1/status` (wildcard instance never added).
+
 ### Static Files Folder
 
 ```go
 folder.StaticFilesFolder("logs", "/var/log/myapp")
 ```
 
-Creates a browsable file system view. Files larger than 1 MB show a size warning in the preview but can still be downloaded directly.
+Creates a browsable file system view. Files larger than 1 MB show a size warning in the preview but can still be downloaded directly. `StaticFSFolder(name, fsys)` does the same over any `fs.FS` (an embed, an overlay, a sub-tree), and routes registered on the returned folder are listed beside the files.
 
 ### FolderIndex JSON
 
@@ -946,6 +1168,7 @@ Creates a browsable file system view. Files larger than 1 MB show a size warning
   "title": "Routes",
   "description": "",
   "path": "/",
+  "hasIndex": true,
   "entries": [
     {
       "name": "health",
@@ -957,6 +1180,8 @@ Creates a browsable file system view. Files larger than 1 MB show a size warning
   ]
 }
 ```
+
+`path` is the folder's location relative to the tree's mount root, with URL params replaced by the request's values (`/accounts/acc1/consumers`, never `{id}`). The HTML shell subtracts it from the browser location to find the mount base, which is what keeps it working behind proxies.
 
 ---
 

@@ -78,13 +78,75 @@ type RouteFolder struct {
 	index       http.Handler
 	indexRoute  bool
 	entries     []*RouteEntry
+
+	// sorted orders the index entries by name (an ObjectsFolder item).
+	sorted bool
+	// itemTitle titles an untitled index by its last path segment, the
+	// item id an ObjectsFolder item is served under.
+	itemTitle bool
 }
 
 // relPath returns this folder's path relative to the tree's mount root, with a
-// leading slash. The mount root itself is "/". This is what the index UI
-// publishes as `path`, so the breadcrumb treats the mount root as home.
-func (this *RouteFolder) relPath() string {
-	return relativeToRoot(this.basePath, this.rootPath)
+// leading slash, and {param} segments replaced by the request's URL params.
+// The mount root itself is "/". This is what the index UI publishes as
+// `path`, so the breadcrumb treats the mount root as home.
+func (this *RouteFolder) relPath(r *http.Request) string {
+	base, root := this.expandedPaths(r)
+	return relativeToRoot(base, root)
+}
+
+// expandedPaths returns basePath and rootPath with {param} segments replaced
+// by the request's URL params.
+func (this *RouteFolder) expandedPaths(r *http.Request) (base, root string) {
+	return expandParams(r, this.basePath), expandParams(r, this.rootPath)
+}
+
+// expandParams replaces each {name} segment of p with the value chi matched
+// for it. Matching is positional per name: the k-th {id} in p takes the k-th
+// "id" chi recorded, so nested folders that reuse a param name each get their
+// own value (chi.URLParam would return the last for all of them). A segment
+// with no recorded value, or a nil request, stays literal.
+func expandParams(r *http.Request, p string) string {
+	if r == nil || !strings.Contains(p, "{") {
+		return p
+	}
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return p
+	}
+	seen := map[string]int{}
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		if len(seg) < 2 || seg[0] != '{' || seg[len(seg)-1] != '}' {
+			continue
+		}
+		name := seg[1 : len(seg)-1]
+		if j := strings.IndexByte(name, ':'); j >= 0 {
+			name = name[:j] // {id:[0-9]+}
+		}
+		if v, ok := nthURLParam(rctx, name, seen[name]); ok {
+			segs[i] = v
+		}
+		seen[name]++
+	}
+	return strings.Join(segs, "/")
+}
+
+// nthURLParam returns the n-th (0-based) value chi recorded for key.
+func nthURLParam(rctx *chi.Context, key string, n int) (string, bool) {
+	for i, k := range rctx.URLParams.Keys {
+		if k != key {
+			continue
+		}
+		if n == 0 {
+			if i < len(rctx.URLParams.Values) {
+				return rctx.URLParams.Values[i], true
+			}
+			return "", false
+		}
+		n--
+	}
+	return "", false
 }
 
 // relativeToRoot strips the mount-root prefix from an absolute folder path.
@@ -110,6 +172,7 @@ func NewRouteFolder(parent chi.Router, path string) *RouteFolder {
 		rootPath: normalizePath(path), // a freshly-mounted tree is its own home
 		entries:  []*RouteEntry{},
 	}
+	folder.initRouter()
 
 	// Register index endpoints on the folder's router
 	folder.router.Get("/", folder.serveHTML)
@@ -131,6 +194,7 @@ func NewRouteFolderOn(router chi.Router, path string) *RouteFolder {
 		rootPath: normalizePath(path), // own home unless a parent overrides it
 		entries:  []*RouteEntry{},
 	}
+	folder.initRouter()
 
 	folder.router.Get("/", folder.serveHTML)
 	folder.router.Get("/index.json", folder.serveJSON)
@@ -257,6 +321,7 @@ func (this *RouteFolder) Folder(path string) *RouteFolder {
 //	/accounts/              -> shows [acct-123/, acct-456/]
 //	/accounts/acct-123/     -> shows [details, settings]
 //	/accounts/acct-123/details -> executes your handler
+//	/accounts/acct-999/...     -> 404, never added (the navigable page for browsers)
 func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.Router)) *WildcardEntries {
 	cleanName := strings.Trim(name, "/")
 
@@ -277,6 +342,7 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 		folder:    listingFolder,
 		paramName: paramName,
 	}
+	listingFolder.initRouter()
 
 	// /<name>/ serves the instance listing
 	listingFolder.router.Get("/", wildcard.serveHTML)
@@ -285,6 +351,9 @@ func (this *RouteFolder) WildcardFolder(name, paramName string, routes func(chi.
 
 	// /<name>/{paramName}/... handles all parameterized routes
 	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
+		// An instance that was never Add()ed is a 404 for every path below it.
+		r.Use(wildcard.requireInstance)
+
 		// /<name>/{paramName}/ serves the route listing for this instance
 		r.Get("/", wildcard.serveInstanceHTML)
 		r.Get("/index.json", wildcard.serveInstanceJSON)
@@ -321,7 +390,8 @@ type WildcardEntries struct {
 	instanceRoutes []*RouteEntry // routes available under each instance
 }
 
-// Add adds an instance to the wildcard folder's listing.
+// Add adds an instance to the wildcard folder's listing. Only listed
+// instances are served; any other name is a 404.
 func (this *WildcardEntries) Add(id, description string) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
@@ -343,7 +413,32 @@ func (this *WildcardEntries) Add(id, description string) {
 	})
 }
 
-// Remove removes an instance from the wildcard folder's listing.
+// requireInstance 404s requests for an instance that is not in the listing,
+// so its index and routes are not served for an arbitrary name.
+func (this *WildcardEntries) requireInstance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, this.paramName)
+		if !this.has(id) {
+			this.folder.notFoundItem(w, r, id)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (this *WildcardEntries) has(id string) bool {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+	for _, e := range this.entries {
+		if e.Name == id {
+			return true
+		}
+	}
+	return false
+}
+
+// Remove removes an instance from the wildcard folder's listing; its paths
+// 404 from then on.
 func (this *WildcardEntries) Remove(id string) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
@@ -432,13 +527,13 @@ func (this *WildcardEntries) serveHTML(w http.ResponseWriter, r *http.Request) {
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.relPath(),
+		Path:        this.folder.relPath(r),
 		HasIndex:    true,
 		Entries:     entries,
 	})
 }
 
-func (this *WildcardEntries) serveJSON(w http.ResponseWriter, _ *http.Request) {
+func (this *WildcardEntries) serveJSON(w http.ResponseWriter, r *http.Request) {
 	this.mu.RLock()
 	entries := make([]*RouteEntry, len(this.entries))
 	copy(entries, this.entries)
@@ -456,7 +551,7 @@ func (this *WildcardEntries) serveJSON(w http.ResponseWriter, _ *http.Request) {
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.relPath(),
+		Path:        this.folder.relPath(r),
 		HasIndex:    true,
 		Entries:     entries,
 	}
@@ -471,19 +566,19 @@ func (this *WildcardEntries) serveInstanceHTML(w http.ResponseWriter, r *http.Re
 	}
 
 	paramValue := chi.URLParam(r, this.paramName)
-	index := this.instanceIndex(paramValue)
+	index := this.instanceIndex(r, paramValue)
 	writeDefaultIndexHTML(w, index)
 }
 
 // serveInstanceJSON serves the index for a specific instance (e.g., /accounts/acct-123/)
 func (this *WildcardEntries) serveInstanceJSON(w http.ResponseWriter, r *http.Request) {
 	paramValue := chi.URLParam(r, this.paramName)
-	index := this.instanceIndex(paramValue)
+	index := this.instanceIndex(r, paramValue)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
 }
 
-func (this *WildcardEntries) instanceIndex(paramValue string) FolderIndex {
+func (this *WildcardEntries) instanceIndex(r *http.Request, paramValue string) FolderIndex {
 	this.mu.RLock()
 	entries := make([]*RouteEntry, len(this.instanceRoutes))
 	copy(entries, this.instanceRoutes)
@@ -505,11 +600,12 @@ func (this *WildcardEntries) instanceIndex(paramValue string) FolderIndex {
 
 	// Title is the instance id (e.g. the component name), not the listing
 	// folder's title — otherwise every instance page reads "Components".
+	base, root := this.folder.expandedPaths(r)
 	return FolderIndex{
 		ServiceName: this.folder.serviceName,
 		Title:       paramValue,
 		Description: description,
-		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
+		Path:        relativeToRoot(base+"/"+paramValue, root),
 		HasIndex:    true,
 		Entries:     entries,
 	}
@@ -594,6 +690,7 @@ func (this *RouteFolder) StaticFSFolder(name string, fsys fs.FS) *RouteFolder {
 		serviceName: this.serviceName,
 		entries:     []*RouteEntry{},
 	}
+	folder.initRouter()
 
 	// Handler for serving file system paths
 	serveFS := func(w http.ResponseWriter, r *http.Request, urlPath string) {
@@ -613,7 +710,7 @@ func (this *RouteFolder) StaticFSFolder(name string, fsys fs.FS) *RouteFolder {
 
 		info, err := fs.Stat(fsys, fsPath)
 		if err != nil {
-			http.NotFound(w, r)
+			folder.serveNotFound(w, r)
 			return
 		}
 
@@ -623,7 +720,8 @@ func (this *RouteFolder) StaticFSFolder(name string, fsys fs.FS) *RouteFolder {
 				if fsPath == "." {
 					extra = resolveEntries(folder.entries)
 				}
-				serveDirJSON(w, fsys, fsPath, relativeToRoot(folder.basePath+"/"+urlPath, folder.rootPath), folder.serviceName, extra)
+				base, root := folder.expandedPaths(r)
+				serveDirJSON(w, fsys, fsPath, relativeToRoot(base+"/"+urlPath, root), folder.serviceName, extra)
 			} else {
 				folder.serveHTML(w, r)
 			}
@@ -954,7 +1052,7 @@ func (this *RouteFolder) serveHTML(w http.ResponseWriter, r *http.Request) {
 			this.index.ServeHTTP(w, r)
 			return
 		}
-		writeDefaultIndexHTML(w, this.indexData())
+		writeDefaultIndexHTML(w, this.indexData(r))
 		return
 	}
 
@@ -986,20 +1084,31 @@ func redirectToTrailingSlash(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusMovedPermanently)
 }
 
-func (this *RouteFolder) serveJSON(w http.ResponseWriter, _ *http.Request) {
-	index := this.indexData()
+func (this *RouteFolder) serveJSON(w http.ResponseWriter, r *http.Request) {
+	index := this.indexData(r)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
 }
 
-func (this *RouteFolder) indexData() FolderIndex {
+func (this *RouteFolder) indexData(r *http.Request) FolderIndex {
+	rel := this.relPath(r)
+	title := this.title
+	if title == "" && this.itemTitle {
+		title = capitalize(path.Base(rel))
+	}
+	entries := resolveEntries(this.entries)
+	if this.sorted {
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Name < entries[j].Name
+		})
+	}
 	return FolderIndex{
 		ServiceName: this.serviceName,
-		Title:       this.title,
+		Title:       title,
 		Description: this.description,
-		Path:        this.relPath(),
+		Path:        rel,
 		HasIndex:    true,
-		Entries:     resolveEntries(this.entries),
+		Entries:     entries,
 	}
 }
 

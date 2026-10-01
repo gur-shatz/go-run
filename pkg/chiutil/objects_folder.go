@@ -3,6 +3,7 @@
 package chiutil
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -106,15 +107,98 @@ type ObjectRoute[T any] struct {
 	External bool
 }
 
+// ScopedObjectMapper lists and resolves T within an enclosing scope item S,
+// the item an outer ObjectsFolder resolved for the request (see ItemOf).
+type ScopedObjectMapper[S, T any] interface {
+	// ListItems returns the items of scope for the directory listing.
+	ListItems(scope S) []ObjectEntry
+
+	// GetItem retrieves an item of scope by ID.
+	GetItem(scope S, id string) (T, bool)
+
+	// Routes returns the route definitions for items.
+	Routes() []ObjectRoute[T]
+}
+
+// ObjectsOption configures an ObjectsFolder.
+type ObjectsOption func(*objectsConfig)
+
+type objectsConfig struct {
+	paramName string
+}
+
+// WithParam names the chi URL param the item id is matched as (default
+// "id"). Distinct names across nested scopes are hygiene only: each scope
+// resolves its own level either way.
+func WithParam(name string) ObjectsOption {
+	return func(config *objectsConfig) {
+		config.paramName = name
+	}
+}
+
+// itemKey is the request-context key an ObjectsFolder stores its resolved
+// item under: one key per item type, so scopes of different types nest and
+// two scopes of the same type shadow (the inner one wins).
+type itemKey[T any] struct{}
+
+// ItemOf returns the item an enclosing ObjectsFolder resolved for this
+// request. Handlers registered on a Scope(), and everything mounted below
+// it, read the item with it instead of looking the id up again.
+func ItemOf[T any](r *http.Request) (T, bool) {
+	item, ok := r.Context().Value(itemKey[T]{}).(T)
+	return item, ok
+}
+
+// requestMapper is the request-aware form both public mappers adapt to, so
+// a scoped mapper can read its enclosing item from the request.
+type requestMapper[T any] interface {
+	listItems(r *http.Request) []ObjectEntry
+	getItem(r *http.Request, id string) (T, bool)
+	routes() []ObjectRoute[T]
+}
+
+type plainMapper[T any] struct {
+	mapper ObjectMapper[T]
+}
+
+func (this plainMapper[T]) listItems(*http.Request) []ObjectEntry { return this.mapper.ListItems() }
+
+func (this plainMapper[T]) getItem(_ *http.Request, id string) (T, bool) {
+	return this.mapper.GetItem(id)
+}
+
+func (this plainMapper[T]) routes() []ObjectRoute[T] { return this.mapper.Routes() }
+
+type scopedMapper[S, T any] struct {
+	mapper ScopedObjectMapper[S, T]
+}
+
+func (this scopedMapper[S, T]) listItems(r *http.Request) []ObjectEntry {
+	scope, ok := ItemOf[S](r)
+	if !ok {
+		return nil
+	}
+	return this.mapper.ListItems(scope)
+}
+
+func (this scopedMapper[S, T]) getItem(r *http.Request, id string) (T, bool) {
+	scope, ok := ItemOf[S](r)
+	if !ok {
+		var zero T
+		return zero, false
+	}
+	return this.mapper.GetItem(scope, id)
+}
+
+func (this scopedMapper[S, T]) routes() []ObjectRoute[T] { return this.mapper.Routes() }
+
 // objectsFolder holds the state for an objects folder.
 type objectsFolder[T any] struct {
-	folder         *RouteFolder
-	paramName      string
-	mapper         ObjectMapper[T]
-	instanceRoutes []*RouteEntry
-	flatJSON       bool
-	itemIndexFn    http.Handler
-	itemIndexRoute bool
+	folder    *RouteFolder // the listing, /<name>/
+	item      *RouteFolder // the item scope, /<name>/{param}/
+	paramName string
+	mapper    requestMapper[T]
+	flatJSON  bool
 }
 
 // Title sets the folder title displayed in the index.
@@ -123,9 +207,11 @@ func (this *objectsFolder[T]) Title(title string) *objectsFolder[T] {
 	return this
 }
 
-// Description sets the folder description displayed in the index.
+// Description sets the folder description displayed in the index. Item
+// pages carry it as their subtitle.
 func (this *objectsFolder[T]) Description(desc string) *objectsFolder[T] {
 	this.folder.description = desc
+	this.item.description = desc
 	return this
 }
 
@@ -144,7 +230,8 @@ func (this *objectsFolder[T]) IndexHandler(handler http.Handler) *objectsFolder[
 
 // ItemIndex registers a per-object page that the HTML index viewer renders at
 // /<name>/{id}/ in place of the default route listing. The handler reads the
-// object id from chi.URLParam(r, "id") to render the selected object.
+// object with ItemOf, or its id from chi.URLParam under the folder's param
+// name ("id" unless WithParam).
 func (this *objectsFolder[T]) ItemIndex(handler http.HandlerFunc) *objectsFolder[T] {
 	return this.ItemIndexHandler(handler)
 }
@@ -152,9 +239,15 @@ func (this *objectsFolder[T]) ItemIndex(handler http.HandlerFunc) *objectsFolder
 // ItemIndexHandler registers a per-object http.Handler rendered by the HTML
 // index viewer at /<name>/{id}/ in place of the default route listing.
 func (this *objectsFolder[T]) ItemIndexHandler(handler http.Handler) *objectsFolder[T] {
-	this.itemIndexFn = handler
-	this.addItemIndexRoute()
+	this.item.IndexHandler(handler)
 	return this
+}
+
+// Scope returns the folder served at /<name>/{param}/. Routes and folders
+// registered on it are served per item and listed on the item's index; the
+// item is resolved once per request (404 when unknown) and read with ItemOf.
+func (this *objectsFolder[T]) Scope() *RouteFolder {
+	return this.item
 }
 
 // FlatJSON adds /{id}.json endpoints that encode items directly and makes
@@ -174,24 +267,43 @@ func (this *objectsFolder[T]) FlatJSON() *objectsFolder[T] {
 //
 // The folder automatically:
 //   - Lists items via mapper.ListItems() at /<name>/
-//   - Looks up items via mapper.GetItem() for each route
+//   - Looks up the item via mapper.GetItem() once per request below /<name>/{id}/
 //   - Returns 404 if item not found
 //   - Dispatches to the appropriate handler
 //
 // URL structure created:
 //
 //	/<name>/                -> Lists all items (calls ListItems)
-//	/<name>/{id}/           -> Lists routes for this item
+//	/<name>/{id}/           -> Lists routes for this item (the Scope folder)
 //	/<name>/{id}/...        -> Dispatches to item's handler
 //
 // Example:
 //
 //	chiutil.ObjectsFolder(parent, "accounts", &AccountMapper{...})
-func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[T]) *objectsFolder[T] {
+func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[T], opts ...ObjectsOption) *objectsFolder[T] {
+	return newObjectsFolder[T](parent, name, plainMapper[T]{mapper}, opts)
+}
+
+// ScopedObjectsFolder is ObjectsFolder mounted on an enclosing Scope(): it
+// lists and resolves T within the scope item S, read with ItemOf[S].
+//
+//	accounts := chiutil.ObjectsFolder(bo, "accounts", accountMapper)
+//	chiutil.ScopedObjectsFolder(accounts.Scope(), "consumers", consumerMapper)
+//	// /accounts/{id}/consumers/{id}/...
+func ScopedObjectsFolder[S, T any](scope *RouteFolder, name string, mapper ScopedObjectMapper[S, T], opts ...ObjectsOption) *objectsFolder[T] {
+	return newObjectsFolder[T](scope, name, scopedMapper[S, T]{mapper}, opts)
+}
+
+func newObjectsFolder[T any](parent *RouteFolder, name string, mapper requestMapper[T], opts []ObjectsOption) *objectsFolder[T] {
 	cleanName := strings.Trim(name, "/")
 
-	// Derive paramName: "accounts" -> "id", or use singular + "Id" if name ends with 's'
-	paramName := "id"
+	config := objectsConfig{paramName: "id"}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&config)
+		}
+	}
+	paramName := config.paramName
 
 	// Create the listing folder
 	listingFolder := &RouteFolder{
@@ -201,34 +313,24 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 		serviceName: parent.serviceName,
 		entries:     []*RouteEntry{},
 	}
+	listingFolder.initRouter()
+
+	// The item scope: a folder per item, title and path from the item id.
+	itemFolder := &RouteFolder{
+		router:      chi.NewRouter(),
+		basePath:    listingFolder.basePath + "/{" + paramName + "}",
+		rootPath:    parent.rootPath,
+		serviceName: parent.serviceName,
+		entries:     []*RouteEntry{},
+		sorted:      true,
+		itemTitle:   true,
+	}
 
 	omf := &objectsFolder[T]{
 		folder:    listingFolder,
+		item:      itemFolder,
 		paramName: paramName,
 		mapper:    mapper,
-	}
-
-	// Build instance routes from mapper.Routes()
-	routes := mapper.Routes()
-	omf.instanceRoutes = make([]*RouteEntry, 0, len(routes))
-	explicitGETRoutes := map[string]bool{}
-	for _, route := range routes {
-		if strings.EqualFold(route.Method, http.MethodGet) {
-			explicitGETRoutes[route.Path] = true
-		}
-	}
-	for _, route := range routes {
-		if route.Hidden {
-			continue
-		}
-		name := strings.TrimPrefix(route.Path, "/")
-		omf.instanceRoutes = append(omf.instanceRoutes, &RouteEntry{
-			Name:        name,
-			Method:      route.Method,
-			Path:        name,
-			Description: route.Description,
-			IsExternal:  route.External,
-		})
 	}
 
 	// Listing endpoints - delegate to mapper.ListItems()
@@ -236,42 +338,78 @@ func ObjectsFolder[T any](parent *RouteFolder, name string, mapper ObjectMapper[
 	listingFolder.router.Get("/index.json", omf.serveListJSON)
 	registerPageAssets(listingFolder.router)
 
-	// Item routes
-	listingFolder.router.Route("/{"+paramName+"}", func(r chi.Router) {
-		r.Get("/", omf.serveItemHTML)
-		r.Get("/index.json", omf.serveItemJSON)
-		registerPageAssets(r)
-
-		// Register each route with automatic item lookup
-		for _, route := range routes {
-			handler := markdownHeaderFunc(route.Path, func(w http.ResponseWriter, req *http.Request) {
-				id := chi.URLParam(req, paramName)
-				item, found := mapper.GetItem(id)
-				if !found {
-					http.NotFound(w, req)
-					return
-				}
-				route.Handler(item, w, req)
-			})
-			r.Method(route.Method, route.Path, handler)
-			if route.Action != nil && !strings.EqualFold(route.Method, http.MethodGet) && !explicitGETRoutes[route.Path] {
-				r.Get(route.Path, markdownHeaderFunc(route.Path, route.Action.ServeHTML))
-			}
-		}
-	})
+	// Item endpoints. The middleware must precede every route on the item
+	// router, including what callers later register on Scope().
+	itemFolder.router.Use(omf.resolveItem)
+	itemFolder.initRouter()
+	itemFolder.router.Get("/", itemFolder.serveHTML)
+	itemFolder.router.Get("/index.json", itemFolder.serveJSON)
+	registerPageAssets(itemFolder.router)
+	addObjectRoutes(itemFolder, mapper.routes())
+	listingFolder.router.Mount("/{"+paramName+"}", itemFolder.router)
 
 	// Mount on parent router
 	parent.router.Mount("/"+cleanName, listingFolder.router)
 
 	// Add folder entry to parent's index
 	parent.entries = append(parent.entries, &RouteEntry{
-		Name:     cleanName,
-		Method:   "GET",
-		Path:     cleanName + "/",
-		IsFolder: true,
+		Name:      cleanName,
+		Method:    "GET",
+		Path:      cleanName + "/",
+		IsFolder:  true,
+		subfolder: listingFolder,
 	})
 
 	return omf
+}
+
+// addObjectRoutes registers the mapper's item routes on the item folder.
+// Each handler receives the item resolveItem put in the request context.
+//
+// A non-GET route with an Action is listed under its real method and also
+// answers GET with the Action form, unless the mapper declares its own GET
+// on that path.
+func addObjectRoutes[T any](folder *RouteFolder, routes []ObjectRoute[T]) {
+	explicitGETRoutes := map[string]bool{}
+	for _, route := range routes {
+		if strings.EqualFold(route.Method, http.MethodGet) {
+			explicitGETRoutes[route.Path] = true
+		}
+	}
+	for _, route := range routes {
+		if !route.Hidden {
+			name := strings.TrimPrefix(route.Path, "/")
+			folder.entries = append(folder.entries, &RouteEntry{
+				Name:        name,
+				Method:      route.Method,
+				Path:        name,
+				Description: route.Description,
+				IsExternal:  route.External,
+			})
+		}
+		handler := markdownHeaderFunc(route.Path, func(w http.ResponseWriter, req *http.Request) {
+			item, _ := ItemOf[T](req)
+			route.Handler(item, w, req)
+		})
+		folder.router.Method(route.Method, route.Path, handler)
+		if route.Action != nil && !strings.EqualFold(route.Method, http.MethodGet) && !explicitGETRoutes[route.Path] {
+			folder.router.Get(route.Path, markdownHeaderFunc(route.Path, route.Action.ServeHTML))
+		}
+	}
+}
+
+// resolveItem looks the item up once per request below /<name>/{param}/ and
+// puts it in the request context; an unknown id is a 404 for every path.
+func (this *objectsFolder[T]) resolveItem(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, this.paramName)
+		item, found := this.mapper.getItem(r, id)
+		if !found {
+			this.folder.notFoundItem(w, r, id)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), itemKey[T]{}, item)))
+	})
 }
 
 func (this *objectsFolder[T]) serveHTML(w http.ResponseWriter, r *http.Request) {
@@ -283,18 +421,18 @@ func (this *objectsFolder[T]) serveHTML(w http.ResponseWriter, r *http.Request) 
 		this.folder.index.ServeHTTP(w, r)
 		return
 	}
-	writeDefaultIndexHTML(w, this.listIndex())
+	writeDefaultIndexHTML(w, this.listIndex(r))
 }
 
 // serveListJSON serves the list of items from the mapper.
-func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, _ *http.Request) {
-	index := this.listIndex()
+func (this *objectsFolder[T]) serveListJSON(w http.ResponseWriter, r *http.Request) {
+	index := this.listIndex(r)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(index)
 }
 
-func (this *objectsFolder[T]) listIndex() FolderIndex {
-	items := this.mapper.ListItems()
+func (this *objectsFolder[T]) listIndex(r *http.Request) FolderIndex {
+	items := this.mapper.listItems(r)
 
 	entries := make([]*RouteEntry, 0, len(items))
 	for _, item := range items {
@@ -330,7 +468,7 @@ func (this *objectsFolder[T]) listIndex() FolderIndex {
 		ServiceName: this.folder.serviceName,
 		Title:       this.folder.title,
 		Description: this.folder.description,
-		Path:        this.folder.relPath(),
+		Path:        this.folder.relPath(r),
 		HasIndex:    true,
 		Entries:     entries,
 	}
@@ -339,83 +477,12 @@ func (this *objectsFolder[T]) listIndex() FolderIndex {
 // serveFlatItemJSON serves the item itself at /{id}.json.
 func (this *objectsFolder[T]) serveFlatItemJSON(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, this.paramName)
-	item, found := this.mapper.GetItem(id)
+	item, found := this.mapper.getItem(r, id)
 	if !found {
-		http.NotFound(w, r)
+		this.folder.notFoundItem(w, r, id)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(item)
-}
-
-// serveItemJSON serves the routes available for a specific item.
-func (this *objectsFolder[T]) serveItemJSON(w http.ResponseWriter, r *http.Request) {
-	paramValue := chi.URLParam(r, this.paramName)
-	index := this.itemIndex(paramValue)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(index)
-}
-
-func (this *objectsFolder[T]) serveItemHTML(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("preview") != "true" {
-		this.folder.serveHTML(w, r)
-		return
-	}
-
-	if this.itemIndexFn != nil {
-		this.itemIndexFn.ServeHTTP(w, r)
-		return
-	}
-
-	paramValue := chi.URLParam(r, this.paramName)
-	writeDefaultIndexHTML(w, this.itemIndex(paramValue))
-}
-
-func (this *objectsFolder[T]) serveItemIndex(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, this.paramName)
-	if _, found := this.mapper.GetItem(id); !found {
-		http.NotFound(w, r)
-		return
-	}
-	if this.itemIndexFn == nil {
-		http.NotFound(w, r)
-		return
-	}
-	this.itemIndexFn.ServeHTTP(w, r)
-}
-
-func (this *objectsFolder[T]) addItemIndexRoute() {
-	if this.itemIndexRoute {
-		return
-	}
-	this.itemIndexRoute = true
-	this.instanceRoutes = append(this.instanceRoutes, &RouteEntry{
-		Name:        "_index",
-		Method:      http.MethodGet,
-		Path:        "_index",
-		Description: "Index page",
-	})
-	this.folder.router.Get("/{"+this.paramName+"}/_index", this.serveItemIndex)
-}
-
-func (this *objectsFolder[T]) itemIndex(paramValue string) FolderIndex {
-	entries := make([]*RouteEntry, len(this.instanceRoutes))
-	copy(entries, this.instanceRoutes)
-
-	// Sort entries alphabetically
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name < entries[j].Name
-	})
-
-	// Title is the item id, not the listing folder's title, so each item page
-	// is labelled with the item rather than reading like the collection.
-	return FolderIndex{
-		ServiceName: this.folder.serviceName,
-		Title:       capitalize(paramValue),
-		Description: this.folder.description,
-		Path:        relativeToRoot(this.folder.basePath+"/"+paramValue, this.folder.rootPath),
-		HasIndex:    true,
-		Entries:     entries,
-	}
 }

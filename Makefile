@@ -11,7 +11,7 @@ LDFLAGS := -X $(LDFLAGS_PKG).Version=$(VERSION) \
            -X $(LDFLAGS_PKG).Branch=$(BRANCH) \
            -X $(LDFLAGS_PKG).Date=$(DATE)
 
-.PHONY: build test clean install example-runctl example-backoffice-demo example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak example-supervisor-factory example-supervisor-factory-bundle example-supervisor-factory-publish example-supervisor-factory-limp package-supervisor deploy-supervisor ship-supervisor
+.PHONY: build test clean install example-runctl example-backoffice-demo example-backoffice-scopes example-supervisor example-supervisor-origin example-supervisor-fixture example-supervisor-local example-supervisor-local-external example-supervisor-leak example-supervisor-factory example-supervisor-factory-bundle example-supervisor-factory-publish example-supervisor-factory-limp package-supervisor deploy-supervisor ship-supervisor
 
 build:
 	@mkdir -p bin
@@ -52,6 +52,13 @@ BACKOFFICE_ADDR ?= :19090
 # Backoffice log viewer: http://127.0.0.1$(BACKOFFICE_ADDR)/logs/ (admin / admin123)
 example-backoffice-demo:
 	cd examples/backoffice-demo && DEMO_PORT=$(DEMO_PORT) BACKOFFICE_ADDR=$(BACKOFFICE_ADDR) go run .
+
+SCOPES_PORT ?= 18084
+
+# chiutil item scopes reference: orgs -> projects -> deployments, with
+# wildcard folders and plain folders per item. http://127.0.0.1:$(SCOPES_PORT)/backoffice/
+example-backoffice-scopes:
+	cd examples/backoffice-scopes && SCOPES_PORT=$(SCOPES_PORT) go run .
 
 SUPERVISOR_GOOS    := $(shell go env GOOS)
 SUPERVISOR_GOARCH  := $(shell go env GOARCH)

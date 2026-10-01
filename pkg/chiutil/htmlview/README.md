@@ -125,6 +125,18 @@ func (s *sessionView) serveSubsets(w http.ResponseWriter, r *http.Request) {
 This keeps `ObjectsFolder` focused on lookup and route dispatch. `htmlview`
 only handles presentation.
 
+The same holds for handlers mounted on an item's `Scope()`, which are plain
+`http.HandlerFunc`s: they read the resolved item with `chiutil.ItemOf` and
+render it the same way.
+
+```go
+scope := chiutil.ObjectsFolder(parent, "sessions", &sessionMapper{}).Scope()
+scope.GetDesc("/timeline", "Session events", func(w http.ResponseWriter, r *http.Request) {
+	s, _ := chiutil.ItemOf[*sessionView](r)
+	htmlview.Render(s.Events).WithTitle("Timeline").ServeHTTP(w, r)
+})
+```
+
 ## Rendering Rules
 
 Initial behavior should stay intentionally small:
